@@ -14,7 +14,7 @@ Checks every slice keeps green, each under `timeout 120`: `cargo fmt --check`,
 | 01 | [Server, CLI and resource hygiene](01-server-hygiene.md) (done) | none | `src/cli.rs`, `src/server.rs`, `src/api.rs`, **`src/main.rs`**, `tests/common/mod.rs`, `tests/resources.rs` |
 | 02 | [Scanner](02-scanner.md) (done) | none | `src/scan.rs`, `tests/scan.rs` |
 | 03 | [Treemap layout and colours](03-treemap.md) (done) | none | `src/treemap.rs`, `tests/treemap.rs` |
-| 04 | [API over the scan state](04-api.md) | 01, 02, 03 | `src/api.rs`, `src/server.rs`, **`src/main.rs`**, `tests/common/mod.rs`, `tests/api.rs` |
+| 04 | [API over the scan state](04-api.md) (done) | 01, 02, 03 | `src/api.rs`, `src/server.rs`, **`src/main.rs`**, `tests/common/mod.rs`, `tests/api.rs` |
 | 05 | [The page](05-page.md) | 04 | `web/index.html`, `web/style.css`, `web/app.js` |
 | 06 | [Close-out](06-close-out.md) | 05 | `README.md`, `CHANGELOG.md`, `AGENTS.md`, this folder |
 
@@ -36,3 +36,8 @@ Logged here as they happen.
   from Cargo.toml. The dependency list is now serde, serde_json and rayon.
 - 01: `State::Scanning` carries no progress field until 04 adds `scan::Progress` (02
   landed after 01 was written).
+- 04: a `Host` header check (loopback on the bound port, else 403) was added against
+  DNS rebinding. After an early error (400, 411, 413, 431) the server half-closes and
+  drains the request so the client sees the status instead of a reset. `/api/errors`
+  is 409 without a tree, like the other tree endpoints. The resources test that
+  expected `idle` now accepts `scanning` or `done`, since the scan starts at launch.

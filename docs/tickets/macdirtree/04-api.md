@@ -24,7 +24,7 @@ Shape:
 
 **Blocked by:** 01, 02, 03.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `tests/api.rs`: start on the fixture with `--no-open --linger 1`; `/api/status`
       reaches `done` within 10 s with `bytes` equal to the fixture total
