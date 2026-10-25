@@ -26,7 +26,7 @@ Shape:
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `tests/scan.rs` builds a fixture in a unique temp folder: `a/big.bin` 300 000 B,
       `a/small.txt` 10 B, `b/x.jpg` 2000 B, `b/c/` empty, `.hidden` 5 B, `link.txt`

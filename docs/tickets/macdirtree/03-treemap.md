@@ -26,7 +26,7 @@ Shape:
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] rects never overlap (pairwise check on a 50-file tree, with a 0.01 px tolerance)
 - [ ] every rect and every bounds lies inside `0..w × 0..h`

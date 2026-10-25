@@ -36,7 +36,7 @@ Shape:
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `tests/resources.rs`: first stdout line matches `Listening on http://127.0.0.1:\d+/`
 - [ ] `GET /` is 200 `text/html` and contains `macdirtree`; `/app.js` and `/style.css`
