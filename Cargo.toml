@@ -1,0 +1,17 @@
+[package]
+name = "macdirtree"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Disk usage explorer for macOS: directory list, treemap and extension list in the browser"
+license = "MIT"
+
+[dependencies]
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tiny_http = "0.12.0"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
