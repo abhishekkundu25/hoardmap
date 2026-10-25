@@ -60,13 +60,14 @@ fn static_files_have_their_types_and_unknown_paths_are_404() {
 }
 
 #[test]
-fn status_is_idle_and_other_api_paths_are_404_json() {
+fn status_is_a_scan_state_and_other_api_paths_are_404_json() {
     let server = Server::start(IDLE);
     let (status, headers, body) = server.get("/api/status");
     assert_eq!(status, 200);
     assert_eq!(header(&headers, "Content-Type"), Some("application/json"));
     let json: serde_json::Value = serde_json::from_str(&body).expect("JSON body");
-    assert_eq!(json["state"], "idle");
+    let state = json["state"].as_str().expect("state");
+    assert!(["scanning", "done"].contains(&state), "{state}");
 
     let (status, headers, body) = server.get("/api/nope");
     assert_eq!(status, 404);

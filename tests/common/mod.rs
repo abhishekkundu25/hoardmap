@@ -1,15 +1,17 @@
 //! Shared by the integration tests: the binary as a child process, raw HTTP over a
-//! socket, CPU accounting, and a stub `open` on PATH so no test opens a browser.
+//! socket, CPU accounting, a stub `open` on PATH so no test opens a browser, and the
+//! fixture tree the scanner tests use.
 #![allow(dead_code)]
 
-use std::fs;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// CPU time (user + system) a process has used so far, in seconds.
 #[cfg(target_os = "linux")]
@@ -181,16 +183,60 @@ impl Server {
 
     /// One GET with `Connection: close`: status, headers and body.
     pub fn get(&self, path: &str) -> (u16, Vec<(String, String)>, String) {
-        let mut stream = self.connect();
-        write!(
-            stream,
+        self.raw(&format!(
             "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
             self.port
-        )
-        .unwrap();
+        ))
+    }
+
+    /// One POST with `Connection: close`; no `Content-Type` header when `content_type`
+    /// is `None`.
+    pub fn post(
+        &self,
+        path: &str,
+        content_type: Option<&str>,
+        body: &str,
+    ) -> (u16, Vec<(String, String)>, String) {
+        let content_type = content_type
+            .map(|t| format!("Content-Type: {t}\r\n"))
+            .unwrap_or_default();
+        self.raw(&format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            self.port,
+            body.len()
+        ))
+    }
+
+    /// Sends `request` verbatim on a fresh connection and reads to the close.
+    pub fn raw(&self, request: &str) -> (u16, Vec<(String, String)>, String) {
+        let mut stream = self.connect();
+        stream.write_all(request.as_bytes()).unwrap();
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).expect("read the response");
         parse_response(&raw)
+    }
+
+    /// The parsed `/api/status` document.
+    pub fn status(&self) -> serde_json::Value {
+        let (status, _, body) = self.get("/api/status");
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str(&body).expect("status JSON")
+    }
+
+    /// Polls `/api/status` every 50 ms until `state` matches; panics after `timeout`.
+    pub fn wait_for(&self, state: &str, timeout: Duration) -> serde_json::Value {
+        let end = Instant::now() + timeout;
+        loop {
+            let status = self.status();
+            if status["state"] == state {
+                return status;
+            }
+            assert!(
+                Instant::now() < end,
+                "status did not reach {state:?} within {timeout:?}: {status}"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Opens `/api/events` and returns the socket once the first `event: status`
@@ -241,6 +287,97 @@ impl Drop for Server {
     fn drop(&mut self) {
         self.child.kill().ok();
         self.child.wait().ok();
+    }
+}
+
+static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+/// The scanner tests' tree in a temp folder: `a/big.bin` (300000 B), `a/small.txt`
+/// (10 B), `b/x.jpg` (2000 B), `b/c/` empty, `.hidden` (5 B), `link.txt` hard-linked
+/// to `a/small.txt`, `sym -> a/big.bin`, and `locked/` (mode 000) holding a 100 B
+/// file. Removed on drop, `locked/` made writable again first.
+pub struct Fixture {
+    pub root: PathBuf,
+    /// False when the process can read a mode-000 directory (running as root).
+    pub locked_unreadable: bool,
+}
+
+impl Fixture {
+    /// The symlink's own size, as the scan counts it.
+    pub fn sym_len(&self) -> u64 {
+        fs::symlink_metadata(self.root.join("sym")).unwrap().len()
+    }
+
+    /// The root's logical bytes as the scan reports them.
+    pub fn total_bytes(&self) -> u64 {
+        let locked = if self.locked_unreadable { 0 } else { 100 };
+        300_000 + 10 + 2000 + 5 + self.sym_len() + locked
+    }
+
+    /// Every path under the root with its size, sorted, the unreadable folder's
+    /// contents excluded; equal before and after a run means nothing was touched.
+    pub fn listing(&self) -> Vec<(PathBuf, u64)> {
+        fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64)>) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let meta = fs::symlink_metadata(entry.path()).unwrap();
+                out.push((entry.path(), meta.len()));
+                if meta.is_dir() {
+                    walk(&entry.path(), out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut out);
+        out.sort();
+        out
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::set_permissions(self.root.join("locked"), fs::Permissions::from_mode(0o755));
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+pub fn fixture() -> Fixture {
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "macdirtree-api-{}-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
+        nanos
+    ));
+    let write = |rel: &str, len: usize| {
+        File::create(root.join(rel))
+            .unwrap()
+            .write_all(&vec![b'x'; len])
+            .unwrap();
+    };
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir_all(root.join("b/c")).unwrap();
+    fs::create_dir_all(root.join("locked")).unwrap();
+    write("a/big.bin", 300_000);
+    write("a/small.txt", 10);
+    write("b/x.jpg", 2000);
+    write(".hidden", 5);
+    write("locked/secret.bin", 100);
+    fs::hard_link(root.join("a/small.txt"), root.join("link.txt")).unwrap();
+    symlink("a/big.bin", root.join("sym")).unwrap();
+    fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+    let locked_unreadable = fs::read_dir(root.join("locked")).is_err();
+    if !locked_unreadable {
+        println!("locked/ is readable (running as root): permission checks skipped");
+    }
+    Fixture {
+        root,
+        locked_unreadable,
     }
 }
 

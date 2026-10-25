@@ -21,7 +21,9 @@ use serde_json::json;
 
 use crate::api;
 use crate::cli::Options;
+use crate::scan::{self, Progress};
 use crate::tree::Tree;
+use crate::treemap::Colours;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
@@ -32,6 +34,11 @@ const MAX_HEAD_BYTES: usize = 16 * 1024;
 /// A request body longer than this is refused with 413.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 const KEEPALIVE: Duration = Duration::from_secs(15);
+/// How often the status goes out on the event streams while a scan runs.
+const TICK: Duration = Duration::from_millis(250);
+
+/// The `start_scan` error while a scan runs; the API answers it with 409.
+pub const SCAN_RUNNING: &str = "a scan is running";
 
 /// What the server knows about the scan.
 #[derive(Debug)]
@@ -39,12 +46,14 @@ pub enum State {
     Idle,
     Scanning {
         path: PathBuf,
+        progress: Arc<Progress>,
         started: Instant,
     },
     Done {
         path: PathBuf,
         tree: Arc<Tree>,
         duration: Duration,
+        colours: Colours,
     },
     Failed {
         path: PathBuf,
@@ -57,14 +66,17 @@ pub struct App {
     pub state: Mutex<State>,
     pub presence: Arc<Presence>,
     pub events: Broadcaster,
+    /// The bound port, which a request's `Host` header must name.
+    pub port: u16,
 }
 
 impl App {
-    pub fn new(linger: Duration) -> App {
+    pub fn new(linger: Duration, port: u16) -> App {
         App {
             state: Mutex::new(State::Idle),
             presence: Arc::new(Presence::new(linger)),
             events: Broadcaster::default(),
+            port,
         }
     }
 
@@ -73,10 +85,14 @@ impl App {
         let lossy = |p: &PathBuf| p.to_string_lossy().into_owned();
         match &*self.state.lock().unwrap() {
             State::Idle => status_json("idle", None, (0, 0, 0), 0, 0, None),
-            State::Scanning { path, started } => status_json(
+            State::Scanning {
+                path,
+                progress,
+                started,
+            } => status_json(
                 "scanning",
                 Some(lossy(path)),
-                (0, 0, 0),
+                progress.snapshot(),
                 started.elapsed().as_millis(),
                 0,
                 None,
@@ -85,12 +101,13 @@ impl App {
                 path,
                 tree,
                 duration,
+                ..
             } => {
                 let root = tree.root();
                 status_json(
                     "done",
                     Some(lossy(path)),
-                    (root.dirs, root.files, root.size),
+                    (u64::from(root.dirs), u64::from(root.files), root.size),
                     duration.as_millis(),
                     tree.error_count,
                     None,
@@ -106,12 +123,74 @@ impl App {
     pub fn notify_status(&self) {
         self.events.send("status", &self.status().to_string());
     }
+
+    /// Starts scanning `path` on its own thread, with a ticker that sends the status
+    /// every 250 ms until the scan ends. Refused while a scan runs or when `path` is not
+    /// a directory.
+    pub fn start_scan(self: &Arc<App>, path: PathBuf) -> Result<(), String> {
+        let progress = Arc::new(Progress::default());
+        let started = Instant::now();
+        {
+            let mut state = self.state.lock().unwrap();
+            if matches!(*state, State::Scanning { .. }) {
+                return Err(SCAN_RUNNING.to_string());
+            }
+            if !path.is_dir() {
+                return Err(format!("{} is not a directory", path.display()));
+            }
+            *state = State::Scanning {
+                path: path.clone(),
+                progress: progress.clone(),
+                started,
+            };
+        }
+        self.notify_status();
+        let app = self.clone();
+        let ticker = progress.clone();
+        thread::spawn(move || app.tick(&ticker));
+        let app = self.clone();
+        thread::spawn(move || app.finish_scan(path, &progress, started));
+        Ok(())
+    }
+
+    fn finish_scan(&self, path: PathBuf, progress: &Progress, started: Instant) {
+        let next = match scan::scan(&path, progress) {
+            Ok(tree) => State::Done {
+                path,
+                colours: Colours::new(&tree),
+                tree: Arc::new(tree),
+                duration: started.elapsed(),
+            },
+            Err(error) => State::Failed {
+                path,
+                error: error.to_string(),
+            },
+        };
+        *self.state.lock().unwrap() = next;
+        self.notify_status();
+    }
+
+    /// The scan's progress counters identify it, so a ticker outlives neither its own
+    /// scan nor into the next one.
+    fn tick(&self, progress: &Arc<Progress>) {
+        loop {
+            thread::sleep(TICK);
+            let running = matches!(
+                &*self.state.lock().unwrap(),
+                State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress)
+            );
+            if !running {
+                return;
+            }
+            self.notify_status();
+        }
+    }
 }
 
 fn status_json(
     state: &str,
     path: Option<String>,
-    (dirs, files, bytes): (u32, u32, u64),
+    (dirs, files, bytes): (u64, u64, u64),
     elapsed_ms: u128,
     error_count: u64,
     error: Option<&str>,
@@ -297,13 +376,21 @@ impl Response {
 /// timer exits the process. Returns only when binding fails.
 pub fn run(options: Options) -> io::Result<Infallible> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, options.port))?;
-    let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
+    let port = listener.local_addr()?.port();
+    let url = format!("http://127.0.0.1:{port}/");
     println!("Listening on {url}");
     io::stdout().flush()?;
     if options.open {
         launch_browser(&url);
     }
-    let app = Arc::new(App::new(options.linger));
+    let app = Arc::new(App::new(options.linger, port));
+    if let Err(error) = app.start_scan(options.path.clone()) {
+        eprintln!("macdirtree: {error}");
+        *app.state.lock().unwrap() = State::Failed {
+            path: options.path,
+            error,
+        };
+    }
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -336,7 +423,10 @@ fn serve(app: &Arc<App>, mut stream: TcpStream) -> io::Result<()> {
     let request = match read_request(&stream) {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
-        Err(status) => return write_response(&mut stream, &Response::text(status, reason(status))),
+        Err(status) => {
+            write_response(&mut stream, &Response::text(status, reason(status)))?;
+            return drain(&mut stream);
+        }
     };
     let response = route(app, &request);
     match response.body {
@@ -345,7 +435,12 @@ fn serve(app: &Arc<App>, mut stream: TcpStream) -> io::Result<()> {
     }
 }
 
-fn route(app: &App, request: &Request) -> Response {
+fn route(app: &Arc<App>, request: &Request) -> Response {
+    // A page on another origin that resolved its name to 127.0.0.1 (DNS rebinding)
+    // would otherwise be same-origin here.
+    if !host_allowed(request.header("Host"), app.port) {
+        return Response::text(403, "forbidden\n");
+    }
     if request.path.starts_with("/api/") {
         return api::handle(app, request);
     }
@@ -358,6 +453,19 @@ fn route(app: &App, request: &Request) -> Response {
         "/style.css" => Response::new(200, "text/css; charset=utf-8", STYLE_CSS),
         _ => Response::text(404, "not found\n"),
     }
+}
+
+/// `127.0.0.1` or `localhost`, with no port or with the bound one.
+fn host_allowed(host: Option<&str>, port: u16) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let (name, given) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (host, None),
+    };
+    (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
+        && given.is_none_or(|p| p.parse::<u16>() == Ok(port))
 }
 
 /// Reads one request. `Ok(None)` when the client closed without sending one; `Err` is
@@ -418,6 +526,23 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, u16> {
     request.body = vec![0; length];
     reader.read_exact(&mut request.body).map_err(|_| 400u16)?;
     Ok(Some(request))
+}
+
+/// After an error answered before the body was read: closing at once would reset the
+/// connection while the client is still sending, and it would never see the status.
+/// Half-close, then discard what arrives until the client closes, within limits.
+fn drain(stream: &mut TcpStream) -> io::Result<()> {
+    stream.shutdown(Shutdown::Write)?;
+    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+    let mut sink = [0u8; 8192];
+    let mut left = 16 * MAX_BODY_BYTES;
+    while left > 0 {
+        match stream.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => left = left.saturating_sub(n),
+        }
+    }
+    Ok(())
 }
 
 fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
@@ -491,6 +616,7 @@ fn reason(status: u16) -> &'static str {
         202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -500,5 +626,22 @@ fn reason(status: u16) -> &'static str {
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_must_be_loopback_on_the_bound_port() {
+        assert!(host_allowed(Some("127.0.0.1:8080"), 8080));
+        assert!(host_allowed(Some("localhost:8080"), 8080));
+        assert!(host_allowed(Some("127.0.0.1"), 8080));
+        assert!(host_allowed(Some("localhost"), 8080));
+        assert!(!host_allowed(Some("127.0.0.1:8081"), 8080));
+        assert!(!host_allowed(Some("example.com:8080"), 8080));
+        assert!(!host_allowed(Some("127.0.0.1.example.com:8080"), 8080));
+        assert!(!host_allowed(None, 8080));
     }
 }
