@@ -47,9 +47,9 @@ The newest DMG is always at
 `https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg`,
 which is what the website links to.
 
-A downloaded copy needs one confirmation the first time: if macOS stops it, press Done,
-then open System Settings, Privacy & Security, and press Open Anyway next to Hoardmap.
-Or run `xattr -dr com.apple.quarantine /Applications/Hoardmap.app` once.
+The app is not notarized by Apple, so macOS blocks the first launch. Press Done, then
+open System Settings, Privacy & Security, and press Open Anyway next to Hoardmap. Or
+run `xattr -dr com.apple.quarantine /Applications/Hoardmap.app` once.
 
 ## Build from source
 
