@@ -87,6 +87,7 @@ switch off and on again.
 The top bar holds the path field with Scan and Rescan, an Open in Finder button, the
 Logical and Physical size toggle, the Zoom and Root buttons for the treemap, and a
 status line with the scanned path, folder and file counts, total bytes and scan time.
+Sizes start in Physical, what the files take on disk; the status total follows the toggle.
 Press Rescan after clearing files in Finder to see the new figures.
 
 ### Directory list
@@ -151,7 +152,8 @@ open it in Finder.
 Logical is the number of bytes a file contains. Physical is the number of bytes
 allocated for it on disk. The two differ for sparse files and for APFS clones. A Docker
 disk image such as `Docker.raw` can report 64 GB logical while only a few GB are
-allocated. Switch to Physical to see what the file costs on your disk. Every view
+allocated. Physical is the default because it is what clearing a file gives back;
+switch to Logical to see file contents. Every view, and the total in the status line,
 follows the toggle.
 
 Hard links are counted once. A file reached again through a second link shows 0 bytes

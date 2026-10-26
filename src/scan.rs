@@ -13,8 +13,9 @@
 //! hard-linked file keeps its bytes. Directory totals are then recomputed from the
 //! deduplicated children, and each `children` list is sorted by that final size.
 //!
-//! [`Progress::bytes`] counts every entry's logical size as it is seen, so a file with
-//! several hard links is counted once per link there; the finished tree counts it once.
+//! [`Progress::bytes`] and [`Progress::physical`] count every entry's logical and
+//! allocated size as it is seen, so a file with several hard links is counted once per
+//! link there; the finished tree counts it once.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -38,15 +39,18 @@ pub struct Progress {
     pub files: AtomicU64,
     /// Logical bytes of the non-directory entries seen.
     pub bytes: AtomicU64,
+    /// Bytes allocated on disk for the non-directory entries seen.
+    pub physical: AtomicU64,
 }
 
 impl Progress {
-    /// `(dirs, files, bytes)` so far.
-    pub fn snapshot(&self) -> (u64, u64, u64) {
+    /// `(dirs, files, bytes, physical)` so far.
+    pub fn snapshot(&self) -> (u64, u64, u64, u64) {
         (
             self.dirs.load(AtomicOrdering::Relaxed),
             self.files.load(AtomicOrdering::Relaxed),
             self.bytes.load(AtomicOrdering::Relaxed),
+            self.physical.load(AtomicOrdering::Relaxed),
         )
     }
 }
@@ -136,7 +140,7 @@ pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
     let children = read_entries(path, rd, &ctx);
     let root = Local::dir(path.to_string_lossy().into_owned(), &meta, children);
 
-    let (dirs, files, _) = progress.snapshot();
+    let (dirs, files, ..) = progress.snapshot();
     let mut nodes = Vec::with_capacity((dirs + files + 1) as usize);
     let mut seen = HashSet::new();
     flatten(root, None, &mut nodes, &mut seen);
@@ -202,6 +206,9 @@ fn read_entries(dir: &Path, rd: fs::ReadDir, ctx: &Ctx) -> Vec<Local> {
             ctx.progress
                 .bytes
                 .fetch_add(meta.len(), AtomicOrdering::Relaxed);
+            ctx.progress
+                .physical
+                .fetch_add(meta.blocks() * 512, AtomicOrdering::Relaxed);
             children.push(Local::leaf(name, kind, &meta));
         }
     }
@@ -308,11 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn progress_snapshot_reads_all_three() {
+    fn progress_snapshot_reads_all_four() {
         let p = Progress::default();
         p.dirs.fetch_add(1, AtomicOrdering::Relaxed);
         p.files.fetch_add(2, AtomicOrdering::Relaxed);
         p.bytes.fetch_add(3, AtomicOrdering::Relaxed);
-        assert_eq!(p.snapshot(), (1, 2, 3));
+        p.physical.fetch_add(4, AtomicOrdering::Relaxed);
+        assert_eq!(p.snapshot(), (1, 2, 3, 4));
     }
 }

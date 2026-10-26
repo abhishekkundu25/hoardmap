@@ -117,6 +117,9 @@ fn status_reaches_done_with_the_fixture_totals() {
     println!("# fixture scan done after {:.3?}", started.elapsed());
     assert_eq!(status["path"], lossy(&fx.root));
     assert_eq!(status["bytes"], fx.total_bytes());
+    let root = node(&server, 0);
+    assert_eq!(status["physical"], root["physical"]);
+    assert!(status["physical"].as_u64().unwrap() > 0);
     assert_eq!(status["dirs"], 4);
     assert_eq!(status["files"], if fx.locked_unreadable { 6 } else { 7 });
     assert_eq!(

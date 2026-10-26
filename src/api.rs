@@ -426,6 +426,7 @@ mod tests {
         let json = body(&response);
         assert_eq!(json["state"], "idle");
         assert_eq!(json["bytes"], 0);
+        assert_eq!(json["physical"], 0);
         assert!(json["path"].is_null());
     }
 

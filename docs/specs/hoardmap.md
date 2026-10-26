@@ -170,8 +170,8 @@ renames anything. The server exits by itself once the browser tab is gone.
   `open <path>` for a directory, through `PATH` lookup so tests can substitute `open`.
   On a non-macOS build the command is `xdg-open <dir>`.
 - **API** (all JSON):
-  - `GET /api/status` → `{state, path, dirs, files, bytes, elapsed_ms, error_count,
-    error}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
+  - `GET /api/status` → `{state, path, dirs, files, bytes, physical, elapsed_ms,
+    error_count, error}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
     the progress so far; when done they are the tree's totals.
   - `GET /api/events` → SSE as above.
   - `POST /api/scan {"path"}` → 202 and starts a scan; 409 while one runs; 400 for a

@@ -93,7 +93,7 @@ impl App {
             State::Idle => status_json(
                 "idle",
                 self.start.as_deref().map(lossy),
-                (0, 0, 0),
+                (0, 0, 0, 0),
                 0,
                 0,
                 None,
@@ -120,14 +120,19 @@ impl App {
                 status_json(
                     "done",
                     Some(lossy(path)),
-                    (u64::from(root.dirs), u64::from(root.files), root.size),
+                    (
+                        u64::from(root.dirs),
+                        u64::from(root.files),
+                        root.size,
+                        root.physical,
+                    ),
                     duration.as_millis(),
                     tree.error_count,
                     None,
                 )
             }
             State::Failed { path, error } => {
-                status_json("failed", Some(lossy(path)), (0, 0, 0), 0, 0, Some(error))
+                status_json("failed", Some(lossy(path)), (0, 0, 0, 0), 0, 0, Some(error))
             }
         }
     }
@@ -203,7 +208,7 @@ impl App {
 fn status_json(
     state: &str,
     path: Option<String>,
-    (dirs, files, bytes): (u64, u64, u64),
+    (dirs, files, bytes, physical): (u64, u64, u64, u64),
     elapsed_ms: u128,
     error_count: u64,
     error: Option<&str>,
@@ -214,6 +219,7 @@ fn status_json(
         "dirs": dirs,
         "files": files,
         "bytes": bytes,
+        "physical": physical,
         "elapsed_ms": elapsed_ms as u64,
         "error_count": error_count,
         "error": error,

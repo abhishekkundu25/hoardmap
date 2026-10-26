@@ -250,10 +250,11 @@ fn empty_dir_is_a_dir_node() {
 fn progress_ends_at_the_tree_totals() {
     let fx = Fixture::build();
     let (tree, progress) = scan_fixture(&fx);
-    let (dirs, files, bytes) = progress.snapshot();
+    let (dirs, files, bytes, physical) = progress.snapshot();
     assert_eq!(dirs, u64::from(tree.root().dirs));
     assert_eq!(files, u64::from(tree.root().files));
     assert!(bytes >= tree.root().size);
+    assert!(physical >= tree.root().physical);
 }
 
 #[test]

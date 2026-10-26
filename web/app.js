@@ -86,13 +86,18 @@ function bytesOf(node, mode) {
   return mode === "physical" ? node.physical : node.size;
 }
 
+// The scanned total in the current mode, while the scan runs and after.
+function statusBytes(s) {
+  return store.mode === "physical" ? s.physical : s.bytes;
+}
+
 // Store and DOM.
 
 const store = {
   status: null,
   selection: null,
   root: 0,
-  mode: "logical",
+  mode: "physical",
   view: "treemap",
   highlightExt: null,
   layout: null,
@@ -221,11 +226,11 @@ function renderStatus() {
     case "scanning":
       add("Scanning ");
       el.status.appendChild(path);
-      add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(s.bytes)}, ${formatElapsed(s.elapsed_ms)}`);
+      add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(statusBytes(s))}, ${formatElapsed(s.elapsed_ms)}`);
       break;
     case "done": {
       el.status.appendChild(path);
-      add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(s.bytes)} in ${formatElapsed(s.elapsed_ms)}`);
+      add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(statusBytes(s))} in ${formatElapsed(s.elapsed_ms)}`);
       if (s.error_count > 0) {
         const button = document.createElement("button");
         button.type = "button";
@@ -785,6 +790,7 @@ function setMode(mode) {
   if (mode === store.mode) return;
   store.mode = mode;
   renderControls();
+  renderStatus();
   renderList();
   fetchTreemap();
   loadBottom();
