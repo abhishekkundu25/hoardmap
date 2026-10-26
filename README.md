@@ -129,7 +129,13 @@ nothing in the code can bypass that.
 
 To scan those folders, give the terminal that launches macdirtree Full Disk Access:
 
-1. Open System Settings > Privacy & Security > Full Disk Access.
+1. Open System Settings > Privacy & Security > Full Disk Access. This command opens
+   that pane directly:
+
+   ```sh
+   open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+   ```
+
 2. Add Terminal, or the terminal you use (iTerm, Warp, the VS Code terminal), and turn
    it on.
 3. Quit and reopen the terminal.
