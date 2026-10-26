@@ -280,8 +280,6 @@ plan, are in `docs/tickets/hoardmap/`. `AGENTS.md` is the short map of the code.
 
 ## Credits
 
-- The idle-CPU and exit-after-close checks are ported from the resource tests of the
-  turtle-lsp project.
 - The treemap layout is the squarified treemap of Bruls, Huizing and van Wijk.
 - The three linked views, the extension legend and the logical and physical sizes
   follow WinDirStat.

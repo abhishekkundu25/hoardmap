@@ -98,7 +98,7 @@ renames anything. The server exits by itself once the browser tab is gone.
 33. As a developer, I want `--linger SECS`, so that tests can make the server exit
     quickly after the tab disconnects.
 34. As a developer, I want the resource hygiene tests (idle CPU, exit on tab close)
-    from turtle-lsp ported first, so that every later slice is held to them.
+    written first, so that every later slice is held to them.
 35. As a user, I want sizes shown in human units (KB, MB, GB with one decimal) and
     exact bytes on hover, so that the list is readable.
 36. As a user, I want the scan of a one-million-file home folder to finish in seconds,
@@ -202,8 +202,7 @@ renames anything. The server exits by itself once the browser tab is gone.
 - A good test drives the binary or the public library functions and checks what the
   user would see: JSON from the endpoints, rects that tile the viewport, the process
   gone after the tab closes. No test reads private state.
-- **Resource hygiene** (prior art: turtle-lsp `test/resources.test.mjs` and
-  `test/procs.mjs`, ported to Rust in `tests/common/mod.rs`): CPU seconds of a process
+- **Resource hygiene** (helpers in `tests/common/mod.rs`): CPU seconds of a process
   come from `ps -o time= -p PID` on macOS and `/proc/PID/stat` on Linux. The tests
   check that a server idle after a scan uses under 0.1 s of CPU in 2 s with a tab
   connected; that the process exits 0 within linger plus 3 s after its only tab

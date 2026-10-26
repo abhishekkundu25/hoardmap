@@ -5,8 +5,7 @@
 the embedded page files, streams `/api/events`, answers `/api/status` with
 `{"state":"idle"}`, uses no CPU while a tab is connected and idle, and exits 0 one
 second after the last tab disconnects. Without `--no-open` it runs `open <url>`.
-This is the port of turtle-lsp's resource checks (`test/procs.mjs`,
-`test/resources.test.mjs` in `../turtle-lsp`), the first thing the project gets.
+These resource checks are the first thing the project gets.
 
 Spec sections: Implementation decisions (HTTP, Presence and exit, Browser launch,
 Cross-site protection), Testing decisions (Resource hygiene).
@@ -42,8 +41,8 @@ Shape:
 - [ ] `GET /` is 200 `text/html` and contains `hoardmap`; `/app.js` and `/style.css`
       have their content types; `/nope` is 404
 - [ ] `GET /api/status` is 200 JSON with `state: "idle"`
-- [ ] with one events socket open, 2 s of idleness uses under 0.1 s of CPU (sample
-      twice as in turtle-lsp's `assertIdle`), and the stream has sent `event: status`
+- [ ] with one events socket open, 2 s of idleness uses under 0.1 s of CPU (sampled
+      twice), and the stream has sent `event: status`
 - [ ] closing the only events socket: process exits 0 within `linger + 3` s
 - [ ] closing and reopening within linger: process still running 3 s later
 - [ ] before any tab connects, the process is still running after 3 s with `--linger 1`
