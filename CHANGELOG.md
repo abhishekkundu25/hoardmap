@@ -2,16 +2,16 @@
 
 ## Unreleased
 
-- A website for GitHub Pages in `site/`, with the download as its main button. The DMG opens on a laid-out window: drag Hoardmap onto the Applications link. Release files no longer carry the version, so `releases/latest/download/Hoardmap.dmg` always works.
-- Downloads on GitHub: pushing a `v*` tag builds a universal (Apple silicon and Intel) `Hoardmap.dmg`, a zipped app and the `hoardmap` command, and attaches them to a release. CI runs the format check, lints and tests on every push and pull request.
-- Sizes start in Physical, the space files take on disk, instead of Logical. The status-line total follows the toggle, also while the scan runs; `/api/status` gains `physical`.
-- Renamed from macdirtree to Hoardmap. The command is `hoardmap`, the app is `Hoardmap.app` with the bundle identifier `dev.hoardmap.app`, so Full Disk Access has to be granted to it again.
-- An app icon and logo, in the style of macOS icons: a treemap of glossy tiles on a squircle, the largest a gold hoard. It is the app icon, the page favicon, and sits beside the name in the toolbar and on the start screen. Source in `assets/hoardmap.svg`.
-- Native Mac app (`tools/bundle-app.sh`): the same page in its own window, with a start screen that says hoardmap never changes your files and walks through Full Disk Access, which stays optional. A toolbar button reopens it at any time.
-- Icicle view beside the treemap: one row per folder level, widths by bytes, names and sizes on the bars. Switch with Treemap and Icicle above the right pane.
-
 ## 0.1.0 — 2026-10-26
 
+The first release.
+
+- **Hoardmap.app**, a native Mac app: the disk map in its own window, with the usual menus. A start screen says Hoardmap never changes your files and walks through Full Disk Access, which stays optional; a toolbar button reopens it at any time.
+- **Downloads**: `Hoardmap.dmg` opens on a window that says to drag the app onto Applications. A zipped app and the `hoardmap` command come alongside. All are universal (Apple silicon and Intel), macOS 11 or later.
+- **Website** at https://abhishekkundu25.github.io/hoardmap/, with the download as its main button. It is published with each release.
+- An app icon and logo in the style of macOS icons: a treemap of glossy tiles on a squircle, the largest a gold hoard.
+- Icicle view beside the treemap: one row per folder level, widths by bytes, names and sizes on the bars.
+- Sizes start in Physical, the space files take on disk; the status-line total follows the size toggle, also while the scan runs.
 - One command, `hoardmap [PATH]`, scans a folder (your home folder by default) and opens the result in your browser.
 - Scan progress in the page: folders, files, bytes and elapsed time while the scan runs.
 - Directory list sorted largest first with Name, Size, %, Items, Files, Subdirs and Last change, a share bar, lazy expansion and keyboard navigation.

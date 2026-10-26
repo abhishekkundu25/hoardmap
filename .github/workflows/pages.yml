@@ -1,9 +1,10 @@
 name: Pages
 
+# Publishes site/ to GitHub Pages. The release workflow calls this after a release, so
+# the site changes only with a release. To redeploy by hand, run it on a tag:
+#   gh workflow run pages.yml --ref v0.1.0
 on:
-  push:
-    branches: [main]
-    paths: ["site/**", "assets/hoardmap.svg", ".github/workflows/pages.yml"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -13,7 +14,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -23,8 +24,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Add the logo
-        run: cp assets/hoardmap.svg site/hoardmap.svg
+      - name: Add the logo and the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          cp assets/hoardmap.svg site/hoardmap.svg
+          sed -i "s|<span data-version>[^<]*</span>|<span data-version>$version</span>|g" site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

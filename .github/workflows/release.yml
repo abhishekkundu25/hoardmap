@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag such as v0.2.0 that matches the version in Cargo.toml.
+# Push a tag such as v0.2.0 that matches the version in Cargo.toml. It publishes the
+# downloads as a GitHub release, then the website.
 on:
   push:
     tags: ["v*"]
@@ -19,6 +20,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tag matches Cargo.toml
         run: |
+          version=${GITHUB_REF_NAME#v}
+          {
+            awk -v v="## $version " 'index($0, v) == 1 { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md
+            echo
+            cat .github/release-notes.md
+          } >"$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" target/dist/* \
+            --title "Hoardmap $version" \
+            --notes-file "$RUNNER_TEMP/notes.md"|
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
       - name: Test
@@ -30,6 +40,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          version=${GITHUB_REF_NAME#v}
+          {
+            awk -v v="## $version " 'index($0, v) == 1 { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md
+            echo
+            cat .github/release-notes.md
+          } >"$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" target/dist/* \
-            --title "Hoardmap ${GITHUB_REF_NAME#v}" \
-            --notes-file .github/release-notes.md
+            --title "Hoardmap $version" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+  pages:
+    needs: release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

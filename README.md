@@ -265,8 +265,8 @@ git tag v0.2.0 && git push origin v0.2.0
 ```
 
 `.github/workflows/release.yml` checks the tag against `Cargo.toml`, runs the tests,
-builds the downloads with `tools/release.sh` and publishes them as a GitHub release
-with `.github/release-notes.md`. `tools/release.sh` also runs locally and leaves the
+builds the downloads with `tools/release.sh`, publishes them as a GitHub release with
+`.github/release-notes.md`, and then publishes the website. `tools/release.sh` also runs locally and leaves the
 files in `target/dist`; it needs the `x86_64-apple-darwin` Rust target.
 The DMG opens on a window with a background that says to drag the app onto the
 Applications link beside it; the script lays it out by driving Finder, which macOS may
@@ -274,8 +274,10 @@ ask you to allow once. The background is `tools/dmg-background.html`, rendered w
 app icon by `tools/make-images.sh` (needs Google Chrome).
 
 The website is `site/index.html`, plain HTML with its screenshots in `site/img`.
-`.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main` that
-touches it, adding the logo from `assets/`.
+The release workflow publishes it to GitHub Pages after the downloads, through
+`.github/workflows/pages.yml`, which adds the logo and the version. The site and the
+downloads therefore change only with a release; edits to `site/` on `main` wait for the
+next tag. To redeploy the current release by hand: `gh workflow run pages.yml --ref vX.Y.Z`.
 
 Build and check, each from the repository root:
 

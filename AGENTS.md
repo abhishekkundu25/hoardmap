@@ -17,7 +17,8 @@ deletes, moves or renames anything; do not add such an action.
   embedded with `include_str!`; `hoardmap.icns` is the app icon and
   `dmg-background.tiff` the DMG window, both made by `tools/make-images.sh` (needs
   Google Chrome).
-- `site/`: the GitHub Pages website, published by `.github/workflows/pages.yml`.
+- `site/`: the GitHub Pages website. It is published only by a release (`release.yml`
+  calls `pages.yml`), never by a push to `main`.
 - `web/`: the page, embedded in the binary with `include_str!`; no build step, but a
   page change needs a rebuild (`cargo build`) before the binary serves it.
 - Specs in `docs/specs/`, tickets in `docs/tickets/<name>/` with a README table.
