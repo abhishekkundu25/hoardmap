@@ -3,19 +3,28 @@
 
 use std::path::PathBuf;
 
+use hoardmap::access::log_launch;
 use hoardmap::server::{self, Config};
 use muda::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
 use tao::dpi::LogicalSize;
-use tao::event::{Event, WindowEvent};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tao::window::WindowBuilder;
-use wry::WebViewBuilder;
+use wry::{PageLoadEvent, WebViewBuilder};
 
 /// Tried first, so the page keeps the same origin, and with it its saved view and
 /// settings, from one launch to the next.
 const PREFERRED_PORT: u16 = 48273;
 
 fn main() {
+    // Each step of a launch goes to ~/Library/Logs/Hoardmap/launch.log, so a launch that
+    // never shows a window says where it stopped. If "start" is missing, macOS never ran
+    // the app at all.
+    log_launch(&format!(
+        "start {} from {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::current_exe().map_or_else(|_| "?".into(), |p| p.display().to_string())
+    ));
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| "/".into());
@@ -35,6 +44,7 @@ fn main() {
         }
     };
     let origin = format!("http://127.0.0.1:{port}");
+    log_launch(&format!("server on {origin}"));
 
     let event_loop = EventLoop::new();
     let menu = menu_bar();
@@ -46,6 +56,7 @@ fn main() {
         .with_min_inner_size(LogicalSize::new(720.0, 480.0))
         .build(&event_loop)
         .expect("create the window");
+    log_launch("window created");
 
     let allowed = origin.clone();
     let _webview = WebViewBuilder::new()
@@ -53,11 +64,20 @@ fn main() {
         // The page is the only thing this window shows; links elsewhere stay out.
         .with_navigation_handler(move |url| url.starts_with(&allowed))
         .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
+        .with_on_page_load_handler(|event, _| {
+            if let PageLoadEvent::Finished = event {
+                log_launch("page loaded");
+            }
+        })
         .build(&window)
         .expect("create the web view");
+    log_launch("web view created");
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        if let Event::NewEvents(StartCause::Init) = event {
+            log_launch("running");
+        }
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,
             ..

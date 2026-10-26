@@ -355,6 +355,7 @@ fn access_status(app: &App) -> Response {
             "granted": access::granted(),
             "native": app.native,
             "app": access::bundle().map(|b| lossy(&b)),
+            "installed": access::installed(),
         }),
     )
 }

@@ -121,6 +121,7 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   gap: 6px;
 }
 #status .path { color: var(--text); }
+.warn { color: var(--error); }
 
 #disk {
   flex: 1 0 100%;
