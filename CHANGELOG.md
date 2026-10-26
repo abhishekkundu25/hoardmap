@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.2 — 2026-10-27
+
+- Install with Homebrew: `brew install --cask abhishekkundu25/tap/hoardmap` for the Mac app, `brew install abhishekkundu25/tap/hoardmap` for the command. The app opens straight away, and `brew upgrade` keeps it current.
+
 ## 0.3.1 — 2026-10-27
 
 - No more Apple Music, TV or Photos prompts without Full Disk Access: their libraries, caches and system copies (`~/Movies/TV`, `~/Library/Photos` and others) are skipped like the other protected folders.
