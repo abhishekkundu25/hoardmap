@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use macdirtree::scan::{Progress, scan};
@@ -20,12 +21,13 @@ struct Fixture {
 
 impl Fixture {
     fn build() -> Fixture {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("macdirtree-scan-{}-{}", std::process::id(), nanos));
+        // The clock ticks in microseconds on macOS, so parallel tests need the counter.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "macdirtree-scan-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir_all(root.join("a")).unwrap();
         fs::create_dir_all(root.join("b/c")).unwrap();
         fs::create_dir_all(root.join("locked")).unwrap();
