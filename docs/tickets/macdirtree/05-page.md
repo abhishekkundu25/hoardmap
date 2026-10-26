@@ -37,7 +37,7 @@ Shape:
 
 **Blocked by:** 04.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `cargo run -- . --no-open` then open the URL by hand: the three views appear and
       match the figures from `/api/node/0` (record the check in the report)

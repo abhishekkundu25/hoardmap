@@ -15,7 +15,7 @@ Checks every slice keeps green, each under `timeout 120`: `cargo fmt --check`,
 | 02 | [Scanner](02-scanner.md) (done) | none | `src/scan.rs`, `tests/scan.rs` |
 | 03 | [Treemap layout and colours](03-treemap.md) (done) | none | `src/treemap.rs`, `tests/treemap.rs` |
 | 04 | [API over the scan state](04-api.md) (done) | 01, 02, 03 | `src/api.rs`, `src/server.rs`, **`src/main.rs`**, `tests/common/mod.rs`, `tests/api.rs` |
-| 05 | [The page](05-page.md) | 04 | `web/index.html`, `web/style.css`, `web/app.js` |
+| 05 | [The page](05-page.md) (done) | 04 | `web/index.html`, `web/style.css`, `web/app.js` |
 | 06 | [Close-out](06-close-out.md) | 05 | `README.md`, `CHANGELOG.md`, `AGENTS.md`, this folder |
 
 ## Waves
