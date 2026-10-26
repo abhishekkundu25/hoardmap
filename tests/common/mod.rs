@@ -86,11 +86,7 @@ impl OpenStub {
         for name in ["open", "xdg-open"] {
             let path = dir.join(name);
             fs::write(&path, &script).expect("write stub");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         OpenStub { dir, marker }
     }

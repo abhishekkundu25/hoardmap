@@ -1,7 +1,5 @@
 "use strict";
 
-// Pure helpers.
-
 const UNITS = ["KB", "MB", "GB", "TB", "PB"];
 
 // Base 1000 like Finder: "12 bytes", "340 KB", "34.5 MB", "1.2 GB".
@@ -130,6 +128,7 @@ const el = {
   errors: $("errors"),
   errorRows: $("error-rows"),
   errorsTitle: $("errors-title"),
+  errorsHint: $("errors-hint"),
   errorsClose: $("errors-close"),
 };
 
@@ -241,10 +240,10 @@ function renderStatus() {
 
 function renderControls() {
   const s = store.status;
-  const scanning = s && s.state === "scanning";
+  const scanning = Boolean(s && s.state === "scanning");
   const loaded = store.loadedPath !== null;
-  el.scan.disabled = Boolean(scanning);
-  el.rescan.disabled = Boolean(scanning) || !(s && s.path);
+  el.scan.disabled = scanning;
+  el.rescan.disabled = scanning || !(s && s.path);
   const selected = store.selection !== null ? nodes.get(store.selection) : null;
   el.open.disabled = !loaded || !selected;
   el.zoom.disabled = !loaded || !selected || selected.kind !== "dir" || store.selection === store.root;
@@ -259,6 +258,7 @@ async function showErrors() {
     const data = await getJSON("/api/errors");
     el.errorsTitle.textContent = `${formatCount(data.count)} unreadable ${data.count === 1 ? "folder" : "folders"}`;
     el.errorRows.textContent = "";
+    el.errorsHint.hidden = !data.items.some((item) => item.error.startsWith("Operation not permitted"));
     for (const item of data.items) {
       const tr = document.createElement("tr");
       const path = document.createElement("td");
@@ -422,7 +422,7 @@ async function reveal(id) {
     const node = await fetchNode(id);
     const chain = [];
     let parent = node.parent;
-    while (parent !== null && parent !== undefined) {
+    while (parent !== null) {
       const ancestor = await fetchNode(parent);
       chain.push(parent);
       parent = ancestor.parent;
@@ -436,7 +436,7 @@ async function reveal(id) {
 }
 
 async function openInFinder(id) {
-  if (id === null || id === undefined || store.loadedPath === null) return;
+  if (id === null || store.loadedPath === null) return;
   try {
     await postJSON("/api/open", { id });
   } catch (e) {
@@ -490,7 +490,7 @@ el.list.addEventListener("keydown", (event) => {
       if (index < 0) return move(0);
       const row = rows[index];
       if (expanded.has(row.id)) collapse(row.id);
-      else if (row.node.parent !== null && row.node.parent !== undefined) select(row.node.parent, { scroll: true });
+      else if (row.node.parent !== null) select(row.node.parent, { scroll: true });
       break;
     }
     case "Enter":
@@ -671,9 +671,8 @@ el.canvas.addEventListener("mousemove", async (event) => {
       if (node.kind === "dir") size.textContent += `, ${formatCount(node.files)} files`;
       el.tooltip.append(path, size);
       el.tooltip.hidden = false;
-    } catch (e) {
+    } catch {
       hideTooltip();
-      return;
     }
   }
   if (!el.tooltip.hidden) placeTooltip(event);
@@ -698,9 +697,7 @@ new ResizeObserver(() => {
   scheduleTreemap();
 }).observe(el.pane);
 
-if (window.matchMedia) {
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawTreemap);
-}
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawTreemap);
 
 function renderCaption() {
   const node = nodes.get(store.root);
@@ -844,9 +841,8 @@ el.extRows.addEventListener("click", (event) => {
 
 function renderLargest(data) {
   el.largestRows.textContent = "";
-  const mode = store.mode;
   for (const item of data.items) {
-    const bytes = mode === "physical" ? item.physical : item.size;
+    const bytes = bytesOf(item, store.mode);
     const tr = document.createElement("tr");
     tr.dataset.id = item.id;
     if (item.id === store.selection) tr.classList.add("selected");
@@ -876,12 +872,13 @@ el.largestRows.addEventListener("dblclick", (event) => {
   if (tr) openInFinder(Number(tr.dataset.id));
 });
 
-for (const tab of document.querySelectorAll('.tabs [role="tab"]')) {
+const tabs = document.querySelectorAll('.tabs [role="tab"]');
+for (const tab of tabs) {
   tab.addEventListener("click", () => {
-    for (const other of document.querySelectorAll('.tabs [role="tab"]')) {
+    for (const other of tabs) {
       const on = other === tab;
       other.setAttribute("aria-selected", String(on));
-      document.getElementById(other.getAttribute("aria-controls")).hidden = !on;
+      $(other.getAttribute("aria-controls")).hidden = !on;
     }
   });
 }
@@ -909,8 +906,8 @@ async function startScan(path) {
   }
 }
 
-// Forgets the loaded tree and loads the new one once a scan has finished.
-async function loadTree() {
+// Drops the loaded tree and everything that pointed into it.
+function forgetTree() {
   generation += 1;
   nodes.clear();
   expanded.clear();
@@ -919,8 +916,14 @@ async function loadTree() {
   store.root = 0;
   store.highlightExt = null;
   store.layout = null;
-  store.loadedPath = store.status.path;
+  store.loadedPath = null;
   hideTooltip();
+}
+
+// Loads the new tree once a scan has finished.
+async function loadTree() {
+  forgetTree();
+  store.loadedPath = store.status.path;
   try {
     await fetchNode(0);
   } catch (e) {
@@ -939,16 +942,7 @@ async function loadTree() {
 }
 
 function clearTree() {
-  generation += 1;
-  nodes.clear();
-  pending.clear();
-  expanded.clear();
-  store.selection = null;
-  store.root = 0;
-  store.highlightExt = null;
-  store.layout = null;
-  store.loadedPath = null;
-  hideTooltip();
+  forgetTree();
   renderList();
   renderCaption();
   renderControls();
@@ -969,22 +963,14 @@ function applyStatus(status) {
   const becameDone = status.state === "done" && (!previous || previous.state !== "done" || store.loadedPath === null);
   if (becameDone) {
     loadTree();
-  } else if (status.state === "scanning" && store.loadedPath !== null) {
-    clearTree();
-  } else if (status.state === "failed" && store.loadedPath !== null) {
+  } else if ((status.state === "scanning" || status.state === "failed") && store.loadedPath !== null) {
     clearTree();
   }
 }
 
 function connectEvents() {
   const source = new EventSource("/api/events");
-  source.addEventListener("status", (event) => {
-    try {
-      applyStatus(JSON.parse(event.data));
-    } catch (e) {
-      showMessage(`Bad status event: ${e.message}`, true);
-    }
-  });
+  source.addEventListener("status", (event) => applyStatus(JSON.parse(event.data)));
   source.addEventListener("error", () => {
     if (source.readyState === EventSource.CLOSED) {
       showMessage("Connection to the server lost", true);

@@ -140,7 +140,7 @@ fn node_json(id: NodeId, node: &Node) -> Value {
     })
 }
 
-fn lossy(path: &Path) -> String {
+pub(crate) fn lossy(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 

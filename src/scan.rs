@@ -111,10 +111,7 @@ impl Ctx<'_> {
                 path: path.to_string_lossy().into_owned(),
                 error: err.to_string(),
             };
-            self.errors
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(error);
+            self.errors.lock().unwrap().push(error);
         }
     }
 }
@@ -146,7 +143,7 @@ pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
 
     Ok(Tree {
         nodes,
-        errors: ctx.errors.into_inner().unwrap_or_else(|e| e.into_inner()),
+        errors: ctx.errors.into_inner().unwrap(),
         error_count: ctx.error_count.load(AtomicOrdering::Relaxed),
     })
 }

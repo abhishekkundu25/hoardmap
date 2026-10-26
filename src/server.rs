@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::api;
+use crate::api::{self, lossy};
 use crate::cli::Options;
 use crate::scan::{self, Progress};
 use crate::tree::Tree;
@@ -82,7 +82,6 @@ impl App {
 
     /// The `/api/status` document for the current state.
     pub fn status(&self) -> serde_json::Value {
-        let lossy = |p: &PathBuf| p.to_string_lossy().into_owned();
         match &*self.state.lock().unwrap() {
             State::Idle => status_json("idle", None, (0, 0, 0), 0, 0, None),
             State::Scanning {
