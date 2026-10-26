@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-26
+
 - Faster scans on macOS: folders are listed with `getattrlistbulk`, which returns a batch of entries with their sizes in one call instead of one `lstat` per file. About 20 to 40 percent faster on a warm cache. Other systems keep the portable scanner, and `HOARDMAP_SCANNER=portable` selects it on a Mac.
+- The README shows the app, with CI and release badges and a download link.
 
 ## 0.1.0 — 2026-10-26
 
