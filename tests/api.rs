@@ -122,6 +122,12 @@ fn status_reaches_done_with_the_fixture_totals() {
     assert!(status["physical"].as_u64().unwrap() > 0);
     assert_eq!(status["dirs"], 4);
     assert_eq!(status["files"], if fx.locked_unreadable { 6 } else { 7 });
+    let (total, free) = (&status["disk"]["total"], &status["disk"]["free"]);
+    assert!(total.as_u64().unwrap() > 0, "{status}");
+    assert!(
+        free.as_u64().unwrap() <= total.as_u64().unwrap(),
+        "{status}"
+    );
     assert_eq!(
         status["error_count"],
         if fx.locked_unreadable { 1 } else { 0 }
@@ -660,4 +666,39 @@ fn access_reports_the_grant_and_opens_the_settings_pane() {
     let (status, _) = post_json(&server, "/api/access/reveal", "{}");
     assert_eq!(status, 404);
     assert!(server.is_running());
+}
+
+#[test]
+fn stop_needs_a_running_scan_and_a_json_body() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let (status, json) = post_json(&server, "/api/scan/stop", "{}");
+    assert_eq!(status, 409, "{json}");
+    assert_eq!(json["error"], "no scan is running");
+    let (status, _, _) = server.post("/api/scan/stop", None, "");
+    assert_eq!(status, 415);
+    assert_eq!(server.status()["stopped"], false);
+}
+
+#[test]
+fn volumes_lists_the_startup_disk_and_home() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let (status, json) = get_json(&server, "/api/volumes");
+    assert_eq!(status, 200);
+    let volumes = json["volumes"].as_array().expect("volumes");
+    let startup = &volumes[0];
+    assert_eq!(startup["kind"], "startup", "{json}");
+    assert_eq!(startup["path"], "/");
+    assert!(startup["total"].as_u64().unwrap() >= startup["free"].as_u64().unwrap());
+    for v in volumes {
+        assert!(
+            ["startup", "drive", "network"].contains(&v["kind"].as_str().unwrap()),
+            "{v}"
+        );
+    }
+    assert!(json["home"].is_string());
+    // The folder picker opens a dialog, so only its guard is checked here.
+    let (status, _, _) = server.post("/api/choose", None, "");
+    assert_eq!(status, 415);
 }

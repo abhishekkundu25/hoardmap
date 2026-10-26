@@ -23,20 +23,19 @@
 //! link there; the finished tree counts it once.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, Metadata};
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::{env, mem};
 
 use rayon::prelude::*;
 
 use crate::access;
-use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ScanError, Tree};
+use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ROOT, ScanError, Tree};
 
 /// Counters a running scan increments and a reader samples.
 #[derive(Debug, Default)]
@@ -49,6 +48,26 @@ pub struct Progress {
     pub bytes: AtomicU64,
     /// Bytes allocated on disk for the non-directory entries seen.
     pub physical: AtomicU64,
+    /// The entries down to [`LIVE_DEPTH`] that the scan has finished, for [`partial`].
+    pub finished: Mutex<Vec<Finished>>,
+    /// Set to end the scan early: folders not read yet are left empty.
+    pub stop: AtomicBool,
+}
+
+/// How deep below the root a running scan reports finished entries.
+pub const LIVE_DEPTH: usize = 3;
+
+/// A file, or a folder with its subtree totals, that a running scan has finished.
+#[derive(Clone, Debug)]
+pub struct Finished {
+    /// File names from the root down to this entry.
+    pub path: Vec<String>,
+    pub kind: Kind,
+    pub size: u64,
+    pub physical: u64,
+    pub files: u32,
+    pub dirs: u32,
+    pub mtime: i64,
 }
 
 impl Progress {
@@ -74,6 +93,9 @@ struct Local {
     ino: u64,
     nlink: u64,
     dev: u64,
+    /// Subtree counts, kept as the walk builds folders so a preview reads them at once.
+    files: u32,
+    dirs: u32,
     children: Vec<Local>,
 }
 
@@ -88,22 +110,41 @@ impl Local {
             ino: stat.ino,
             nlink: stat.nlink,
             dev: stat.dev,
+            files: 0,
+            dirs: 0,
             children: Vec::new(),
         }
     }
 
+    /// A folder with the sums of its children: hard links counted each time, which the
+    /// flatten corrects; good enough for a running scan's preview.
     fn dir(name: String, stat: &Stat, children: Vec<Local>) -> Local {
-        Local {
+        let mut local = Local {
             name,
             kind: Kind::Dir,
-            size: children.iter().map(|c| c.size).sum(),
+            size: 0,
             physical: 0,
             mtime: stat.mtime,
             ino: stat.ino,
             nlink: stat.nlink,
             dev: stat.dev,
-            children,
+            files: 0,
+            dirs: 0,
+            children: Vec::new(),
+        };
+        for child in &children {
+            local.size += child.size;
+            local.physical += child.physical;
+            local.mtime = local.mtime.max(child.mtime);
+            if child.kind == Kind::Dir {
+                local.files += child.files;
+                local.dirs += 1 + child.dirs;
+            } else {
+                local.files += 1;
+            }
         }
+        local.children = children;
+        local
     }
 }
 
@@ -185,6 +226,34 @@ struct Ctx<'a> {
     error_count: AtomicU64,
     /// Folders below the root that are counted but not read.
     skip: Vec<PathBuf>,
+    root: &'a Path,
+}
+
+impl Ctx<'_> {
+    /// Hands entries of a folder near the root to [`Progress::finished`].
+    fn finish(&self, dir: &Path, done: &[&Local]) {
+        let Ok(rel) = dir.strip_prefix(self.root) else {
+            return;
+        };
+        let parent: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let entries = done.iter().map(|local| {
+            let mut path = parent.clone();
+            path.push(local.name.clone());
+            Finished {
+                path,
+                kind: local.kind,
+                size: local.size,
+                physical: local.physical,
+                files: local.files,
+                dirs: local.dirs,
+                mtime: local.mtime,
+            }
+        });
+        self.progress.finished.lock().unwrap().extend(entries);
+    }
 }
 
 impl Ctx<'_> {
@@ -206,6 +275,97 @@ impl Ctx<'_> {
 /// the tree's `errors`.
 pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
     scan_with(path, progress, Method::default())
+}
+
+/// A tree of what a running scan has finished so far, named `root`. Folders still
+/// being read show the sum of their finished entries; finished folders deeper than
+/// [`LIVE_DEPTH`] show their totals without children.
+pub fn partial(root: &str, finished: &[Finished]) -> Tree {
+    let mut nodes = vec![Node {
+        name: root.to_string(),
+        parent: None,
+        kind: Kind::Dir,
+        size: 0,
+        physical: 0,
+        files: 0,
+        dirs: 0,
+        mtime: 0,
+        children: Vec::new(),
+        hard_link: false,
+    }];
+    // Finished nodes keep their reported totals; the others add up their children.
+    let mut fixed = vec![false];
+    let mut index: HashMap<(NodeId, &str), NodeId> = HashMap::new();
+    for entry in finished {
+        let mut at = ROOT;
+        for (depth, name) in entry.path.iter().enumerate() {
+            let last = depth + 1 == entry.path.len();
+            at = match index.get(&(at, name.as_str())) {
+                Some(&id) => id,
+                None => {
+                    let id = nodes.len() as NodeId;
+                    nodes.push(Node {
+                        name: name.clone(),
+                        parent: Some(at),
+                        kind: Kind::Dir,
+                        size: 0,
+                        physical: 0,
+                        files: 0,
+                        dirs: 0,
+                        mtime: 0,
+                        children: Vec::new(),
+                        hard_link: false,
+                    });
+                    fixed.push(false);
+                    nodes[at as usize].children.push(id);
+                    index.insert((at, name.as_str()), id);
+                    id
+                }
+            };
+            if last {
+                let node = &mut nodes[at as usize];
+                node.kind = entry.kind;
+                node.size = entry.size;
+                node.physical = entry.physical;
+                node.files = entry.files;
+                node.dirs = entry.dirs;
+                node.mtime = entry.mtime;
+                fixed[at as usize] = true;
+            }
+        }
+    }
+    // A parent is always created before its children, so a reverse pass sums upward.
+    for id in (1..nodes.len()).rev() {
+        let child = &nodes[id];
+        let (size, physical, mtime) = (child.size, child.physical, child.mtime);
+        let (files, dirs) = if child.kind == Kind::Dir {
+            (child.files, 1 + child.dirs)
+        } else {
+            (1, 0)
+        };
+        let parent = child.parent.unwrap() as usize;
+        if !fixed[parent] {
+            let p = &mut nodes[parent];
+            p.size += size;
+            p.physical += physical;
+            p.files += files;
+            p.dirs += dirs;
+            p.mtime = p.mtime.max(mtime);
+        }
+    }
+    for id in 0..nodes.len() {
+        let mut children = mem::take(&mut nodes[id].children);
+        children.sort_by(|&a, &b| {
+            let (a, b) = (&nodes[a as usize], &nodes[b as usize]);
+            by_size_then_name((a.size, &a.name), (b.size, &b.name))
+        });
+        nodes[id].children = children;
+    }
+    Tree {
+        nodes,
+        errors: Vec::new(),
+        error_count: 0,
+    }
 }
 
 /// Makes reading an item that lives only in the cloud fail at once instead of
@@ -273,9 +433,10 @@ pub fn scan_skipping(
         errors: Mutex::new(Vec::new()),
         error_count: AtomicU64::new(0),
         skip,
+        root: path,
     };
     let entries = list(path, &ctx)?;
-    let children = build(path, entries, &ctx);
+    let children = build(path, entries, &ctx, 0);
     let root = Local::dir(
         path.to_string_lossy().into_owned(),
         &Stat::of(&meta),
@@ -332,9 +493,13 @@ fn list_portable(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
     Ok(out)
 }
 
-fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
+/// `depth` is how far `dir` is below the root, which is 0.
+fn read_children(dir: &Path, ctx: &Ctx, depth: usize) -> Vec<Local> {
+    if ctx.progress.stop.load(AtomicOrdering::Relaxed) {
+        return Vec::new();
+    }
     match list(dir, ctx) {
-        Ok(entries) => build(dir, entries, ctx),
+        Ok(entries) => build(dir, entries, ctx, depth),
         Err(e) => {
             ctx.record(dir, &e);
             Vec::new()
@@ -342,8 +507,11 @@ fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
     }
 }
 
-/// Counts `entries`, then reads the subfolders on the same volume in parallel.
-fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
+/// Counts `entries`, then reads the subfolders on the same volume in parallel. `depth`
+/// is how far `dir` is below the root, which is 0.
+fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx, depth: usize) -> Vec<Local> {
+    // Only entries this shallow go into the running scan's preview.
+    let live = depth < LIVE_DEPTH;
     let mut children = Vec::with_capacity(entries.len());
     let mut subdirs: Vec<(String, Stat)> = Vec::new();
     for (name, stat) in entries {
@@ -365,14 +533,22 @@ fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
             children.push(Local::leaf(name, &stat));
         }
     }
+    if live {
+        ctx.finish(dir, &children.iter().collect::<Vec<_>>());
+    }
     let descend = |(name, stat): (String, Stat)| {
         let path = dir.join(&name);
-        if ctx.skip.contains(&path) {
+        let grandchildren = if ctx.skip.contains(&path) {
             ctx.record(&path, &io::Error::other(NOT_SCANNED));
-            return Local::dir(name, &stat, Vec::new());
+            Vec::new()
+        } else {
+            read_children(&path, ctx, depth + 1)
+        };
+        let local = Local::dir(name, &stat, grandchildren);
+        if live {
+            ctx.finish(dir, &[&local]);
         }
-        let grandchildren = read_children(&path, ctx);
-        Local::dir(name, &stat, grandchildren)
+        local
     };
     match subdirs.len() {
         0 => {}
@@ -597,6 +773,7 @@ fn flatten(
         nlink,
         dev,
         mut children,
+        ..
     } = local;
     let id = nodes.len() as NodeId;
     let mut hard_link = false;

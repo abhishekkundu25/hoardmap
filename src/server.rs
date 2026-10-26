@@ -9,8 +9,9 @@
 use std::convert::Infallible;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -38,8 +39,35 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 /// How often the status goes out on the event streams while a scan runs.
 const TICK: Duration = Duration::from_millis(250);
 
+/// Ticks between rebuilds of a running scan's preview tree.
+const LIVE_EVERY: u32 = 4;
+
+/// A running scan's preview: a tree of what it has finished so far.
+#[derive(Debug)]
+pub struct Live {
+    pub tree: Arc<Tree>,
+    pub colours: Colours,
+    /// Finished entries it was built from.
+    pub entries: usize,
+}
+
 /// The `start_scan` error while a scan runs; the API answers it with 409.
 pub const SCAN_RUNNING: &str = "a scan is running";
+
+/// The `stop_scan` error when none runs; the API answers it with 409.
+pub const NO_SCAN: &str = "no scan is running";
+
+/// How long a stopped scan may take to wind down before its preview replaces it.
+const STOP_WAIT: Duration = Duration::from_millis(1500);
+
+/// The state of a scan whose folder disappeared, such as a drive unplugged mid-scan.
+fn gone(path: PathBuf) -> State {
+    let error = format!(
+        "{} went away during the scan; was the drive disconnected?",
+        path.display()
+    );
+    State::Failed { path, error }
+}
 
 /// What the server knows about the scan.
 #[derive(Debug)]
@@ -49,12 +77,20 @@ pub enum State {
         path: PathBuf,
         progress: Arc<Progress>,
         started: Instant,
+        /// What the scan has finished so far, rebuilt every [`LIVE_EVERY`] ticks; the
+        /// tree endpoints answer from it until the scan is done.
+        live: Option<Live>,
     },
     Done {
         path: PathBuf,
         tree: Arc<Tree>,
         duration: Duration,
         colours: Colours,
+        /// Stopped before the end: the folders it had not read count as empty.
+        stopped: bool,
+        /// The running scan's preview stood in for a scan that did not wind down: only
+        /// the top levels, and no unreadable folders.
+        preview: bool,
     },
     Failed {
         path: PathBuf,
@@ -73,6 +109,10 @@ pub struct App {
     pub native: bool,
     /// The folder to scan first; the idle status names it so the page can start it.
     pub start: Option<PathBuf>,
+    /// `(total, free)` of the scanned folder's volume, read when a scan starts and ends
+    /// rather than on each status, since a network drive that stopped answering blocks
+    /// the read.
+    disk: Mutex<Option<(u64, u64)>>,
 }
 
 impl App {
@@ -84,11 +124,24 @@ impl App {
             port,
             native,
             start: None,
+            disk: Mutex::new(None),
         }
     }
 
-    /// The `/api/status` document for the current state.
+    fn read_disk(&self, path: &Path) {
+        *self.disk.lock().unwrap() = disk(path);
+    }
+
+    /// The `/api/status` document for the current state, with the size and free space
+    /// of the volume the folder is on.
     pub fn status(&self) -> serde_json::Value {
+        let mut status = self.state_json();
+        let disk = *self.disk.lock().unwrap();
+        status["disk"] = json!(disk.map(|(total, free)| json!({ "total": total, "free": free })));
+        status
+    }
+
+    fn state_json(&self) -> serde_json::Value {
         match &*self.state.lock().unwrap() {
             State::Idle => status_json(
                 "idle",
@@ -102,22 +155,30 @@ impl App {
                 path,
                 progress,
                 started,
-            } => status_json(
-                "scanning",
-                Some(lossy(path)),
-                progress.snapshot(),
-                started.elapsed().as_millis(),
-                0,
-                None,
-            ),
+                live,
+            } => {
+                let mut status = status_json(
+                    "scanning",
+                    Some(lossy(path)),
+                    progress.snapshot(),
+                    started.elapsed().as_millis(),
+                    0,
+                    None,
+                );
+                // Changes whenever the preview does, so the page knows to reload it.
+                status["live"] = json!(live.as_ref().map(|l| l.entries));
+                status
+            }
             State::Done {
                 path,
                 tree,
                 duration,
+                stopped,
+                preview,
                 ..
             } => {
                 let root = tree.root();
-                status_json(
+                let mut status = status_json(
                     "done",
                     Some(lossy(path)),
                     (
@@ -129,7 +190,10 @@ impl App {
                     duration.as_millis(),
                     tree.error_count,
                     None,
-                )
+                );
+                status["stopped"] = json!(stopped);
+                status["preview"] = json!(preview);
+                status
             }
             State::Failed { path, error } => {
                 status_json("failed", Some(lossy(path)), (0, 0, 0, 0), 0, 0, Some(error))
@@ -160,8 +224,10 @@ impl App {
                 path: path.clone(),
                 progress: progress.clone(),
                 started,
+                live: None,
             };
         }
+        self.read_disk(&path);
         self.notify_status();
         let app = self.clone();
         let ticker = progress.clone();
@@ -171,38 +237,133 @@ impl App {
         Ok(())
     }
 
-    fn finish_scan(&self, path: PathBuf, progress: &Progress, started: Instant) {
+    fn finish_scan(&self, path: PathBuf, progress: &Arc<Progress>, started: Instant) {
+        let path_for_disk = path.clone();
         let next = match scan::scan(&path, progress) {
+            Ok(_) if !path.exists() => gone(path),
             Ok(tree) => State::Done {
                 path,
                 colours: Colours::new(&tree),
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
+                stopped: progress.stop.load(AtomicOrdering::Relaxed),
+                preview: false,
             },
             Err(error) => State::Failed {
                 path,
                 error: error.to_string(),
             },
         };
-        *self.state.lock().unwrap() = next;
+        self.read_disk(&path_for_disk);
+        self.replace_scan(progress, next);
+    }
+
+    /// Puts `next` in place of the scan `progress` belongs to; false when that scan is
+    /// no longer the current state, which is then left alone.
+    fn replace_scan(&self, progress: &Arc<Progress>, next: State) -> bool {
+        {
+            let mut state = self.state.lock().unwrap();
+            if !matches!(&*state, State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress)) {
+                return false;
+            }
+            *state = next;
+        }
         self.notify_status();
+        true
+    }
+
+    /// Asks the running scan to stop. It ends with what it has read; if it is still
+    /// stuck after [`STOP_WAIT`], for instance on a network drive that stopped
+    /// answering, its preview takes its place at once.
+    pub fn stop_scan(self: &Arc<App>) -> Result<(), String> {
+        let (path, progress, started) = match &*self.state.lock().unwrap() {
+            State::Scanning {
+                path,
+                progress,
+                started,
+                ..
+            } => (path.clone(), progress.clone(), *started),
+            _ => return Err(NO_SCAN.to_string()),
+        };
+        progress.stop.store(true, AtomicOrdering::Relaxed);
+        let app = self.clone();
+        thread::spawn(move || {
+            thread::sleep(STOP_WAIT);
+            let finished = progress.finished.lock().unwrap().clone();
+            let tree = scan::partial(&lossy(&path), &finished);
+            app.replace_scan(
+                &progress,
+                State::Done {
+                    path,
+                    colours: Colours::new(&tree),
+                    tree: Arc::new(tree),
+                    duration: started.elapsed(),
+                    stopped: true,
+                    preview: true,
+                },
+            );
+        });
+        Ok(())
     }
 
     /// The scan's progress counters identify it, so a ticker outlives neither its own
     /// scan nor into the next one.
     fn tick(&self, progress: &Arc<Progress>) {
-        loop {
+        let mut built = 0;
+        for ticks in 1.. {
             thread::sleep(TICK);
-            let running = matches!(
-                &*self.state.lock().unwrap(),
-                State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress)
-            );
-            if !running {
+            let (root, path) = match &*self.state.lock().unwrap() {
+                State::Scanning {
+                    progress: p, path, ..
+                } if Arc::ptr_eq(p, progress) => (lossy(path), path.clone()),
+                _ => return,
+            };
+            if ticks % LIVE_EVERY == 0 && !path.exists() {
+                // An unplugged drive: end now rather than wait on reads that may never return.
+                progress.stop.store(true, AtomicOrdering::Relaxed);
+                self.replace_scan(progress, gone(path));
                 return;
+            }
+            if ticks % LIVE_EVERY == 0 {
+                let finished = {
+                    let finished = progress.finished.lock().unwrap();
+                    (finished.len() != built).then(|| finished.clone())
+                };
+                if let Some(finished) = finished {
+                    built = finished.len();
+                    let tree = scan::partial(&root, &finished);
+                    let live = Live {
+                        colours: Colours::new(&tree),
+                        tree: Arc::new(tree),
+                        entries: built,
+                    };
+                    if let State::Scanning {
+                        progress: p,
+                        live: slot,
+                        ..
+                    } = &mut *self.state.lock().unwrap()
+                        && Arc::ptr_eq(p, progress)
+                    {
+                        *slot = Some(live);
+                    }
+                }
             }
             self.notify_status();
         }
     }
+}
+
+/// `(total, free)` bytes of the volume holding `path`; free is what an ordinary user
+/// may still write.
+pub fn disk(path: &Path) -> Option<(u64, u64)> {
+    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid C string and a statvfs the call fills in.
+    if unsafe { libc::statvfs(cpath.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let block = stat.f_frsize as u64;
+    Some((stat.f_blocks as u64 * block, stat.f_bavail as u64 * block))
 }
 
 fn status_json(
@@ -416,6 +577,7 @@ pub fn spawn(config: Config) -> io::Result<u16> {
     let port = listener.local_addr()?.port();
     let mut app = App::new(config.linger, port, config.native);
     app.start = Some(config.path.clone());
+    app.read_disk(&config.path);
     let app = Arc::new(app);
     if config.scan_at_start
         && let Err(error) = app.start_scan(config.path.clone())

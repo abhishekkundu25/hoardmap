@@ -16,6 +16,7 @@ deletes, moves or renames anything; do not add such an action.
   statistics.
 - `src/server.rs`: HTTP, static files, browser presence, exit when the last tab is gone.
 - `src/api.rs`: the JSON endpoints, documented in `docs/specs/hoardmap.md`.
+- `src/volumes.rs`: the disks the Disks menu offers, and the macOS folder picker.
 - `assets/`: the logo. `hoardmap.svg` is the source, served as `/logo.svg` and
   embedded with `include_str!`; `hoardmap.icns` is the app icon and
   `dmg-background.tiff` the DMG window, both made by `tools/make-images.sh` (needs

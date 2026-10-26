@@ -50,17 +50,30 @@ function joinPath(parent, name) {
   return parent.endsWith("/") ? parent + name : `${parent}/${name}`;
 }
 
+// Children a folder lists before the rest go into one "more" row, and how many more
+// each click on that row adds. Drawing every row of a 100,000-file folder takes seconds.
+const SHOWN = 200;
+const SHOW_MORE = 1000;
+
 // Rows of the list in display order: every node reachable from `rootId` through
-// expanded nodes whose children are loaded.
-function flatten(cache, expanded, rootId) {
+// expanded nodes whose children are loaded, siblings in the order `order(node)` gives. A folder
+// lists its first `shown.get(id)` (default SHOWN) children, then a row standing for
+// the rest: { more: { parent, count, children } }.
+function flatten(cache, expanded, rootId, order, shown) {
   const rows = [];
   const walk = (id, depth, parent, path) => {
     const node = cache.get(id);
     if (!node) return;
     rows.push({ id, depth, node, parent, path });
     if (expanded.has(id) && Array.isArray(node.children)) {
-      for (const child of node.children) {
+      const children = order(node);
+      const limit = shown.get(id) ?? SHOWN;
+      for (const child of children.slice(0, limit)) {
         walk(child.id, depth + 1, node, joinPath(path, child.name));
+      }
+      if (children.length > limit) {
+        const rest = children.slice(limit);
+        rows.push({ id: null, depth: depth + 1, node, parent: node, more: { parent: id, count: rest.length, children: rest } });
       }
     }
   };
@@ -80,6 +93,71 @@ function shade(hex, amount) {
   const g = mix((n >> 8) & 255);
   const b = mix(n & 255);
   return `rgb(${r},${g},${b})`;
+}
+
+// What each sortable column orders by, and the direction a first click picks.
+const SORTS = {
+  name: { first: "asc" },
+  size: { first: "desc" },
+  items: { first: "desc", value: (n) => n.files + n.dirs },
+  files: { first: "desc", value: (n) => n.files },
+  dirs: { first: "desc", value: (n) => n.dirs },
+  mtime: { first: "desc", value: (n) => n.mtime },
+};
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const byName = (a, b) => collator.compare(a.name, b.name);
+
+// The sibling order for the list's current sort; ties fall back to the name.
+function siblingOrder() {
+  const { key, dir } = store.sort;
+  const sign = dir === "asc" ? 1 : -1;
+  if (key === "name") return (a, b) => sign * byName(a, b);
+  const value = key === "size" ? (n) => bytesOf(n, store.mode) : SORTS[key].value;
+  return (a, b) => sign * (value(a) - value(b)) || byName(a, b);
+}
+
+// A folder's children in the list's order, sorted once per sort, size mode and fetch:
+// the list re-renders and the arrow keys walk it far more often than any of those change.
+const sortedCache = new WeakMap();
+
+function sortedChildren(node) {
+  const key = `${store.sort.key}:${store.sort.dir}:${store.mode}`;
+  const hit = sortedCache.get(node.children);
+  if (hit && hit.key === key) return hit.sorted;
+  const sorted = [...node.children].sort(siblingOrder());
+  sortedCache.set(node.children, { key, sorted });
+  return sorted;
+}
+
+function loadSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("sort"));
+    if (saved && SORTS[saved.key] && (saved.dir === "asc" || saved.dir === "desc")) return saved;
+  } catch {}
+  return { key: "size", dir: "desc" };
+}
+
+function setSort(key) {
+  const same = store.sort.key === key;
+  const dir = same ? (store.sort.dir === "asc" ? "desc" : "asc") : SORTS[key].first;
+  store.sort = { key, dir };
+  try {
+    localStorage.setItem("sort", JSON.stringify(store.sort));
+  } catch {}
+  renderSortHeads();
+  renderList();
+}
+
+function renderSortHeads() {
+  for (const th of document.querySelectorAll("#list-head th[data-sort]")) {
+    if (th.dataset.sort === store.sort.key) {
+      th.setAttribute("aria-sort", store.sort.dir === "asc" ? "ascending" : "descending");
+    } else {
+      th.removeAttribute("aria-sort");
+    }
+    th.title = `Sort by ${th.textContent.trim().toLowerCase()}`;
+  }
 }
 
 function bytesOf(node, mode) {
@@ -104,16 +182,25 @@ const store = {
   message: null,
   loadedPath: null,
   access: null,
+  // The list's sibling order; size, largest first, unless the viewer picked another.
+  sort: loadSort(),
 };
 
 const nodes = new Map();
 const expanded = new Set();
+// Folder id to how many of its children the list shows, when more than SHOWN.
+const shown = new Map();
 const pending = new Map();
 // Bumped when the tree is replaced so answers for the old tree are dropped.
 let generation = 0;
 
 const $ = (id) => document.getElementById(id);
 const el = {
+  places: $("places"),
+  disk: $("disk"),
+  diskScan: $("disk-scan"),
+  diskOther: $("disk-other"),
+  diskLegend: $("disk-legend"),
   path: $("path"),
   scanForm: $("scan-form"),
   scan: $("scan"),
@@ -202,7 +289,36 @@ function showMessage(text, isError) {
 
 // Status line.
 
+// The volume the folder is on: this folder, everything else, and what is free. The
+// folder's part is its bytes on disk, so it compares with the volume in either mode.
+function renderDisk() {
+  const s = store.status;
+  const d = s && s.disk;
+  el.disk.hidden = !d || !d.total;
+  if (el.disk.hidden) return;
+  const used = Math.max(0, d.total - d.free);
+  const scanned = Math.min(s.physical, used);
+  const width = (bytes) => `${((100 * bytes) / d.total).toFixed(2)}%`;
+  el.diskScan.style.width = width(scanned);
+  el.diskOther.style.width = width(used - scanned);
+  const parts = [
+    ["var(--accent)", s.state === "done" ? "This folder" : "Scanned so far", scanned],
+    ["var(--disk-other)", "Everything else", used - scanned],
+    ["var(--disk-free)", "Free", d.free],
+  ];
+  el.diskLegend.textContent = "";
+  for (const [color, label, bytes] of parts) {
+    const key = document.createElement("span");
+    key.className = "key";
+    key.style.background = color;
+    el.diskLegend.append(key, `${label} ${formatBytes(bytes)}`);
+  }
+  el.diskLegend.append(` · ${formatBytes(d.total)} disk`);
+  el.disk.title = `${formatPercent(percent(used, d.total))} of the disk is in use`;
+}
+
 function renderStatus() {
+  renderDisk();
   const s = store.status;
   el.status.textContent = "";
   if (!s) return;
@@ -231,6 +347,7 @@ function renderStatus() {
     case "done": {
       el.status.appendChild(path);
       add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(statusBytes(s))} in ${formatElapsed(s.elapsed_ms)}`);
+      if (s.stopped) add(" · stopped early, so these are partial", "error");
       if (s.error_count > 0) {
         const button = document.createElement("button");
         button.type = "button";
@@ -254,7 +371,9 @@ function renderControls() {
   const s = store.status;
   const scanning = Boolean(s && s.state === "scanning");
   const loaded = store.loadedPath !== null;
-  el.scan.disabled = scanning;
+  el.scan.textContent = scanning ? "Stop" : "Scan";
+  el.scan.title = scanning ? "Stop the scan and keep what it has read" : "Scan this folder";
+  el.places.disabled = scanning;
   el.rescan.disabled = scanning || !(s && s.path);
   const selected = store.selection !== null ? nodes.get(store.selection) : null;
   el.open.disabled = !loaded || !selected;
@@ -303,10 +422,10 @@ async function showErrors() {
 // Directory list.
 
 function renderList() {
-  const rows = flatten(nodes, expanded, 0);
+  const rows = flatten(nodes, expanded, 0, sortedChildren, shown);
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
-    fragment.appendChild(renderRow(row));
+    fragment.appendChild(row.more ? renderMore(row) : renderRow(row));
   }
   el.rows.textContent = "";
   el.rows.appendChild(fragment);
@@ -384,6 +503,43 @@ function renderRow({ id, depth, node, parent, path }) {
   return tr;
 }
 
+// The row standing for a folder's smaller children: their count and total, and a click
+// shows SHOW_MORE more of them.
+function renderMore({ depth, more }) {
+  const bytes = more.children.reduce((sum, c) => sum + bytesOf(c, store.mode), 0);
+  const tr = document.createElement("tr");
+  tr.className = "more";
+  tr.dataset.more = more.parent;
+  const name = document.createElement("td");
+  name.className = "name";
+  name.style.paddingLeft = `${4 + depth * 16 + 18}px`;
+  const label = more.count > SHOW_MORE ? `Show ${formatCount(SHOW_MORE)} more` : "Show all";
+  name.textContent = `+ ${formatCount(more.count)} more items · ${label}`;
+  const size = document.createElement("td");
+  size.className = "num";
+  size.textContent = formatBytes(bytes);
+  const rest = document.createElement("td");
+  rest.colSpan = 5;
+  tr.title = `${formatCount(more.count)} more items in this folder, ${formatCount(bytes)} bytes together`;
+  tr.append(name, size, rest);
+  return tr;
+}
+
+function showMore(parent) {
+  shown.set(parent, (shown.get(parent) ?? SHOWN) + SHOW_MORE);
+  renderList();
+}
+
+// Makes sure the list does not hide `id` in its parent's "more" row.
+function unhide(id) {
+  const node = nodes.get(id);
+  const parent = node && node.parent !== null ? nodes.get(node.parent) : null;
+  if (!parent || !Array.isArray(parent.children)) return;
+  const index = sortedChildren(parent).findIndex((c) => c.id === id);
+  const limit = shown.get(node.parent) ?? SHOWN;
+  if (index >= limit) shown.set(node.parent, index + 1);
+}
+
 function rowOf(id) {
   return el.rows.querySelector(`tr[data-id="${id}"]`);
 }
@@ -443,6 +599,8 @@ async function reveal(id) {
       parent = ancestor.parent;
     }
     for (const ancestor of chain) expanded.add(ancestor);
+    unhide(id);
+    for (const ancestor of chain) unhide(ancestor);
     renderList();
     select(id, { scroll: true });
   } catch (e) {
@@ -462,6 +620,10 @@ async function openInFinder(id) {
 el.rows.addEventListener("click", (event) => {
   const tr = event.target.closest("tr");
   if (!tr) return;
+  if (tr.dataset.more !== undefined) {
+    showMore(Number(tr.dataset.more));
+    return;
+  }
   const id = Number(tr.dataset.id);
   if (event.target.classList.contains("twisty")) {
     toggle(id);
@@ -472,13 +634,13 @@ el.rows.addEventListener("click", (event) => {
 
 el.rows.addEventListener("dblclick", (event) => {
   const tr = event.target.closest("tr");
-  if (!tr || event.target.classList.contains("twisty")) return;
+  if (!tr || tr.dataset.more !== undefined || event.target.classList.contains("twisty")) return;
   openInFinder(Number(tr.dataset.id));
 });
 
 el.list.addEventListener("keydown", (event) => {
   if (store.loadedPath === null) return;
-  const rows = flatten(nodes, expanded, 0);
+  const rows = flatten(nodes, expanded, 0, sortedChildren, shown).filter((r) => !r.more);
   if (rows.length === 0) return;
   const index = rows.findIndex((r) => r.id === store.selection);
   const move = (to) => {
@@ -833,7 +995,9 @@ let bottomRequest = 0;
 
 async function loadBottom() {
   const request = ++bottomRequest;
-  if (store.loadedPath === null) {
+  // A running scan's preview stops a few levels down, so its file lists would mislead.
+  const s = store.status;
+  if (store.loadedPath === null || s.state === "scanning" || s.preview) {
     el.extRows.textContent = "";
     el.largestRows.textContent = "";
     return;
@@ -965,7 +1129,67 @@ for (const tab of tabs) {
 
 el.scanForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  startScan(el.path.value.trim());
+  if (store.status && store.status.state === "scanning") stopScan();
+  else startScan(el.path.value.trim());
+});
+
+async function stopScan() {
+  try {
+    await postJSON("/api/scan/stop", {});
+  } catch (e) {
+    showMessage(e.message, true);
+  }
+}
+
+// The Disks menu: each disk with how full it is, the home folder, and the macOS folder
+// picker. Reloaded each time it is opened, since drives come and go.
+const CHOOSE = "choose:";
+
+// Opening the menu fires both mousedown and focus; one request serves both.
+let placesLoading = null;
+
+function loadPlaces() {
+  placesLoading ??= fillPlaces().finally(() => (placesLoading = null));
+  return placesLoading;
+}
+
+async function fillPlaces() {
+  let data;
+  try {
+    data = await getJSON("/api/volumes");
+  } catch {
+    return;
+  }
+  const options = [new Option("Disks", "")];
+  for (const v of data.volumes) {
+    const used = Math.max(0, v.total - v.free);
+    const detail = v.kind === "network" ? "network, slow to scan" : `${formatBytes(used)} of ${formatBytes(v.total)} used`;
+    options.push(new Option(`${v.name} — ${detail}`, v.path));
+  }
+  if (data.home) options.push(new Option("Home folder", data.home));
+  if (data.chooser) options.push(new Option("Choose a folder…", CHOOSE));
+  el.places.replaceChildren(...options);
+}
+
+el.places.addEventListener("mousedown", loadPlaces);
+el.places.addEventListener("focus", loadPlaces);
+el.places.addEventListener("change", async () => {
+  const value = el.places.value;
+  el.places.value = "";
+  if (!value) return;
+  let path = value;
+  if (value === CHOOSE) {
+    try {
+      const chosen = await postJSON("/api/choose", {});
+      if (!chosen) return;
+      path = chosen.path;
+    } catch (e) {
+      showMessage(e.message, true);
+      return;
+    }
+  }
+  el.path.value = path;
+  startScan(path);
 });
 
 el.rescan.addEventListener("click", () => {
@@ -989,6 +1213,7 @@ function forgetTree() {
   generation += 1;
   nodes.clear();
   expanded.clear();
+  shown.clear();
   pending.clear();
   store.selection = null;
   store.root = 0;
@@ -1001,14 +1226,18 @@ function forgetTree() {
 // Loads the new tree once a scan has finished.
 async function loadTree() {
   forgetTree();
+  const started = generation;
   store.loadedPath = store.status.path;
   try {
     await fetchNode(0);
   } catch (e) {
+    // A newer load replaced this one; it owns the view now.
+    if (started !== generation) return;
     store.loadedPath = null;
     showMessage(e.message, true);
     return;
   }
+  if (started !== generation) return;
   expanded.add(0);
   store.selection = 0;
   renderList();
@@ -1017,6 +1246,41 @@ async function loadTree() {
   renderHint();
   fetchTreemap();
   loadBottom();
+}
+
+// While a scan runs, reloads its preview tree at most every LIVE_MS, keeping the
+// expanded folders, the selection, the zoom and the highlighted type by path.
+const LIVE_MS = 2000;
+let liveLoading = false;
+let liveShownAt = 0;
+
+async function refreshLive() {
+  const live = store.status.live;
+  if (liveLoading || live === store.liveShown || Date.now() - liveShownAt < LIVE_MS) return;
+  liveLoading = true;
+  store.liveShown = live;
+  liveShownAt = Date.now();
+  try {
+    if (store.loadedPath === null) {
+      await loadTree();
+      return;
+    }
+    // A preview keeps each entry's id from one rebuild to the next, so the view keeps
+    // its ids and only fetches the figures again.
+    generation += 1;
+    nodes.clear();
+    pending.clear();
+    const keep = new Set([0, ...expanded, store.root, store.selection].filter((id) => id !== null));
+    await Promise.all([...keep].map((id) => fetchNode(id).catch(() => expanded.delete(id))));
+    renderList();
+    renderCaption();
+    renderControls();
+    fetchTreemap();
+  } catch {
+    // The tree moved on during the fetches; the next refresh catches up.
+  } finally {
+    liveLoading = false;
+  }
 }
 
 function clearTree() {
@@ -1039,11 +1303,14 @@ function applyStatus(status) {
   renderStatus();
   renderControls();
   const becameDone = status.state === "done" && (!previous || previous.state !== "done" || store.loadedPath === null);
+  const newScan = status.state === "scanning" && previous && previous.state !== "scanning";
   if (becameDone) {
+    store.liveShown = undefined;
     loadTree();
-  } else if ((status.state === "scanning" || status.state === "failed") && store.loadedPath !== null) {
+  } else if ((newScan || status.state === "failed") && store.loadedPath !== null) {
     clearTree();
   }
+  if (status.state === "scanning" && status.live != null) refreshLive();
 }
 
 function connectEvents() {
@@ -1204,6 +1471,12 @@ try {
   if (localStorage.getItem("view") === "icicle") store.view = "icicle";
 } catch {}
 renderControls();
+renderSortHeads();
+loadPlaces();
+document.getElementById("list-head").addEventListener("click", (event) => {
+  const th = event.target.closest("th[data-sort]");
+  if (th) setSort(th.dataset.sort);
+});
 
 const statusLoaded = getJSON("/api/status")
   .then(applyStatus)

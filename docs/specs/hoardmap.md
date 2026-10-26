@@ -171,11 +171,30 @@ renames anything. The server exits by itself once the browser tab is gone.
   On a non-macOS build the command is `xdg-open <dir>`.
 - **API** (all JSON):
   - `GET /api/status` → `{state, path, dirs, files, bytes, physical, elapsed_ms,
-    error_count, error}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
-    the progress so far; when done they are the tree's totals.
+    error_count, error, disk, live}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
+    the progress so far; when done they are the tree's totals. `disk` is `{total, free}`
+    in bytes for the volume holding `path`, or null. `live`, while scanning, counts the
+    finished entries the preview was built from (null before the first preview).
+  - While scanning, the tree endpoints (`node`, `treemap`, `icicle`, `extensions`,
+    `largest`, `errors`) answer from a preview: the entries down to three levels below
+    the root that the scan has finished, rebuilt every second. Folders still being read
+    show the sum of what has finished in them; deeper folders show their totals with no
+    children. An entry keeps its id from one preview to the next, so the page refetches
+    only what it shows; the finished tree has new ids. If a stopped scan does not wind
+    down within 1.5 s, the preview becomes its result and the done status says
+    `preview: true`.
   - `GET /api/events` → SSE as above.
   - `POST /api/scan {"path"}` → 202 and starts a scan; 409 while one runs; 400 for a
     path that is not a directory.
+  - `POST /api/scan/stop {}` → 202 and ends the running scan with what it has read
+    (`stopped: true` in the done status); 409 when none runs. A scan stuck on a drive
+    that stopped answering is replaced by its preview after 1.5 s. A scanned folder
+    that disappears, such as an unplugged drive, ends the scan as `failed`.
+  - `GET /api/volumes` → `{volumes: [{name, path, total, free, kind}], home, chooser}`:
+    the startup disk first, then the drives under `/Volumes`; `kind` is `startup`,
+    `drive` or `network`. System, hidden and Time Machine backup volumes are left out.
+  - `POST /api/choose {}` → 200 `{path}` from the macOS folder picker, or 204 when
+    cancelled.
   - `GET /api/node/{id}` → the node with `path` and `children`, each child with `id,
     name, kind, size, physical, files, dirs, mtime, hard_link, has_children`, largest
     first. 404 for an unknown id, 409 when no tree is loaded.

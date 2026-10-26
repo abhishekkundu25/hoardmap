@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-10-27
+
+- Live updates: the list and the map fill in while the scan runs, refreshed about once a second, and keep the open folders and the selection.
+- The list sorts by any column: click Name, Size, Items, Files, Subdirs or Last change. Size, largest first, is the default.
+- A bar under the top bar shows the whole disk: the scanned folder, everything else, and the free space.
+- A Disks menu next to the path field: the startup disk and connected drives with how full they are, your home folder, and Choose a folder… for the macOS folder picker.
+- Scan turns into Stop while a scan runs, keeping what it has read so far.
+- A drive disconnected mid-scan ends the scan with a clear error instead of waiting.
+- Folders with many thousands of items open at once: the list shows the 200 largest and a row for the rest.
+
 ## 0.2.1 — 2026-10-26
 
 - No more run of macOS prompts on the first scan. Without Full Disk Access, Hoardmap leaves out the folders macOS would ask about one by one (Desktop, Documents, Downloads, iCloud Drive and other cloud folders, other apps' data, Music and Photos) and lists them as "Not scanned". Turning on Full Disk Access includes them all.

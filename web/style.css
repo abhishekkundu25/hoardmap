@@ -16,6 +16,8 @@
   --tm-outline: rgba(0, 0, 0, 0.55);
   --tm-border: rgba(0, 0, 0, 0.3);
   --error: #c62828;
+  --disk-other: #a1a1a8;
+  --disk-free: #e6e6ea;
   --row-h: 24px;
   --list-w: 45%;
   --bottom-h: 30%;
@@ -41,6 +43,8 @@
     --tm-outline: rgba(255, 255, 255, 0.5);
     --tm-border: rgba(0, 0, 0, 0.45);
     --error: #ff6b6b;
+    --disk-other: #5a5a60;
+    --disk-free: #333336;
   }
 }
 
@@ -94,7 +98,8 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 #brand img { display: block; margin: -4px 0; }
 #access-logo { flex: none; margin: -6px 2px -6px -6px; }
 #access header h2 { flex: 1; font-size: 16px; }
-#scan-form { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 460px; }
+#scan-form { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 560px; }
+#places { flex: none; max-width: 110px; }
 #path {
   flex: 1 1 200px;
   min-width: 80px;
@@ -116,6 +121,42 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   gap: 6px;
 }
 #status .path { color: var(--text); }
+
+#disk {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+#disk[hidden] { display: none; }
+#disk-bar {
+  flex: 1 1 auto;
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--disk-free);
+  min-width: 80px;
+}
+#disk-scan { background: var(--accent); transition: width 0.3s; }
+#disk-other { background: var(--disk-other); transition: width 0.3s; }
+#disk-legend { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#disk-legend .key {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin: 0 4px 0 10px;
+  vertical-align: -1px;
+}
+#disk-legend .key:first-child { margin-left: 0; }
+
+#list-head th[data-sort] { cursor: pointer; user-select: none; }
+#list-head th[data-sort]:hover { color: var(--text); }
+#list-head th[aria-sort] { color: var(--text); }
+#list-head th[aria-sort="ascending"]::after { content: " ▴"; }
+#list-head th[aria-sort="descending"]::after { content: " ▾"; }
 #status .error { color: var(--error); }
 #status button { padding: 1px 7px; font-size: 12px; }
 
@@ -227,6 +268,8 @@ thead th.date { width: 118px; }
 tbody tr { height: var(--row-h); }
 tbody tr:nth-child(even) { background: var(--panel-alt); }
 tbody tr:hover { background: var(--accent-soft); }
+tbody tr.more { color: var(--accent); cursor: pointer; }
+tbody tr.more td.num { color: var(--muted); }
 tbody tr.selected, tbody tr.selected:hover { background: var(--selected-bg); color: var(--selected-fg); }
 tbody tr.selected .muted, tbody tr.selected .mark { color: inherit; opacity: 0.8; }
 td {
