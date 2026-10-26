@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Scans no longer stall on iCloud Drive, Google Drive, OneDrive or Dropbox folders kept online only. Hoardmap never makes macOS download anything: a folder whose contents are only in the cloud is counted but not opened, since it takes no space on the Mac.
+
 ## 0.2.0 — 2026-10-26
 
 - Faster scans on macOS: folders are listed with `getattrlistbulk`, which returns a batch of entries with their sizes in one call instead of one `lstat` per file. About 20 to 40 percent faster on a warm cache. Other systems keep the portable scanner, and `HOARDMAP_SCANNER=portable` selects it on a Mac.
