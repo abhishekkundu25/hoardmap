@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hoardmap: see where your Mac's disk space went</title>
+<meta name="description" content="A free disk-space map for your Mac. Every folder and file by size in a treemap and icicle, one click from Finder. It never deletes anything.">
+<meta property="og:title" content="Hoardmap">
+<meta property="og:description" content="See where your Mac's disk space went. Free, fast, and it never deletes anything.">
+<meta property="og:image" content="img/treemap-dark.jpg">
+<link rel="icon" href="hoardmap.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #fbfbfd;
+  --bg-2: #f2f3f8;
+  --ink: #1d1d1f;
+  --ink-2: #555a6e;
+  --ink-3: #8a8fa3;
+  --line: rgba(20, 24, 60, 0.09);
+  --card: #ffffff;
+  --accent: #0071e3;
+  --accent-ink: #ffffff;
+  --gold: #f5b316;
+  --hero-a: #1a1c48;
+  --hero-b: #0b0c24;
+  --shadow: 0 30px 80px -30px rgba(20, 24, 70, 0.35), 0 10px 30px -15px rgba(20, 24, 70, 0.2);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0c18;
+    --bg-2: #121426;
+    --ink: #f5f5f7;
+    --ink-2: #b4b8cc;
+    --ink-3: #7d8299;
+    --line: rgba(255, 255, 255, 0.09);
+    --card: #15172b;
+    --accent: #2f8cff;
+    --shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8), 0 10px 30px -15px rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 17px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; display: block; }
+.wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
+
+/* Nav */
+nav {
+  position: sticky; top: 0; z-index: 10;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: color-mix(in srgb, var(--hero-b) 72%, transparent);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+nav .wrap { display: flex; align-items: center; gap: 16px; height: 52px; }
+nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: #fff; letter-spacing: -0.01em; }
+nav .brand img { width: 28px; height: 28px; }
+nav .grow { flex: 1; }
+nav a.link { color: rgba(255, 255, 255, 0.78); font-size: 14px; }
+nav a.link:hover { color: #fff; text-decoration: none; }
+nav a.mini {
+  font-size: 13px; font-weight: 600; color: #fff; background: var(--accent);
+  padding: 6px 14px; border-radius: 999px;
+}
+nav a.mini:hover { text-decoration: none; filter: brightness(1.1); }
+
+/* Hero */
+.hero {
+  position: relative;
+  color: #fff;
+  background:
+    radial-gradient(60% 50% at 50% 0%, rgba(255, 184, 74, 0.22), transparent 70%),
+    radial-gradient(50% 60% at 85% 40%, rgba(124, 77, 234, 0.35), transparent 70%),
+    radial-gradient(50% 60% at 10% 60%, rgba(47, 111, 240, 0.30), transparent 70%),
+    linear-gradient(180deg, var(--hero-a), var(--hero-b));
+  padding: 72px 0 0;
+  overflow: hidden;
+  text-align: center;
+}
+.hero::after {
+  content: ""; position: absolute; inset: auto 0 0 0; height: 160px;
+  background: linear-gradient(180deg, transparent, var(--bg));
+  pointer-events: none;
+}
+.hero .icon {
+  width: 168px; height: 168px; margin: 0 auto 28px;
+  filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 60px rgba(255, 196, 80, 0.25));
+  animation: float 6s ease-in-out infinite;
+}
+@keyframes float { 50% { transform: translateY(-8px) rotate(-1deg); } }
+.hero h1 {
+  margin: 0 auto; max-width: 15ch;
+  font-size: clamp(42px, 7vw, 80px); line-height: 1.04; letter-spacing: -0.035em; font-weight: 700;
+}
+.hero h1 .shine {
+  background: linear-gradient(100deg, #fff1a8 0%, #ffd23f 35%, #ff9a5a 65%, #ff6f91 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.hero p.lede {
+  margin: 22px auto 0; max-width: 34em;
+  font-size: clamp(18px, 2.2vw, 22px); line-height: 1.45; color: rgba(255, 255, 255, 0.78);
+}
+.cta { margin-top: 36px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.download {
+  display: inline-flex; align-items: center; gap: 14px;
+  padding: 18px 34px 18px 26px; border-radius: 999px;
+  background: linear-gradient(180deg, #3a9bff, #0071e3);
+  color: #fff; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;
+  box-shadow: 0 14px 40px -10px rgba(0, 113, 227, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.download:hover { text-decoration: none; transform: translateY(-2px); box-shadow: 0 20px 50px -10px rgba(0, 113, 227, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.download:active { transform: translateY(0); }
+.download svg { width: 26px; height: 26px; flex: none; }
+.download small { display: block; font-size: 13px; font-weight: 500; opacity: 0.8; letter-spacing: 0; }
+.cta .meta { font-size: 14px; color: rgba(255, 255, 255, 0.6); }
+.cta .meta a { color: rgba(255, 255, 255, 0.85); }
+
+/* Hero screenshot */
+.window {
+  position: relative; z-index: 1;
+  margin: 64px auto 0; width: min(1120px, 100% - 32px);
+  border-radius: 14px; overflow: hidden;
+  background: #1e1e22;
+  box-shadow: 0 50px 120px -30px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.window .bar {
+  height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 14px;
+  background: linear-gradient(180deg, #34343a, #2a2a30);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.4);
+}
+.window .bar i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.window .bar i:nth-child(1) { background: #ff5f57; }
+.window .bar i:nth-child(2) { background: #febc2e; }
+.window .bar i:nth-child(3) { background: #28c840; }
+.window .bar span { flex: 1; text-align: center; margin-right: 52px; font-size: 13px; color: rgba(255, 255, 255, 0.6); font-weight: 500; }
+.window .shots { position: relative; aspect-ratio: 2880 / 1626; }
+.window .shots img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: opacity 0.5s ease; }
+.window .shots img.off { opacity: 0; }
+.switch {
+  position: relative; z-index: 1;
+  display: inline-flex; margin: 22px auto 0; padding: 4px; gap: 4px;
+  border-radius: 999px; background: var(--bg-2); border: 1px solid var(--line);
+}
+.switch button {
+  font: inherit; font-size: 14px; font-weight: 600; color: var(--ink-2);
+  border: 0; background: transparent; padding: 7px 18px; border-radius: 999px; cursor: pointer;
+}
+.switch button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+.switch-row { text-align: center; position: relative; z-index: 1; }
+
+/* Sections */
+section { padding: 110px 0; }
+.eyebrow { font-size: 15px; font-weight: 600; color: var(--accent); letter-spacing: 0.01em; margin: 0 0 10px; }
+h2 { font-size: clamp(32px, 4.6vw, 52px); line-height: 1.08; letter-spacing: -0.03em; margin: 0; font-weight: 700; }
+.sub { color: var(--ink-2); font-size: 19px; max-width: 38em; margin: 18px 0 0; }
+.center { text-align: center; }
+.center .sub { margin-inline: auto; }
+
+/* Install: drag to Applications */
+.install { background: var(--bg-2); }
+.dmg {
+  margin: 56px auto 0; max-width: 680px;
+  border-radius: 14px; overflow: hidden; background: var(--card);
+  box-shadow: var(--shadow); border: 1px solid var(--line);
+}
+.dmg .bar { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
+.dmg .bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+.dmg .bar i:nth-child(1) { background: #ff5f57; }
+.dmg .bar i:nth-child(2) { background: #febc2e; }
+.dmg .bar i:nth-child(3) { background: #28c840; }
+.dmg .bar span { flex: 1; text-align: center; margin-right: 46px; font-size: 12px; color: var(--ink-3); font-weight: 600; }
+.stage {
+  position: relative; height: 300px;
+  background:
+    radial-gradient(70% 90% at 50% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
+    var(--card);
+}
+.stage .slot { position: absolute; top: 70px; width: 128px; text-align: center; font-size: 13px; color: var(--ink-2); }
+.stage .slot img, .stage .slot svg { width: 112px; height: 112px; margin: 0 auto 8px; }
+.stage .from { left: calc(25% - 64px); }
+.stage .to { left: calc(75% - 64px); }
+.stage .arrow { position: absolute; left: calc(25% + 70px); width: calc(50% - 140px); top: 106px; height: 40px; }
+.stage .ghost {
+  position: absolute; top: 70px; left: calc(25% - 56px); width: 112px; height: 112px;
+  filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.35));
+  animation: drag 4.2s cubic-bezier(.5, 0, .3, 1) infinite;
+  pointer-events: none;
+}
+.stage .cursor {
+  position: absolute; top: 135px; left: calc(25% + 6px); width: 22px; height: 22px;
+  animation: drag 4.2s cubic-bezier(.5, 0, .3, 1) infinite;
+}
+@keyframes drag {
+  0%, 12% { transform: translate(0, 0) scale(1); opacity: 0; }
+  18% { opacity: 0.92; transform: translate(0, -6px) scale(1.04); }
+  62% { transform: translate(var(--travel), -16px) scale(1.04); opacity: 0.92; }
+  72% { transform: translate(var(--travel), 0) scale(0.55); opacity: 0; }
+  100% { transform: translate(var(--travel), 0) scale(0.55); opacity: 0; }
+}
+.stage { container-type: inline-size; --travel: 50cqw; }
+.stage .to .folder { animation: gulp 4.2s ease infinite; }
+@keyframes gulp { 0%, 64% { transform: scale(1); } 70% { transform: scale(1.1); } 78%, 100% { transform: scale(1); } }
+.stage .caption { position: absolute; left: 0; right: 0; bottom: 22px; text-align: center; font-size: 14px; color: var(--ink-3); }
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 48px; counter-reset: step; }
+.steps li { list-style: none; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px 22px 20px; }
+.steps li::before {
+  counter-increment: step; content: counter(step);
+  display: inline-grid; place-items: center; width: 28px; height: 28px; margin-bottom: 10px;
+  border-radius: 50%; background: var(--accent); color: #fff; font-size: 14px; font-weight: 700;
+}
+.steps li > b { display: block; font-size: 17px; margin-bottom: 4px; }
+.steps span { color: var(--ink-2); font-size: 15px; }
+.steps code { font-size: 13px; }
+ol.steps { padding: 0; }
+
+/* Features */
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 56px; }
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 28px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+.card .glyph {
+  width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 18px;
+  color: #fff; box-shadow: 0 8px 20px -8px currentColor;
+}
+.card .glyph svg { width: 24px; height: 24px; color: #fff; }
+.card h3 { margin: 0 0 8px; font-size: 20px; letter-spacing: -0.015em; }
+.card p { margin: 0; color: var(--ink-2); font-size: 15.5px; }
+.g1 { background: linear-gradient(135deg, #ffd23f, #e8890c); color: #e8890c; }
+.g2 { background: linear-gradient(135deg, #6ab8ff, #2f6ff0); color: #2f6ff0; }
+.g3 { background: linear-gradient(135deg, #c79bff, #7c4dea); color: #7c4dea; }
+.g4 { background: linear-gradient(135deg, #5ff0d2, #14a89a); color: #14a89a; }
+.g5 { background: linear-gradient(135deg, #ff8a7a, #e5414f); color: #e5414f; }
+.g6 { background: linear-gradient(135deg, #b6f37a, #4fbf3a); color: #4fbf3a; }
+
+/* Safety */
+.safe {
+  border-radius: 32px; padding: 64px 56px; color: #fff; position: relative; overflow: hidden;
+  background:
+    radial-gradient(50% 80% at 100% 0%, rgba(255, 196, 80, 0.25), transparent 70%),
+    linear-gradient(135deg, #1c1e4e, #0d0e2a);
+  box-shadow: var(--shadow);
+  display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; align-items: center;
+}
+.safe h2 { color: #fff; }
+.safe p { color: rgba(255, 255, 255, 0.78); font-size: 18px; margin: 18px 0 0; }
+.safe ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.safe li { display: flex; gap: 12px; align-items: center; font-size: 16px; padding: 14px 18px; border-radius: 14px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.08); }
+.safe li svg { width: 20px; height: 20px; flex: none; }
+.safe li.no svg { color: #ff6b7a; }
+.safe li.yes svg { color: #4fe3a0; }
+
+/* Terminal */
+.term-grid { display: grid; grid-template-columns: 1fr 1.1fr; gap: 48px; align-items: center; }
+.term {
+  border-radius: 14px; overflow: hidden; background: #111222; color: #e8e9f3;
+  box-shadow: var(--shadow); border: 1px solid rgba(255, 255, 255, 0.08);
+  font: 14px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.term .bar { height: 30px; display: flex; gap: 8px; align-items: center; padding: 0 12px; background: #1b1c30; }
+.term .bar i { width: 11px; height: 11px; border-radius: 50%; display: block; background: #3a3c55; }
+.term pre { margin: 0; padding: 20px 22px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.term .p { color: #7d8299; }
+.term .c { color: #ffd23f; }
+.term .o { color: #5ff0d2; }
+
+/* Final CTA */
+.final { text-align: center; padding-bottom: 130px; }
+.final .icon { width: 120px; height: 120px; margin: 0 auto 26px; filter: drop-shadow(0 20px 30px rgba(0, 0, 0, 0.3)); }
+.final .meta { color: var(--ink-3); }
+.final .meta a { color: var(--accent); }
+
+footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--ink-3); font-size: 14px; }
+footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
+footer a { color: var(--ink-2); }
+
+@media (max-width: 860px) {
+  .grid, .steps { grid-template-columns: 1fr; }
+  .safe, .term-grid { grid-template-columns: 1fr; }
+  .safe { padding: 40px 24px; border-radius: 24px; }
+  section { padding: 80px 0; }
+  nav a.link { display: none; }
+  .stage { height: 260px; }
+  .stage .slot img, .stage .slot svg { width: 84px; height: 84px; }
+  .stage .ghost { width: 84px; height: 84px; left: calc(25% - 42px); }
+  .stage .arrow { left: calc(25% + 50px); width: calc(50% - 100px); top: 92px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .stage .ghost, .stage .cursor { display: none; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="hoardmap.svg" alt="">Hoardmap</a>
+    <span class="grow"></span>
+    <a class="link" href="#install">Install</a>
+    <a class="link" href="#features">Features</a>
+    <a class="link" href="#terminal">Terminal</a>
+    <a class="link" href="https://github.com/abhishekkundu25/hoardmap">GitHub</a>
+    <a class="mini" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">Download</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <img class="icon" src="hoardmap.svg" alt="Hoardmap app icon">
+    <h1>Find what's <span class="shine">hoarding</span> your disk.</h1>
+    <p class="lede">A fast, free map of your Mac's storage. Every folder and file, sized at a glance. Spot the giant, click it, and Finder takes you straight there.</p>
+    <div class="cta">
+      <a class="download" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+        <span>Download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
+      </a>
+      <div class="meta">Open the download, drag Hoardmap to Applications. <a href="#install">How it works</a></div>
+    </div>
+  </div>
+  <div class="window">
+    <div class="bar"><i></i><i></i><i></i><span>Hoardmap</span></div>
+    <div class="shots">
+      <picture>
+        <source srcset="img/treemap-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img id="shot-treemap" src="img/treemap-light.jpg" alt="Hoardmap showing a home folder as a treemap, with the folder list on the left and file types below">
+      </picture>
+      <picture>
+        <source srcset="img/icicle-dark.jpg" media="(prefers-color-scheme: dark)">
+        <img id="shot-icicle" class="off" src="img/icicle-light.jpg" alt="Hoardmap's icicle view, one row per folder level">
+      </picture>
+    </div>
+  </div>
+</header>
+
+<div class="switch-row">
+  <div class="switch" role="group" aria-label="Screenshot">
+    <button type="button" data-shot="treemap" aria-pressed="true">Treemap</button>
+    <button type="button" data-shot="icicle" aria-pressed="false">Icicle</button>
+  </div>
+</div>
+
+<section id="install" class="install" style="margin-top:80px">
+  <div class="wrap center">
+    <p class="eyebrow">Install</p>
+    <h2>One drag and you're done.</h2>
+    <p class="sub">Open <b>Hoardmap.dmg</b> and drag the icon into your Applications folder, like any Mac app. No installer, no account, nothing running in the background.</p>
+
+    <div class="dmg" aria-hidden="true">
+      <div class="bar"><i></i><i></i><i></i><span>Hoardmap</span></div>
+      <div class="stage">
+        <div class="slot from"><img src="hoardmap.svg" alt="">Hoardmap</div>
+        <svg class="arrow" viewBox="0 0 200 40" preserveAspectRatio="none" fill="none">
+          <path d="M4 20 H180" stroke="currentColor" stroke-width="3" stroke-dasharray="2 10" stroke-linecap="round" style="color:var(--ink-3)"/>
+          <path d="M172 9 L194 20 L172 31" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--ink-3)"/>
+        </svg>
+        <div class="slot to">
+          <svg class="folder" viewBox="0 0 112 112">
+            <defs>
+              <linearGradient id="fb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6fc3ff"/><stop offset="1" stop-color="#2d8cf0"/></linearGradient>
+              <linearGradient id="ff" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fd2ff"/><stop offset="1" stop-color="#47a6f5"/></linearGradient>
+            </defs>
+            <path d="M10 26a8 8 0 0 1 8-8h26l8 9h42a8 8 0 0 1 8 8v8H10z" fill="url(#fb)"/>
+            <rect x="10" y="36" width="92" height="60" rx="8" fill="url(#ff)"/>
+            <g fill="none" stroke="#1d6fc4" stroke-width="3" stroke-linecap="round" opacity="0.75">
+              <path d="M46 78 L56 52 L66 78"/><path d="M49 70 H63"/><path d="M42 82 H70"/>
+            </g>
+          </svg>
+          Applications
+        </div>
+        <img class="ghost" src="hoardmap.svg" alt="">
+        <svg class="cursor" viewBox="0 0 24 24"><path d="M5 2 L5 20 L10 15 L13.5 22 L16.5 20.6 L13 13.8 L19.5 13.8 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <div class="caption">Drag Hoardmap onto Applications</div>
+      </div>
+    </div>
+
+    <ol class="steps" style="text-align:left">
+      <li><b>Download</b><span>Get <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">Hoardmap.dmg</a> and open it.</span></li>
+      <li><b>Drag to Applications</b><span>Drop the icon onto the Applications folder in the window that opens.</span></li>
+      <li><b>Open it</b><span>First time only: macOS asks you to confirm. Open <b>System Settings → Privacy &amp; Security</b> and press <b>Open Anyway</b>.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <p class="eyebrow">Features</p>
+    <h2>Everything big, in plain sight.</h2>
+    <p class="sub">Inspired by WinDirStat, rebuilt in Rust for the Mac. Three views that follow each other, so the biggest thing is never more than a click away.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="glyph g1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div>
+        <h3>Seriously fast</h3>
+        <p>Scans a whole home folder, nearly a million files, in about three seconds, on every core.</p>
+      </div>
+      <div class="card">
+        <div class="glyph g2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 12h9M16.5 12v9"/></svg></div>
+        <h3>Treemap and icicle</h3>
+        <p>Every file is a block sized by bytes, coloured by type. Or flip to the icicle to see where it sits in the hierarchy.</p>
+      </div>
+      <div class="card">
+        <div class="glyph g3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h12M3 17h7"/></svg></div>
+        <h3>Linked views</h3>
+        <p>Click a block and the folder list jumps to it. Pick a file type and every file of that type lights up.</p>
+      </div>
+      <div class="card">
+        <div class="glyph g4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></div>
+        <h3>Real disk usage</h3>
+        <p>Shows what files actually take on disk, so a 64 GB Docker image that only uses 5 GB doesn't fool you.</p>
+      </div>
+      <div class="card">
+        <div class="glyph g5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="m10 13 2 2 4-4"/></svg></div>
+        <h3>Straight to Finder</h3>
+        <p>Double-click anything and Finder opens with it selected. Clear it out there, then press Rescan.</p>
+      </div>
+      <div class="card">
+        <div class="glyph g6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div>
+        <h3>Private by design</h3>
+        <p>Works fully offline. Nothing leaves your Mac, and Full Disk Access is optional.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:0">
+  <div class="wrap">
+    <div class="safe">
+      <div>
+        <p class="eyebrow" style="color:#ffd23f">Safe by design</p>
+        <h2>It only looks.</h2>
+        <p>Hoardmap has no delete button, anywhere. It reads sizes and shows you the way. What you remove, you remove yourself, in Finder, after you've seen it.</p>
+      </div>
+      <ul>
+        <li class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>Never deletes, moves or renames</li>
+        <li class="no"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>No network, no tracking, no account</li>
+        <li class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>Opens Finder at what you pick</li>
+        <li class="yes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>Open source, MIT licensed</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="terminal" style="padding-top:20px">
+  <div class="wrap term-grid">
+    <div>
+      <p class="eyebrow">For the terminal</p>
+      <h2>Prefer a command?</h2>
+      <p class="sub">The <code>hoardmap</code> command scans any folder and opens the same map in your browser. It quits on its own when you close the tab.</p>
+      <p class="sub"><a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/hoardmap-macos.tar.gz">Download the command</a> or build it from <a href="https://github.com/abhishekkundu25/hoardmap">source</a>.</p>
+    </div>
+    <div class="term" aria-label="Terminal example">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$</span> <span class="c">hoardmap</span> ~/Developer
+<span class="o">Listening on http://127.0.0.1:52817/</span>
+
+<span class="p">$</span> <span class="c">cargo install</span> --git https://github.com/abhishekkundu25/hoardmap</pre>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <img class="icon" src="hoardmap.svg" alt="">
+    <h2>Make some room.</h2>
+    <p class="sub" style="margin-inline:auto">Free and open source. Download, drag to Applications, and see your disk in seconds.</p>
+    <div class="cta">
+      <a class="download" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+        <span>Download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
+      </a>
+      <div class="meta"><a href="https://github.com/abhishekkundu25/hoardmap/releases">All releases</a> · <a href="https://github.com/abhishekkundu25/hoardmap">Source on GitHub</a></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Hoardmap · MIT License</span>
+    <span><a href="https://github.com/abhishekkundu25/hoardmap">GitHub</a> · <a href="https://github.com/abhishekkundu25/hoardmap/issues">Report an issue</a></span>
+  </div>
+</footer>
+
+<script>
+for (const button of document.querySelectorAll(".switch button")) {
+  button.addEventListener("click", () => {
+    const shot = button.dataset.shot;
+    for (const b of document.querySelectorAll(".switch button")) b.setAttribute("aria-pressed", String(b === button));
+    document.getElementById("shot-treemap").classList.toggle("off", shot !== "treemap");
+    document.getElementById("shot-icicle").classList.toggle("off", shot !== "icicle");
+  });
+}
+</script>
+</body>
+</html>

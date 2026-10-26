@@ -14,8 +14,10 @@ deletes, moves or renames anything; do not add such an action.
 - `src/server.rs`: HTTP, static files, browser presence, exit when the last tab is gone.
 - `src/api.rs`: the JSON endpoints, documented in `docs/specs/hoardmap.md`.
 - `assets/`: the logo. `hoardmap.svg` is the source, served as `/logo.svg` and
-  embedded with `include_str!`; `hoardmap.icns` is the app icon, made from it by
-  `tools/make-icon.sh` (needs Google Chrome).
+  embedded with `include_str!`; `hoardmap.icns` is the app icon and
+  `dmg-background.tiff` the DMG window, both made by `tools/make-images.sh` (needs
+  Google Chrome).
+- `site/`: the GitHub Pages website, published by `.github/workflows/pages.yml`.
 - `web/`: the page, embedded in the binary with `include_str!`; no build step, but a
   page change needs a rebuild (`cargo build`) before the binary serves it.
 - Specs in `docs/specs/`, tickets in `docs/tickets/<name>/` with a README table.

@@ -1,7 +1,8 @@
 ## Download
 
-- **Hoardmap-…-macos.dmg**: open it and drag Hoardmap to Applications. Works on Apple silicon and Intel Macs, macOS 11 or later.
-- **hoardmap-…-macos.tar.gz**: the `hoardmap` terminal command, which opens the same page in your browser.
+- **Hoardmap.dmg**: open it and drag Hoardmap onto Applications. Works on Apple silicon and Intel Macs, macOS 11 or later.
+- **Hoardmap.zip**: the same app, zipped.
+- **hoardmap-macos.tar.gz**: the `hoardmap` terminal command, which opens the same page in your browser.
 
 ## First launch
 

@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- The DMG window background, 660 by 400 points. tools/make-images.sh renders it. -->
+<html><head><meta charset="utf-8"><style>
+html, body { margin: 0; width: 660px; height: 400px; overflow: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  background:
+    radial-gradient(60% 70% at 50% 0%, rgba(255, 196, 80, 0.20), transparent 70%),
+    radial-gradient(40% 60% at 100% 100%, rgba(124, 77, 234, 0.14), transparent 70%),
+    radial-gradient(40% 60% at 0% 100%, rgba(47, 111, 240, 0.14), transparent 70%),
+    linear-gradient(180deg, #fbfbfe, #eceef7);
+}
+h1 { position: absolute; top: 34px; left: 0; right: 0; margin: 0; text-align: center; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; color: #1d1d1f; }
+p { position: absolute; top: 68px; left: 0; right: 0; margin: 0; text-align: center; font-size: 13px; color: #6b7086; }
+svg { position: absolute; left: 248px; top: 172px; width: 164px; height: 36px; }
+.foot { top: auto; bottom: 22px; font-size: 11.5px; color: #8a8fa3; }
+</style></head><body>
+<h1>Drag Hoardmap to Applications</h1>
+<p>Then open it from Applications or Launchpad.</p>
+<svg viewBox="0 0 164 36" fill="none">
+  <path d="M6 18 H140" stroke="#9aa0bd" stroke-width="3.5" stroke-dasharray="1 11" stroke-linecap="round"/>
+  <path d="M136 6 L156 18 L136 30" stroke="#7c84a8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+<p class="foot">Hoardmap only reads sizes. It never deletes, moves or renames anything.</p>
+</body></html>

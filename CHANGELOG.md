@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A website for GitHub Pages in `site/`, with the download as its main button. The DMG opens on a laid-out window: drag Hoardmap onto the Applications link. Release files no longer carry the version, so `releases/latest/download/Hoardmap.dmg` always works.
 - Downloads on GitHub: pushing a `v*` tag builds a universal (Apple silicon and Intel) `Hoardmap.dmg`, a zipped app and the `hoardmap` command, and attaches them to a release. CI runs the format check, lints and tests on every push and pull request.
 - Sizes start in Physical, the space files take on disk, instead of Logical. The status-line total follows the toggle, also while the scan runs; `/api/status` gains `physical`.
 - Renamed from macdirtree to Hoardmap. The command is `hoardmap`, the app is `Hoardmap.app` with the bundle identifier `dev.hoardmap.app`, so Full Disk Access has to be granted to it again.

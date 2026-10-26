@@ -1,40 +1,81 @@
 #!/usr/bin/env bash
 # Builds the release downloads into target/dist:
-#   Hoardmap-VERSION-macos.dmg        the app, drag to Applications
-#   Hoardmap-VERSION-macos.zip        the same app, zipped
-#   hoardmap-VERSION-macos.tar.gz     the hoardmap command
+#   Hoardmap.dmg             the app in a window that says to drag it to Applications
+#   Hoardmap.zip             the same app, zipped
+#   hoardmap-macos.tar.gz    the hoardmap command
 #   SHA256SUMS
-# Everything is universal (Apple silicon and Intel) and signed ad hoc.
+# Everything is universal (Apple silicon and Intel) and signed ad hoc. The names carry no
+# version, so releases/latest/download/Hoardmap.dmg always fetches the newest one.
+# Laying out the DMG window drives Finder, which macOS may ask you to allow once.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 dist=target/dist
+volume=Hoardmap
 rm -rf "$dist"
 mkdir -p "$dist"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+if [ -d "/Volumes/$volume" ]; then
+  echo "eject /Volumes/$volume first" >&2
+  exit 1
+fi
 
 tools/bundle-app.sh --universal
 
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
   cargo build --release --locked --bin hoardmap --target "$target"
 done
-cli=$(mktemp -d)
-trap 'rm -rf "$cli"' EXIT
-lipo -create -output "$cli/hoardmap" \
+mkdir "$work/cli"
+lipo -create -output "$work/cli/hoardmap" \
   target/aarch64-apple-darwin/release/hoardmap \
   target/x86_64-apple-darwin/release/hoardmap
-codesign --force --sign - "$cli/hoardmap"
-cp README.md "$cli/"
-tar -czf "$dist/hoardmap-$version-macos.tar.gz" -C "$cli" hoardmap README.md
+codesign --force --sign - "$work/cli/hoardmap"
+cp README.md "$work/cli/"
+tar -czf "$dist/hoardmap-macos.tar.gz" -C "$work/cli" hoardmap README.md
 
-ditto -c -k --keepParent target/Hoardmap.app "$dist/Hoardmap-$version-macos.zip"
+ditto -c -k --keepParent target/Hoardmap.app "$dist/Hoardmap.zip"
 
-stage=$(mktemp -d)
+# The DMG: the app, a link to /Applications, a background with an arrow between them.
+stage="$work/stage"
+mkdir -p "$stage/.background"
 cp -R target/Hoardmap.app "$stage/"
 ln -s /Applications "$stage/Applications"
-hdiutil create -quiet -volname "Hoardmap $version" -srcfolder "$stage" -format UDZO \
-  "$dist/Hoardmap-$version-macos.dmg"
-rm -rf "$stage"
+cp assets/dmg-background.tiff "$stage/.background/background.tiff"
+hdiutil create -quiet -volname "$volume" -srcfolder "$stage" -fs HFS+ -format UDRW \
+  -size 64m "$work/rw.dmg"
+device=$(hdiutil attach -readwrite -noverify -noautoopen "$work/rw.dmg" | awk '/Apple_HFS/ {print $1}')
+osascript <<APPLESCRIPT
+tell application "Finder"
+  tell disk "$volume"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, 860, 548}
+    set viewOptions to the icon view options of container window
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to 112
+    set text size of viewOptions to 13
+    set background picture of viewOptions to file ".background:background.tiff"
+    set position of item "Hoardmap.app" of container window to {165, 196}
+    set position of item "Applications" of container window to {495, 196}
+    close
+    open
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+APPLESCRIPT
+# After Finder is done with the window: Finder drops a volume icon added before it.
+cp assets/hoardmap.icns "/Volumes/$volume/.VolumeIcon.icns"
+xattr -wx com.apple.FinderInfo \
+  "0000000000000000040000000000000000000000000000000000000000000000" "/Volumes/$volume"
+sync
+hdiutil detach -quiet "$device"
+hdiutil convert -quiet "$work/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$dist/Hoardmap.dmg"
 
 (cd "$dist" && shasum -a 256 -- * >SHA256SUMS)
 ls -l "$dist"
