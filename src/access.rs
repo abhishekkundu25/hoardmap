@@ -4,7 +4,7 @@
 
 use std::ffi::OsStr;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
@@ -19,6 +19,33 @@ const PROBE: &str = "/Library/Application Support/com.apple.TCC/TCC.db";
 /// Whether this process may read folders macOS keeps private. Always true off macOS.
 pub fn granted() -> bool {
     !cfg!(target_os = "macos") || std::fs::File::open(PROBE).is_ok()
+}
+
+/// Folders in `home` that make macOS stop and ask the user, one prompt each, when an
+/// app without Full Disk Access reads them. A scan without access leaves them out
+/// rather than set off a run of prompts. Empty off macOS.
+pub fn prompting(home: &Path) -> Vec<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        // iCloud Drive, and the folders of Google Drive, OneDrive, Dropbox and the like.
+        "Library/Mobile Documents",
+        "Library/CloudStorage",
+        // Other apps' data.
+        "Library/Containers",
+        "Library/Group Containers",
+        // The Music and Photos libraries.
+        "Music/Music",
+        "Music/iTunes",
+        "Pictures/Photos Library.photoslibrary",
+    ]
+    .iter()
+    .map(|name| home.join(name))
+    .collect()
 }
 
 /// The `.app` bundle this executable runs from, if any.

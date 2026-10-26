@@ -196,11 +196,14 @@ totals do not include what is behind those folders.
 
 ### Full Disk Access
 
-On a real home folder every unreadable entry reads `Operation not permitted`. That is
-macOS privacy protection (TCC), not file permissions. It covers app sandboxes under
-`Library/Containers` and `Library/Group Containers`, the Photos Library, Safari, Mail
-data and the Trash. hoardmap inherits its access from the app that launched it, and
-nothing in the code can bypass that.
+Without Full Disk Access, unreadable entries on a home folder read `Operation not
+permitted` or `Not scanned`. That is macOS privacy protection (TCC), not file
+permissions. macOS blocks Safari and Mail data and the Trash outright, which gives
+`Operation not permitted`. For Desktop, Documents, Downloads, iCloud Drive and other
+cloud folders, other apps' data (`Library/Containers`, `Library/Group Containers`), and
+the Music and Photos libraries, macOS would instead stop and ask about each one. So
+hoardmap does not read them and lists them as `Not scanned`. hoardmap inherits its
+access from the app that launched it, and nothing in the code can bypass that.
 
 To scan those folders, give the terminal that launches hoardmap Full Disk Access:
 

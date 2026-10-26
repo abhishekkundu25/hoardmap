@@ -273,7 +273,7 @@ async function showErrors() {
     const data = await getJSON("/api/errors");
     el.errorsTitle.textContent = `${formatCount(data.count)} unreadable ${data.count === 1 ? "folder" : "folders"}`;
     el.errorRows.textContent = "";
-    el.errorsHint.hidden = !data.items.some((item) => item.error.startsWith("Operation not permitted"));
+    el.errorsHint.hidden = !data.items.some((item) => /^(Operation not permitted|Not scanned)/.test(item.error));
     for (const item of data.items) {
       const tr = document.createElement("tr");
       const path = document.createElement("td");

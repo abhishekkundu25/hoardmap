@@ -184,7 +184,9 @@ renames anything. The server exits by itself once the browser tab is gone.
     physical, files}]}` largest first; `ext` is `""` for files without one.
   - `GET /api/largest?root=ID&n=N&mode=` → `{items: [{id, path, size, physical,
     mtime}]}` largest first, N capped at 1000.
-  - `GET /api/errors` → `{count, items: [{path, error}]}`.
+  - `GET /api/errors` → `{count, items: [{path, error}]}`. Without Full Disk Access
+    on macOS, the home folders that would each raise a macOS prompt are counted but
+    not read, and listed with the error `Not scanned: needs Full Disk Access`.
   - `POST /api/open {"id"}` → 204.
 - **Page**: `index.html`, `style.css`, `app.js`, vanilla JS and canvas. Layout: a top
   bar (path field, Scan, Rescan, Open in Finder, Logical/Physical toggle, status text),

@@ -27,7 +27,7 @@ use std::collections::HashSet;
 use std::fs::{self, Metadata};
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 #[cfg(target_os = "macos")]
@@ -35,6 +35,7 @@ use std::{env, mem};
 
 use rayon::prelude::*;
 
+use crate::access;
 use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ScanError, Tree};
 
 /// Counters a running scan increments and a reader samples.
@@ -182,6 +183,8 @@ struct Ctx<'a> {
     progress: &'a Progress,
     errors: Mutex<Vec<ScanError>>,
     error_count: AtomicU64,
+    /// Folders below the root that are counted but not read.
+    skip: Vec<PathBuf>,
 }
 
 impl Ctx<'_> {
@@ -230,8 +233,30 @@ fn never_download() {
     }
 }
 
+/// The error a folder left out by [`skipping`] is listed with.
+pub const NOT_SCANNED: &str = "Not scanned: needs Full Disk Access";
+
 /// [`scan`] with a chosen listing method.
 pub fn scan_with(path: &Path, progress: &Progress, method: Method) -> io::Result<Tree> {
+    scan_skipping(path, progress, method, skipping())
+}
+
+/// Without Full Disk Access, the folders that would each stop the scan with a macOS
+/// prompt; they are listed as [`NOT_SCANNED`] instead.
+fn skipping() -> Vec<PathBuf> {
+    match env::var_os("HOME") {
+        Some(home) if !access::granted() => access::prompting(Path::new(&home)),
+        _ => Vec::new(),
+    }
+}
+
+/// [`scan_with`], counting the folders in `skip` without reading them.
+pub fn scan_skipping(
+    path: &Path,
+    progress: &Progress,
+    method: Method,
+    skip: Vec<PathBuf>,
+) -> io::Result<Tree> {
     let meta = fs::metadata(path)?;
     if !meta.is_dir() {
         return Err(io::Error::new(
@@ -247,6 +272,7 @@ pub fn scan_with(path: &Path, progress: &Progress, method: Method) -> io::Result
         progress,
         errors: Mutex::new(Vec::new()),
         error_count: AtomicU64::new(0),
+        skip,
     };
     let entries = list(path, &ctx)?;
     let children = build(path, entries, &ctx);
@@ -341,6 +367,10 @@ fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
     }
     let descend = |(name, stat): (String, Stat)| {
         let path = dir.join(&name);
+        if ctx.skip.contains(&path) {
+            ctx.record(&path, &io::Error::other(NOT_SCANNED));
+            return Local::dir(name, &stat, Vec::new());
+        }
         let grandchildren = read_children(&path, ctx);
         Local::dir(name, &stat, grandchildren)
     };

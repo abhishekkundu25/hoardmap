@@ -24,8 +24,8 @@ fn main() {
         port: PREFERRED_PORT,
         linger: None,
         native: true,
-        // Without Full Disk Access, macOS asks about protected folders as the scan
-        // reaches them; the page starts the scan once the start screen has explained that.
+        // Without Full Disk Access the page starts the scan when its start screen closes,
+        // so a grant made from that screen applies to the first scan.
         scan_at_start: hoardmap::access::granted(),
     }) {
         Ok(port) => port,

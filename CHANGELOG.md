@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- No more run of macOS prompts on the first scan. Without Full Disk Access, Hoardmap leaves out the folders macOS would ask about one by one (Desktop, Documents, Downloads, iCloud Drive and other cloud folders, other apps' data, Music and Photos) and lists them as "Not scanned". Turning on Full Disk Access includes them all.
 - Scans no longer stall on iCloud Drive, Google Drive, OneDrive or Dropbox folders kept online only. Hoardmap never makes macOS download anything: a folder whose contents are only in the cloud is counted but not opened, since it takes no space on the Mac.
 
 ## 0.2.0 — 2026-10-26

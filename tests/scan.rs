@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use hoardmap::scan::{Progress, scan};
+use hoardmap::scan::{Method, NOT_SCANNED, Progress, scan, scan_skipping};
 use hoardmap::tree::{Kind, NodeId, ROOT, Tree};
 
 /// The fixture folder; removed on drop, with `locked/` made writable again first.
@@ -226,6 +226,31 @@ fn unreadable_dir_is_counted_and_listed() {
     assert_eq!(locked.size, 0);
     assert_eq!(locked.files, 0);
     assert!(locked.children.is_empty());
+}
+
+#[test]
+fn skipped_dir_is_counted_empty_and_listed() {
+    let fx = Fixture::build();
+    let skipped = fx.root.join("b");
+    let progress = Progress::default();
+    let tree = scan_skipping(
+        &fx.root,
+        &progress,
+        Method::default(),
+        vec![skipped.clone()],
+    )
+    .unwrap();
+    let b = &tree.nodes[child(&tree, ROOT, "b") as usize];
+    assert_eq!(b.kind, Kind::Dir);
+    assert!(b.children.is_empty());
+    assert_eq!(b.size, 0);
+    let listed: Vec<_> = tree
+        .errors
+        .iter()
+        .filter(|e| e.error == NOT_SCANNED)
+        .collect();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, skipped.to_string_lossy());
 }
 
 #[test]
