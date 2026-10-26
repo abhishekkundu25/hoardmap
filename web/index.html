@@ -4,10 +4,97 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>macdirtree</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<h1>macdirtree</h1>
+<header id="topbar">
+  <span id="brand">macdirtree</span>
+  <form id="scan-form" autocomplete="off">
+    <input id="path" type="text" name="path" placeholder="Folder to scan" spellcheck="false" aria-label="Folder to scan">
+    <button id="scan" type="submit">Scan</button>
+    <button id="rescan" type="button" title="Scan the current folder again">Rescan</button>
+  </form>
+  <span class="sep"></span>
+  <button id="open" type="button" disabled title="Open the selection in Finder">Open in Finder</button>
+  <span class="sep"></span>
+  <div id="mode" class="segmented" role="radiogroup" aria-label="Size mode">
+    <button type="button" role="radio" aria-checked="true" data-mode="logical" title="Bytes the files contain">Logical</button>
+    <button type="button" role="radio" aria-checked="false" data-mode="physical" title="Bytes allocated on disk">Physical</button>
+  </div>
+  <span class="sep"></span>
+  <button id="zoom" type="button" disabled title="Zoom the treemap to the selected folder">Zoom</button>
+  <button id="root" type="button" disabled title="Zoom the treemap back out to the scanned folder">Root</button>
+  <span id="status" role="status" aria-live="polite"></span>
+</header>
+
+<main id="main">
+  <section id="list" tabindex="0" role="treegrid" aria-label="Directory list">
+    <table>
+      <thead>
+        <tr>
+          <th class="name">Name</th>
+          <th class="num">Size</th>
+          <th class="pct">%</th>
+          <th class="num">Items</th>
+          <th class="num">Files</th>
+          <th class="num">Subdirs</th>
+          <th class="date">Last change</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+  <div id="vsplit" class="splitter vertical" role="separator" aria-orientation="vertical" aria-label="Resize panes"></div>
+  <section id="treemap">
+    <div id="treemap-caption" title=""></div>
+    <div id="treemap-pane">
+      <canvas id="canvas" aria-label="Treemap"></canvas>
+    </div>
+  </section>
+</main>
+
+<div id="hsplit" class="splitter horizontal" role="separator" aria-orientation="horizontal" aria-label="Resize bottom panel"></div>
+
+<section id="bottom">
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" aria-selected="true" aria-controls="tab-extensions" data-tab="extensions">Extensions</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tab-largest" data-tab="largest">Largest files</button>
+    <span id="hint"></span>
+  </div>
+  <div id="tab-extensions" class="tab" role="tabpanel">
+    <table>
+      <thead>
+        <tr><th class="name">Ext</th><th class="num">Size</th><th class="pct">%</th><th class="num">Files</th></tr>
+      </thead>
+      <tbody id="ext-rows"></tbody>
+    </table>
+  </div>
+  <div id="tab-largest" class="tab" role="tabpanel" hidden>
+    <table>
+      <thead>
+        <tr><th class="num">Size</th><th class="name">Path</th></tr>
+      </thead>
+      <tbody id="largest-rows"></tbody>
+    </table>
+  </div>
+</section>
+
+<div id="tooltip" hidden></div>
+
+<dialog id="errors">
+  <header>
+    <h2 id="errors-title">Unreadable folders</h2>
+    <button type="button" id="errors-close" aria-label="Close">×</button>
+  </header>
+  <div id="errors-body">
+    <table>
+      <thead><tr><th class="name">Path</th><th class="name">Error</th></tr></thead>
+      <tbody id="error-rows"></tbody>
+    </table>
+  </div>
+</dialog>
+
 <script src="/app.js"></script>
 </body>
 </html>
