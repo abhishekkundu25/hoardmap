@@ -5,7 +5,11 @@
 
 <img src="assets/hoardmap.svg" alt="Hoardmap icon" width="128">
 
-**[Download Hoardmap.dmg](https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg)** · [Website](https://abhishekkundu25.github.io/hoardmap/)
+```sh
+brew install --cask abhishekkundu25/tap/hoardmap
+```
+
+Or **[download Hoardmap.dmg](https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg)** · [Website](https://abhishekkundu25.github.io/hoardmap/)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/img/treemap-dark.jpg">
@@ -19,9 +23,20 @@ app that shows the same page in its own window. Both listen on 127.0.0.1 only. F
 the page you can open any folder or file in Finder. That is the only thing it can do
 to your files; it never deletes, moves or renames anything.
 
-## Download
+## Install
 
-The [Releases](../../releases) page has, for Apple silicon and Intel Macs on macOS 11
+With [Homebrew](https://brew.sh), the easiest way:
+
+```sh
+brew install --cask abhishekkundu25/tap/hoardmap   # the Mac app
+brew install abhishekkundu25/tap/hoardmap          # the hoardmap command
+```
+
+The app goes into Applications, ready to open, and `brew upgrade` keeps it current. The
+recipes live in [abhishekkundu25/homebrew-tap](https://github.com/abhishekkundu25/homebrew-tap)
+and each release updates them.
+
+Or download from the [Releases](../../releases) page has, for Apple silicon and Intel Macs on macOS 11
 or later:
 
 - `Hoardmap.dmg`: open it and drag Hoardmap onto Applications.
@@ -32,9 +47,9 @@ The newest DMG is always at
 `https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg`,
 which is what the website links to.
 
-The app is not notarized by Apple, so macOS blocks the first launch. Press Done, then
-open System Settings, Privacy & Security, and press Open Anyway next to Hoardmap. Or
-run `xattr -dr com.apple.quarantine /Applications/Hoardmap.app` once.
+A downloaded copy needs one confirmation the first time: if macOS stops it, press Done,
+then open System Settings, Privacy & Security, and press Open Anyway next to Hoardmap.
+Or run `xattr -dr com.apple.quarantine /Applications/Hoardmap.app` once.
 
 ## Build from source
 

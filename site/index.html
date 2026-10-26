@@ -125,6 +125,25 @@ nav a.mini:hover { text-decoration: none; filter: brightness(1.1); }
 .download:active { transform: translateY(0); }
 .download svg { width: 26px; height: 26px; flex: none; }
 .download small { display: block; font-size: 13px; font-weight: 500; opacity: 0.8; letter-spacing: 0; }
+.brew {
+  display: flex; align-items: center; gap: 10px; max-width: 100%;
+  padding: 10px 10px 10px 22px; border-radius: 16px;
+  background: #111222; color: #e8e9f3; border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 14px 40px -12px rgba(0, 0, 0, 0.55);
+}
+.brew code { min-width: 0; font: 600 clamp(13px, 1.8vw, 17px)/1.4 ui-monospace, "SF Mono", Menlo, monospace; overflow-x: auto; white-space: nowrap; text-align: left; }
+.brew code .p { color: #7d8299; margin-right: 6px; }
+.brew .copy {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  padding: 10px 16px; border: 0; border-radius: 11px;
+  background: linear-gradient(180deg, #3a9bff, #0071e3); color: #fff;
+}
+.brew .copy svg { width: 16px; height: 16px; }
+.brew .copy:hover { filter: brightness(1.1); }
+.brew-note { font-size: 14px; color: rgba(255, 255, 255, 0.7); }
+.download.ghost { padding: 12px 24px 12px 20px; font-size: 16px; background: rgba(255, 255, 255, 0.1); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25); }
+.download.ghost svg { width: 20px; height: 20px; }
 .cta .meta { font-size: 14px; color: rgba(255, 255, 255, 0.6); }
 .cta .meta a { color: rgba(255, 255, 255, 0.85); }
 
@@ -169,7 +188,16 @@ h2 { font-size: clamp(32px, 4.6vw, 52px); line-height: 1.08; letter-spacing: -0.
 .center { text-align: center; }
 .center .sub { margin-inline: auto; }
 
-/* Install: drag to Applications */
+/* Install */
+.ways { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 48px; text-align: left; }
+.way { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 28px; box-shadow: var(--shadow); }
+.way h3 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.02em; }
+.way .tag { display: inline-block; margin-bottom: 12px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; color: var(--accent-ink); background: var(--accent); }
+.way p { margin: 0; color: var(--ink-2); }
+.way .brew { margin-top: 18px; }
+.way ul { margin: 16px 0 0; padding-left: 20px; color: var(--ink-2); }
+.way ul li { margin: 4px 0; }
+.way code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; }
 .install { background: var(--bg-2); }
 .dmg {
   margin: 56px auto 0; max-width: 680px;
@@ -214,17 +242,6 @@ h2 { font-size: clamp(32px, 4.6vw, 52px); line-height: 1.08; letter-spacing: -0.
 .stage .to .folder { animation: gulp 4.2s ease infinite; }
 @keyframes gulp { 0%, 64% { transform: scale(1); } 70% { transform: scale(1.1); } 78%, 100% { transform: scale(1); } }
 .stage .caption { position: absolute; left: 0; right: 0; bottom: 22px; text-align: center; font-size: 14px; color: var(--ink-3); }
-.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 48px; counter-reset: step; }
-.steps li { list-style: none; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px 22px 20px; }
-.steps li::before {
-  counter-increment: step; content: counter(step);
-  display: inline-grid; place-items: center; width: 28px; height: 28px; margin-bottom: 10px;
-  border-radius: 50%; background: var(--accent); color: #fff; font-size: 14px; font-weight: 700;
-}
-.steps li > b { display: block; font-size: 17px; margin-bottom: 4px; }
-.steps span { color: var(--ink-2); font-size: 15px; }
-.steps code { font-size: 13px; }
-ol.steps { padding: 0; }
 
 /* Features */
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 56px; }
@@ -288,8 +305,9 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
 footer a { color: var(--ink-2); }
 
 @media (max-width: 860px) {
-  .grid, .steps { grid-template-columns: 1fr; }
-  .safe, .term-grid { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
+  .safe, .term-grid, .ways { grid-template-columns: 1fr; }
+  .brew code { white-space: normal; }
   .safe { padding: 40px 24px; border-radius: 24px; }
   section { padding: 80px 0; }
   nav a.link { display: none; }
@@ -314,7 +332,7 @@ footer a { color: var(--ink-2); }
     <a class="link" href="#features">Features</a>
     <a class="link" href="#terminal">Terminal</a>
     <a class="link" href="https://github.com/abhishekkundu25/hoardmap">GitHub</a>
-    <a class="mini" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">Download</a>
+    <a class="mini" href="#install">Install</a>
   </div>
 </nav>
 
@@ -324,9 +342,14 @@ footer a { color: var(--ink-2); }
     <h1>Find what's <span class="shine">hoarding</span> your disk.</h1>
     <p class="lede">A fast, free map of your Mac's storage. Every folder and file, sized at a glance. Spot the giant, click it, and Finder takes you straight there.</p>
     <div class="cta">
-      <a class="download" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
+      <div class="brew">
+        <code><span class="p">$</span> brew install --cask abhishekkundu25/tap/hoardmap</code>
+        <button type="button" class="copy" data-copy="brew install --cask abhishekkundu25/tap/hoardmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span>Copy</span></button>
+      </div>
+      <div class="brew-note">Install with Homebrew: ready to open, and <code>brew upgrade</code> keeps it current.</div>
+      <a class="download ghost" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
-        <span>Download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
+        <span>Or download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
       </a>
       <div class="meta">Version <span data-version>latest</span> · <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest">Release notes</a> · <a href="#install">How to install</a></div>
     </div>
@@ -356,8 +379,34 @@ footer a { color: var(--ink-2); }
 <section id="install" class="install" style="margin-top:80px">
   <div class="wrap center">
     <p class="eyebrow">Install</p>
-    <h2>One drag and you're done.</h2>
-    <p class="sub">Open <b>Hoardmap.dmg</b> and drag the icon into your Applications folder, like any Mac app. No installer, no account, nothing running in the background.</p>
+    <h2>One line and you're done.</h2>
+    <p class="sub">Homebrew is the easiest way in: one command puts Hoardmap in your Applications folder, ready to open. No account, nothing running in the background.</p>
+
+    <div class="ways">
+      <div class="way">
+        <span class="tag">Recommended</span>
+        <h3>Homebrew</h3>
+        <p>Paste this into Terminal.</p>
+        <div class="brew">
+        <code><span class="p">$</span> brew install --cask abhishekkundu25/tap/hoardmap</code>
+        <button type="button" class="copy" data-copy="brew install --cask abhishekkundu25/tap/hoardmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span>Copy</span></button>
+      </div>
+        <ul>
+          <li>Opens straight away, first time</li>
+          <li>Update with <code>brew upgrade</code></li>
+          <li>Don't have Homebrew? Get it at <a href="https://brew.sh">brew.sh</a></li>
+        </ul>
+      </div>
+      <div class="way">
+        <h3>Download</h3>
+        <p>Open <b>Hoardmap.dmg</b> and drag the icon into your Applications folder, like any Mac app.</p>
+        <ol style="margin:16px 0 0;padding-left:20px;color:var(--ink-2)">
+          <li>Get <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">Hoardmap.dmg</a> and open it.</li>
+          <li>Drag Hoardmap onto Applications.</li>
+          <li>First time only: in <b>System Settings → Privacy &amp; Security</b>, press <b>Open Anyway</b>.</li>
+        </ol>
+      </div>
+    </div>
 
     <div class="dmg" aria-hidden="true">
       <div class="bar"><i></i><i></i><i></i><span>Hoardmap</span></div>
@@ -387,11 +436,6 @@ footer a { color: var(--ink-2); }
       </div>
     </div>
 
-    <ol class="steps" style="text-align:left">
-      <li><b>Download</b><span>Get <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">Hoardmap.dmg</a> and open it.</span></li>
-      <li><b>Drag to Applications</b><span>Drop the icon onto the Applications folder in the window that opens.</span></li>
-      <li><b>Open it</b><span>First time only: macOS asks you to confirm. Open <b>System Settings → Privacy &amp; Security</b> and press <b>Open Anyway</b>.</span></li>
-    </ol>
   </div>
 </section>
 
@@ -459,14 +503,14 @@ footer a { color: var(--ink-2); }
       <p class="eyebrow">For the terminal</p>
       <h2>Prefer a command?</h2>
       <p class="sub">The <code>hoardmap</code> command scans any folder and opens the same map in your browser. It quits on its own when you close the tab.</p>
-      <p class="sub"><a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/hoardmap-macos.tar.gz">Download the command</a> or build it from <a href="https://github.com/abhishekkundu25/hoardmap">source</a>.</p>
+      <p class="sub">Install it with Homebrew, <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/hoardmap-macos.tar.gz">download the command</a>, or build it from <a href="https://github.com/abhishekkundu25/hoardmap">source</a>.</p>
     </div>
     <div class="term" aria-label="Terminal example">
       <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="p">$</span> <span class="c">hoardmap</span> ~/Developer
-<span class="o">Listening on http://127.0.0.1:52817/</span>
+<pre><span class="p">$</span> <span class="c">brew install</span> abhishekkundu25/tap/hoardmap
 
-<span class="p">$</span> <span class="c">cargo install</span> --git https://github.com/abhishekkundu25/hoardmap</pre>
+<span class="p">$</span> <span class="c">hoardmap</span> ~/Developer
+<span class="o">Listening on http://127.0.0.1:52817/</span></pre>
     </div>
   </div>
 </section>
@@ -475,13 +519,13 @@ footer a { color: var(--ink-2); }
   <div class="wrap">
     <img class="icon" src="hoardmap.svg" alt="">
     <h2>Make some room.</h2>
-    <p class="sub" style="margin-inline:auto">Free and open source. Download, drag to Applications, and see your disk in seconds.</p>
+    <p class="sub" style="margin-inline:auto">Free and open source. One command, and see your disk in seconds.</p>
     <div class="cta">
-      <a class="download" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
-        <span>Download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
-      </a>
-      <div class="meta"><a href="https://github.com/abhishekkundu25/hoardmap/releases">All releases</a> · <a href="https://github.com/abhishekkundu25/hoardmap">Source on GitHub</a></div>
+      <div class="brew">
+        <code><span class="p">$</span> brew install --cask abhishekkundu25/tap/hoardmap</code>
+        <button type="button" class="copy" data-copy="brew install --cask abhishekkundu25/tap/hoardmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span>Copy</span></button>
+      </div>
+      <div class="meta"><a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">Download the app</a> · <a href="https://github.com/abhishekkundu25/hoardmap/releases">All releases</a> · <a href="https://github.com/abhishekkundu25/hoardmap">Source on GitHub</a></div>
     </div>
   </div>
 </section>
@@ -494,6 +538,18 @@ footer a { color: var(--ink-2); }
 </footer>
 
 <script>
+for (const button of document.querySelectorAll(".copy")) {
+  button.addEventListener("click", async () => {
+    const label = button.querySelector("span");
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      label.textContent = "Copied";
+    } catch {
+      label.textContent = "Select and copy";
+    }
+    setTimeout(() => { label.textContent = "Copy"; }, 1600);
+  });
+}
 for (const button of document.querySelectorAll(".switch button")) {
   button.addEventListener("click", () => {
     const shot = button.dataset.shot;
