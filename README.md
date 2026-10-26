@@ -9,7 +9,20 @@ app that shows the same page in its own window. Both listen on 127.0.0.1 only. F
 the page you can open any folder or file in Finder. That is the only thing it can do
 to your files; it never deletes, moves or renames anything.
 
-## Install
+## Download
+
+The [Releases](../../releases) page has, for Apple silicon and Intel Macs on macOS 11
+or later:
+
+- `Hoardmap-VERSION-macos.dmg`: open it and drag Hoardmap to Applications.
+- `Hoardmap-VERSION-macos.zip`: the same app, zipped.
+- `hoardmap-VERSION-macos.tar.gz`: the `hoardmap` terminal command.
+
+The app is not notarized by Apple, so macOS blocks the first launch. Press Done, then
+open System Settings, Privacy & Security, and press Open Anyway next to Hoardmap. Or
+run `xattr -dr com.apple.quarantine /Applications/Hoardmap.app` once.
+
+## Build from source
 
 You need macOS and Rust 1.85 or newer. Clone the repository and run:
 
@@ -236,6 +249,21 @@ or a scan event arrives. A test in `tests/resources.rs` measures this: an idle s
 with a tab connected must use under 0.1 s of CPU in 2 s.
 
 ## Development
+
+GitHub Actions runs the format check, both lint passes and the tests on every push to
+`main` and every pull request (`.github/workflows/ci.yml`).
+
+To release, set `version` in `Cargo.toml`, move the Unreleased notes in `CHANGELOG.md`
+under that version, commit, then push a matching tag:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` checks the tag against `Cargo.toml`, runs the tests,
+builds the downloads with `tools/release.sh` and publishes them as a GitHub release
+with `.github/release-notes.md`. `tools/release.sh` also runs locally and leaves the
+files in `target/dist`; it needs the `x86_64-apple-darwin` Rust target.
 
 Build and check, each from the repository root:
 

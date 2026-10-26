@@ -30,6 +30,7 @@ timeout 120 cargo test                        # unit and integration tests
 timeout 120 cargo test --test resources       # idle CPU and exit checks, one file
 cargo clippy --features app --all-targets -- -D warnings   # the native app too
 tools/bundle-app.sh                           # target/Hoardmap.app, signed ad hoc
+tools/release.sh                              # universal dmg, zip and CLI tarball in target/dist
 ```
 
 - The native app (`src/bin/hoardmap-app.rs`) needs `--features app`. It shows the

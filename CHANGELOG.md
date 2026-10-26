@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Downloads on GitHub: pushing a `v*` tag builds a universal (Apple silicon and Intel) `Hoardmap.dmg`, a zipped app and the `hoardmap` command, and attaches them to a release. CI runs the format check, lints and tests on every push and pull request.
 - Sizes start in Physical, the space files take on disk, instead of Logical. The status-line total follows the toggle, also while the scan runs; `/api/status` gains `physical`.
 - Renamed from macdirtree to Hoardmap. The command is `hoardmap`, the app is `Hoardmap.app` with the bundle identifier `dev.hoardmap.app`, so Full Disk Access has to be granted to it again.
 - An app icon and logo, in the style of macOS icons: a treemap of glossy tiles on a squircle, the largest a gold hoard. It is the app icon, the page favicon, and sits beside the name in the toolbar and on the start screen. Source in `assets/hoardmap.svg`.
