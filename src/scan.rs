@@ -5,7 +5,12 @@
 //! Symlinks are never followed: a symlink is a leaf of kind [`Kind::Symlink`] whose
 //! `size` is its own lstat size (the target path's length), counted in `files` and in
 //! `size` like any other non-directory. The root path itself is resolved (so `/tmp`
-//! works); below it every entry is read with `lstat`.
+//! works); below it entries are never followed.
+//!
+//! A folder is listed one of two ways, [`Method`]. On macOS, `getattrlistbulk` returns
+//! names, types and sizes for a whole batch of entries in one call. Everywhere, the
+//! portable way is `read_dir` plus one `lstat` per entry. Both give the same tree; set
+//! `HOARDMAP_SCANNER=portable` to use the portable way on a Mac.
 //!
 //! Workers build [`Local`] subtrees with rayon, one task per subdirectory. The flatten
 //! is sequential and depth-first: siblings are visited largest first by their pre-dedup
@@ -22,9 +27,11 @@ use std::collections::HashSet;
 use std::fs::{self, Metadata};
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+#[cfg(target_os = "macos")]
+use std::{env, mem};
 
 use rayon::prelude::*;
 
@@ -70,9 +77,61 @@ struct Local {
 }
 
 impl Local {
-    fn leaf(name: String, kind: Kind, meta: &Metadata) -> Local {
+    fn leaf(name: String, stat: &Stat) -> Local {
         Local {
             name,
+            kind: stat.kind,
+            size: stat.size,
+            physical: stat.physical,
+            mtime: stat.mtime,
+            ino: stat.ino,
+            nlink: stat.nlink,
+            dev: stat.dev,
+            children: Vec::new(),
+        }
+    }
+
+    fn dir(name: String, stat: &Stat, children: Vec<Local>) -> Local {
+        Local {
+            name,
+            kind: Kind::Dir,
+            size: children.iter().map(|c| c.size).sum(),
+            physical: 0,
+            mtime: stat.mtime,
+            ino: stat.ino,
+            nlink: stat.nlink,
+            dev: stat.dev,
+            children,
+        }
+    }
+}
+
+/// What the walk needs about one entry, from either listing method.
+struct Stat {
+    kind: Kind,
+    size: u64,
+    physical: u64,
+    mtime: i64,
+    ino: u64,
+    nlink: u64,
+    dev: u64,
+    /// Another volume is mounted here; the walk does not enter it.
+    mount_point: bool,
+}
+
+impl Stat {
+    fn of(meta: &Metadata) -> Stat {
+        let ft = meta.file_type();
+        let kind = if ft.is_dir() {
+            Kind::Dir
+        } else if ft.is_file() {
+            Kind::File
+        } else if ft.is_symlink() {
+            Kind::Symlink
+        } else {
+            Kind::Other
+        };
+        Stat {
             kind,
             size: meta.len(),
             physical: meta.blocks() * 512,
@@ -80,26 +139,34 @@ impl Local {
             ino: meta.ino(),
             nlink: meta.nlink(),
             dev: meta.dev(),
-            children: Vec::new(),
-        }
-    }
-
-    fn dir(name: String, meta: &Metadata, children: Vec<Local>) -> Local {
-        Local {
-            name,
-            kind: Kind::Dir,
-            size: children.iter().map(|c| c.size).sum(),
-            physical: 0,
-            mtime: meta.mtime(),
-            ino: meta.ino(),
-            nlink: meta.nlink(),
-            dev: meta.dev(),
-            children,
+            mount_point: false,
         }
     }
 }
 
+/// How a folder is listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    /// `read_dir` and one `lstat` per entry; every Unix.
+    Portable,
+    /// `getattrlistbulk`: a batch of entries with their attributes per call.
+    #[cfg(target_os = "macos")]
+    Bulk,
+}
+
+impl Default for Method {
+    /// The bulk listing on macOS unless `HOARDMAP_SCANNER=portable`; portable elsewhere.
+    fn default() -> Method {
+        #[cfg(target_os = "macos")]
+        if env::var_os("HOARDMAP_SCANNER").is_none_or(|v| v != "portable") {
+            return Method::Bulk;
+        }
+        Method::Portable
+    }
+}
+
 struct Ctx<'a> {
+    method: Method,
     root_dev: u64,
     progress: &'a Progress,
     errors: Mutex<Vec<ScanError>>,
@@ -120,9 +187,15 @@ impl Ctx<'_> {
     }
 }
 
-/// Scans `path` into a tree. `Err` only when the root cannot be read or is not a
-/// directory; every other failure is recorded in the tree's `errors`.
+/// Scans `path` into a tree with the platform's default [`Method`]. `Err` only when
+/// the root cannot be read or is not a directory; every other failure is recorded in
+/// the tree's `errors`.
 pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
+    scan_with(path, progress, Method::default())
+}
+
+/// [`scan`] with a chosen listing method.
+pub fn scan_with(path: &Path, progress: &Progress, method: Method) -> io::Result<Tree> {
     let meta = fs::metadata(path)?;
     if !meta.is_dir() {
         return Err(io::Error::new(
@@ -130,15 +203,20 @@ pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
             format!("{} is not a directory", path.display()),
         ));
     }
-    let rd = fs::read_dir(path)?;
     let ctx = Ctx {
+        method,
         root_dev: meta.dev(),
         progress,
         errors: Mutex::new(Vec::new()),
         error_count: AtomicU64::new(0),
     };
-    let children = read_entries(path, rd, &ctx);
-    let root = Local::dir(path.to_string_lossy().into_owned(), &meta, children);
+    let entries = list(path, &ctx)?;
+    let children = build(path, entries, &ctx);
+    let root = Local::dir(
+        path.to_string_lossy().into_owned(),
+        &Stat::of(&meta),
+        children,
+    );
 
     let (dirs, files, ..) = progress.snapshot();
     let mut nodes = Vec::with_capacity((dirs + files + 1) as usize);
@@ -152,20 +230,19 @@ pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
     })
 }
 
-fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
-    match fs::read_dir(dir) {
-        Ok(rd) => read_entries(dir, rd, ctx),
-        Err(e) => {
-            ctx.record(dir, &e);
-            Vec::new()
-        }
+/// The entries of `dir`. `Err` when the folder cannot be opened; a single entry that
+/// cannot be read is recorded and left out.
+fn list(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
+    match ctx.method {
+        Method::Portable => list_portable(dir, ctx),
+        #[cfg(target_os = "macos")]
+        Method::Bulk => bulk::list(dir, ctx),
     }
 }
 
-fn read_entries(dir: &Path, rd: fs::ReadDir, ctx: &Ctx) -> Vec<Local> {
-    let mut children = Vec::new();
-    let mut subdirs: Vec<(String, Metadata, PathBuf)> = Vec::new();
-    for entry in rd {
+fn list_portable(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir)? {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
@@ -186,45 +263,243 @@ fn read_entries(dir: &Path, rd: fs::ReadDir, ctx: &Ctx) -> Vec<Local> {
             Ok(s) => s,
             Err(os) => os.to_string_lossy().into_owned(),
         };
-        let ft = meta.file_type();
-        if ft.is_dir() {
+        out.push((name, Stat::of(&meta)));
+    }
+    Ok(out)
+}
+
+fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
+    match list(dir, ctx) {
+        Ok(entries) => build(dir, entries, ctx),
+        Err(e) => {
+            ctx.record(dir, &e);
+            Vec::new()
+        }
+    }
+}
+
+/// Counts `entries`, then reads the subfolders on the same volume in parallel.
+fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
+    let mut children = Vec::with_capacity(entries.len());
+    let mut subdirs: Vec<(String, Stat)> = Vec::new();
+    for (name, stat) in entries {
+        if stat.kind == Kind::Dir {
             ctx.progress.dirs.fetch_add(1, AtomicOrdering::Relaxed);
-            if meta.dev() == ctx.root_dev {
-                subdirs.push((name, meta, entry.path()));
+            if stat.dev == ctx.root_dev && !stat.mount_point {
+                subdirs.push((name, stat));
             } else {
-                children.push(Local::dir(name, &meta, Vec::new()));
+                children.push(Local::dir(name, &stat, Vec::new()));
             }
         } else {
-            let kind = if ft.is_file() {
-                Kind::File
-            } else if ft.is_symlink() {
-                Kind::Symlink
-            } else {
-                Kind::Other
-            };
             ctx.progress.files.fetch_add(1, AtomicOrdering::Relaxed);
             ctx.progress
                 .bytes
-                .fetch_add(meta.len(), AtomicOrdering::Relaxed);
+                .fetch_add(stat.size, AtomicOrdering::Relaxed);
             ctx.progress
                 .physical
-                .fetch_add(meta.blocks() * 512, AtomicOrdering::Relaxed);
-            children.push(Local::leaf(name, kind, &meta));
+                .fetch_add(stat.physical, AtomicOrdering::Relaxed);
+            children.push(Local::leaf(name, &stat));
         }
     }
+    let descend = |(name, stat): (String, Stat)| {
+        let path = dir.join(&name);
+        let grandchildren = read_children(&path, ctx);
+        Local::dir(name, &stat, grandchildren)
+    };
     match subdirs.len() {
         0 => {}
-        1 => {
-            let (name, meta, path) = subdirs.pop().unwrap();
-            children.push(Local::dir(name, &meta, read_children(&path, ctx)));
-        }
-        _ => children.par_extend(
-            subdirs
-                .into_par_iter()
-                .map(|(name, meta, path)| Local::dir(name, &meta, read_children(&path, ctx))),
-        ),
+        1 => children.push(descend(subdirs.pop().unwrap())),
+        _ => children.par_extend(subdirs.into_par_iter().map(descend)),
     }
     children
+}
+
+/// The `getattrlistbulk` listing. One call fills a buffer with as many entries as fit,
+/// each a length, the set of attributes returned, then those attributes in a fixed
+/// order: common ones by bit, then directory ones, then file ones.
+#[cfg(target_os = "macos")]
+mod bulk {
+    use std::cell::RefCell;
+    use std::ffi::CString;
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr;
+
+    use super::{Ctx, Kind, Stat, mem};
+
+    /// Not in the libc crate; from <sys/attr.h>.
+    const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+    /// `enum vtype` from <sys/vnode.h>.
+    const VREG: u32 = 1;
+    const VDIR: u32 = 2;
+    const VLNK: u32 = 5;
+    const BUFFER: usize = 256 * 1024;
+
+    thread_local! {
+        static BUF: RefCell<Vec<u8>> = RefCell::new(vec![0; BUFFER]);
+    }
+
+    pub(super) fn list(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
+        let cpath = CString::new(dir.as_os_str().as_bytes())?;
+        // SAFETY: a valid C string; the descriptor is owned and closed on drop.
+        let fd = unsafe {
+            libc::open(
+                cpath.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: open returned a fresh descriptor that nothing else owns.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let mut request = libc::attrlist {
+            bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+            reserved: 0,
+            commonattr: libc::ATTR_CMN_RETURNED_ATTRS
+                | libc::ATTR_CMN_NAME
+                | libc::ATTR_CMN_DEVID
+                | libc::ATTR_CMN_OBJTYPE
+                | libc::ATTR_CMN_MODTIME
+                | libc::ATTR_CMN_FILEID
+                | ATTR_CMN_ERROR,
+            volattr: 0,
+            dirattr: libc::ATTR_DIR_MOUNTSTATUS,
+            fileattr: libc::ATTR_FILE_LINKCOUNT
+                | libc::ATTR_FILE_ALLOCSIZE
+                | libc::ATTR_FILE_DATALENGTH,
+            forkattr: 0,
+        };
+        let mut out = Vec::new();
+        BUF.with_borrow_mut(|buf| {
+            loop {
+                // SAFETY: the request and buffer outlive the call; the kernel writes at
+                // most buf.len() bytes.
+                let count = unsafe {
+                    libc::getattrlistbulk(
+                        fd.as_raw_fd(),
+                        (&raw mut request).cast(),
+                        buf.as_mut_ptr().cast(),
+                        buf.len(),
+                        0,
+                    )
+                };
+                if count < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    if out.is_empty() {
+                        return Err(error);
+                    }
+                    ctx.record(dir, &error);
+                    return Ok(());
+                }
+                if count == 0 {
+                    return Ok(());
+                }
+                let mut at = 0;
+                for _ in 0..count {
+                    let length = read::<u32>(buf, at) as usize;
+                    if let Some(entry) = parse(&buf[at..at + length], dir, ctx) {
+                        out.push(entry);
+                    }
+                    at += length;
+                }
+            }
+        })?;
+        Ok(out)
+    }
+
+    /// One entry; `None` when the kernel reports an error for it (recorded) or it has no
+    /// name.
+    fn parse(entry: &[u8], dir: &Path, ctx: &Ctx) -> Option<(String, Stat)> {
+        let returned: libc::attribute_set_t = read(entry, 4);
+        let mut at = 4 + mem::size_of::<libc::attribute_set_t>();
+        let common = returned.commonattr;
+        let mut name = None;
+        let mut stat = Stat {
+            kind: Kind::Other,
+            size: 0,
+            physical: 0,
+            mtime: 0,
+            ino: 0,
+            nlink: 1,
+            dev: 0,
+            mount_point: false,
+        };
+        if common & libc::ATTR_CMN_NAME != 0 {
+            let reference: libc::attrreference_t = read(entry, at);
+            let start = (at as isize + reference.attr_dataoffset as isize) as usize;
+            // The length counts the terminating NUL.
+            let bytes = &entry[start..start + reference.attr_length as usize - 1];
+            name = Some(String::from_utf8_lossy(bytes).into_owned());
+            at += mem::size_of::<libc::attrreference_t>();
+        }
+        if common & libc::ATTR_CMN_DEVID != 0 {
+            stat.dev = read::<libc::dev_t>(entry, at) as u32 as u64;
+            at += mem::size_of::<libc::dev_t>();
+        }
+        if common & libc::ATTR_CMN_OBJTYPE != 0 {
+            stat.kind = match read::<u32>(entry, at) {
+                VREG => Kind::File,
+                VDIR => Kind::Dir,
+                VLNK => Kind::Symlink,
+                _ => Kind::Other,
+            };
+            at += mem::size_of::<u32>();
+        }
+        if common & libc::ATTR_CMN_MODTIME != 0 {
+            stat.mtime = read::<libc::timespec>(entry, at).tv_sec;
+            at += mem::size_of::<libc::timespec>();
+        }
+        if common & libc::ATTR_CMN_FILEID != 0 {
+            stat.ino = read::<u64>(entry, at);
+            at += mem::size_of::<u64>();
+        }
+        let name = name?;
+        if common & ATTR_CMN_ERROR != 0 {
+            let errno = read::<u32>(entry, at);
+            at += mem::size_of::<u32>();
+            if errno != 0 {
+                ctx.record(
+                    &dir.join(&name),
+                    &io::Error::from_raw_os_error(errno as i32),
+                );
+                return None;
+            }
+        }
+        if returned.dirattr & libc::ATTR_DIR_MOUNTSTATUS != 0 {
+            stat.mount_point = read::<u32>(entry, at) & libc::DIR_MNTSTATUS_MNTPOINT != 0;
+            at += mem::size_of::<u32>();
+        }
+        let file = returned.fileattr;
+        if file & libc::ATTR_FILE_LINKCOUNT != 0 {
+            stat.nlink = u64::from(read::<u32>(entry, at));
+            at += mem::size_of::<u32>();
+        }
+        if file & libc::ATTR_FILE_ALLOCSIZE != 0 {
+            stat.physical = read::<libc::off_t>(entry, at) as u64;
+            at += mem::size_of::<libc::off_t>();
+        }
+        if file & libc::ATTR_FILE_DATALENGTH != 0 {
+            stat.size = read::<libc::off_t>(entry, at) as u64;
+        }
+        Some((name, stat))
+    }
+
+    /// A value at byte `at`; attributes are only four-byte aligned.
+    fn read<T: Copy>(buf: &[u8], at: usize) -> T {
+        assert!(
+            at + mem::size_of::<T>() <= buf.len(),
+            "attribute past the entry"
+        );
+        // SAFETY: bounds checked above; read_unaligned allows any alignment, and every
+        // T used here is plain old data.
+        unsafe { ptr::read_unaligned(buf.as_ptr().add(at).cast()) }
+    }
 }
 
 /// Largest first, ties by name.

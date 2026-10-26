@@ -8,7 +8,10 @@ deletes, moves or renames anything; do not add such an action.
 
 - `src/tree.rs`: the arena tree every module reads. Root at index 0, children
   largest first, directory figures are subtree totals.
-- `src/scan.rs`: file system to tree, in parallel, with progress atomics.
+- `src/scan.rs`: file system to tree, in parallel, with progress atomics. On macOS it
+  lists folders with `getattrlistbulk`; the portable `read_dir` plus `lstat` path is
+  the fallback everywhere and `HOARDMAP_SCANNER=portable` forces it. Both must build
+  the same tree (`tests/scan.rs` checks).
 - `src/treemap.rs`: squarified layout, extension colours, extension and largest-file
   statistics.
 - `src/server.rs`: HTTP, static files, browser presence, exit when the last tab is gone.
@@ -34,6 +37,7 @@ timeout 120 cargo test --test resources       # idle CPU and exit checks, one fi
 cargo clippy --features app --all-targets -- -D warnings   # the native app too
 tools/bundle-app.sh                           # target/Hoardmap.app, signed ad hoc
 tools/release.sh                              # universal dmg, zip and CLI tarball in target/dist
+cargo run --release --example scan_bench -- ~ 5   # time both scanners, check they agree
 ```
 
 - The native app (`src/bin/hoardmap-app.rs`) needs `--features app`. It shows the
