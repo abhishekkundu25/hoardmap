@@ -183,6 +183,15 @@ renames anything. The server exits by itself once the browser tab is gone.
   - `GET /api/events` → SSE as above.
   - `POST /api/scan {"path"}` → 202 and starts a scan; 409 while one runs; 400 for a
     path that is not a directory.
+  - `POST /api/scan/stop {}` → 202 and ends the running scan with what it has read
+    (`stopped: true` in the done status); 409 when none runs. A scan stuck on a drive
+    that stopped answering is replaced by its preview after 1.5 s. A scanned folder
+    that disappears, such as an unplugged drive, ends the scan as `failed`.
+  - `GET /api/volumes` → `{volumes: [{name, path, total, free, kind}], home, chooser}`:
+    the startup disk first, then the drives under `/Volumes`; `kind` is `startup`,
+    `drive` or `network`. System, hidden and Time Machine backup volumes are left out.
+  - `POST /api/choose {}` → 200 `{path}` from the macOS folder picker, or 204 when
+    cancelled.
   - `GET /api/node/{id}` → the node with `path` and `children`, each child with `id,
     name, kind, size, physical, files, dirs, mtime, hard_link, has_children`, largest
     first. 404 for an unknown id, 409 when no tree is loaded.

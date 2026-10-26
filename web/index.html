@@ -11,6 +11,9 @@
 <header id="topbar">
   <span id="brand"><img src="/logo.svg" alt="" width="22" height="22">Hoardmap</span>
   <form id="scan-form" autocomplete="off">
+    <select id="places" aria-label="Disks and folders" title="Scan a disk, your home folder, or a folder you choose">
+      <option value="" selected>Disks</option>
+    </select>
     <input id="path" type="text" name="path" placeholder="Folder to scan" spellcheck="false" aria-label="Folder to scan">
     <button id="scan" type="submit">Scan</button>
     <button id="rescan" type="button" title="Scan the current folder again">Rescan</button>

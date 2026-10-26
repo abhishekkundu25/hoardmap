@@ -18,6 +18,7 @@ use crate::icicle;
 use crate::server::{App, Request, Response, SCAN_RUNNING, State};
 use crate::tree::{Kind, Node, NodeId, Tree};
 use crate::treemap::{self, Colours, Mode};
+use crate::volumes;
 
 const DEFAULT_LARGEST: usize = 100;
 const MAX_LARGEST: usize = 1000;
@@ -40,8 +41,23 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
         ("GET", "/api/largest") => largest(app, &Query::parse(&request.query)),
         ("GET", "/api/errors") => errors(app),
         ("POST", "/api/scan") => json_body(request).map_or_else(|r| r, |body| scan(app, &body)),
+        ("POST", "/api/scan/stop") => json_body(request).map_or_else(
+            |r| r,
+            |_| match app.stop_scan() {
+                Ok(()) => Response::json(202, &app.status()),
+                Err(e) => error(409, &e),
+            },
+        ),
         ("POST", "/api/open") => json_body(request).map_or_else(|r| r, |body| open(app, &body)),
         ("GET", "/api/access") => access_status(app),
+        ("GET", "/api/volumes") => volumes(),
+        ("POST", "/api/choose") => json_body(request).map_or_else(
+            |r| r,
+            |_| match volumes::choose_folder() {
+                Some(path) => Response::json(200, &json!({ "path": lossy(&path) })),
+                None => no_content(),
+            },
+        ),
         ("POST", "/api/access/settings") => {
             json_body(request).map_or_else(|r| r, |_| ran(access::open_settings()))
         }
@@ -56,8 +72,11 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
             "/api/status" | "/api/events" | "/api/treemap" | "/api/icicle" | "/api/extensions"
             | "/api/largest" | "/api/errors",
         ) => method_not_allowed("GET"),
-        (_, "/api/access") => method_not_allowed("GET"),
-        (_, "/api/scan" | "/api/open" | "/api/access/settings") => method_not_allowed("POST"),
+        (_, "/api/access" | "/api/volumes") => method_not_allowed("GET"),
+        (_, "/api/choose") => method_not_allowed("POST"),
+        (_, "/api/scan" | "/api/scan/stop" | "/api/open" | "/api/access/settings") => {
+            method_not_allowed("POST")
+        }
         _ => error(404, "not found"),
     }
 }
@@ -313,6 +332,15 @@ fn scan(app: &Arc<App>, body: &Value) -> Response {
         Err(e) if e == SCAN_RUNNING => error(409, &e),
         Err(e) => error(400, &e),
     }
+}
+
+/// The disks to offer, and the home folder.
+fn volumes() -> Response {
+    let home = std::env::var_os("HOME").map(|h| lossy(Path::new(&h)));
+    Response::json(
+        200,
+        &json!({ "volumes": volumes::list(), "home": home, "chooser": cfg!(target_os = "macos") }),
+    )
 }
 
 fn access_status(app: &App) -> Response {

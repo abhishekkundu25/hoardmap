@@ -18,3 +18,4 @@ pub mod scan;
 pub mod server;
 pub mod tree;
 pub mod treemap;
+pub mod volumes;

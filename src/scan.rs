@@ -29,7 +29,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 #[cfg(target_os = "macos")]
 use std::{env, mem};
 
@@ -51,6 +51,8 @@ pub struct Progress {
     pub physical: AtomicU64,
     /// The entries down to [`LIVE_DEPTH`] that the scan has finished, for [`partial`].
     pub finished: Mutex<Vec<Finished>>,
+    /// Set to end the scan early: folders not read yet are left empty.
+    pub stop: AtomicBool,
 }
 
 /// How deep below the root a running scan reports finished entries.
@@ -498,6 +500,9 @@ fn list_portable(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
 }
 
 fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
+    if ctx.progress.stop.load(AtomicOrdering::Relaxed) {
+        return Vec::new();
+    }
     match list(dir, ctx) {
         Ok(entries) => build(dir, entries, ctx),
         Err(e) => {

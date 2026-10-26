@@ -50,17 +50,30 @@ function joinPath(parent, name) {
   return parent.endsWith("/") ? parent + name : `${parent}/${name}`;
 }
 
+// Children a folder lists before the rest go into one "more" row, and how many more
+// each click on that row adds. Drawing every row of a 100,000-file folder takes seconds.
+const SHOWN = 200;
+const SHOW_MORE = 1000;
+
 // Rows of the list in display order: every node reachable from `rootId` through
-// expanded nodes whose children are loaded, siblings ordered by `compare`.
-function flatten(cache, expanded, rootId, compare) {
+// expanded nodes whose children are loaded, siblings ordered by `compare`. A folder
+// lists its first `shown.get(id)` (default SHOWN) children, then a row standing for
+// the rest: { more: { parent, count, children } }.
+function flatten(cache, expanded, rootId, compare, shown) {
   const rows = [];
   const walk = (id, depth, parent, path) => {
     const node = cache.get(id);
     if (!node) return;
     rows.push({ id, depth, node, parent, path });
     if (expanded.has(id) && Array.isArray(node.children)) {
-      for (const child of [...node.children].sort(compare)) {
+      const children = [...node.children].sort(compare);
+      const limit = shown.get(id) ?? SHOWN;
+      for (const child of children.slice(0, limit)) {
         walk(child.id, depth + 1, node, joinPath(path, child.name));
+      }
+      if (children.length > limit) {
+        const rest = children.slice(limit);
+        rows.push({ id: null, depth: depth + 1, node, parent: node, more: { parent: id, count: rest.length, children: rest } });
       }
     }
   };
@@ -92,7 +105,8 @@ const SORTS = {
   mtime: { first: "desc", value: (n) => n.mtime },
 };
 
-const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const byName = (a, b) => collator.compare(a.name, b.name);
 
 // The sibling order for the list's current sort; ties fall back to the name.
 function siblingOrder() {
@@ -161,12 +175,15 @@ const store = {
 
 const nodes = new Map();
 const expanded = new Set();
+// Folder id to how many of its children the list shows, when more than SHOWN.
+const shown = new Map();
 const pending = new Map();
 // Bumped when the tree is replaced so answers for the old tree are dropped.
 let generation = 0;
 
 const $ = (id) => document.getElementById(id);
 const el = {
+  places: $("places"),
   disk: $("disk"),
   diskScan: $("disk-scan"),
   diskOther: $("disk-other"),
@@ -317,6 +334,7 @@ function renderStatus() {
     case "done": {
       el.status.appendChild(path);
       add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(statusBytes(s))} in ${formatElapsed(s.elapsed_ms)}`);
+      if (s.stopped) add(" · stopped early, so these are partial", "error");
       if (s.error_count > 0) {
         const button = document.createElement("button");
         button.type = "button";
@@ -340,7 +358,9 @@ function renderControls() {
   const s = store.status;
   const scanning = Boolean(s && s.state === "scanning");
   const loaded = store.loadedPath !== null;
-  el.scan.disabled = scanning;
+  el.scan.textContent = scanning ? "Stop" : "Scan";
+  el.scan.title = scanning ? "Stop the scan and keep what it has read" : "Scan this folder";
+  el.places.disabled = scanning;
   el.rescan.disabled = scanning || !(s && s.path);
   const selected = store.selection !== null ? nodes.get(store.selection) : null;
   el.open.disabled = !loaded || !selected;
@@ -389,10 +409,10 @@ async function showErrors() {
 // Directory list.
 
 function renderList() {
-  const rows = flatten(nodes, expanded, 0, siblingOrder());
+  const rows = flatten(nodes, expanded, 0, siblingOrder(), shown);
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
-    fragment.appendChild(renderRow(row));
+    fragment.appendChild(row.more ? renderMore(row) : renderRow(row));
   }
   el.rows.textContent = "";
   el.rows.appendChild(fragment);
@@ -470,6 +490,43 @@ function renderRow({ id, depth, node, parent, path }) {
   return tr;
 }
 
+// The row standing for a folder's smaller children: their count and total, and a click
+// shows SHOW_MORE more of them.
+function renderMore({ depth, more }) {
+  const bytes = more.children.reduce((sum, c) => sum + bytesOf(c, store.mode), 0);
+  const tr = document.createElement("tr");
+  tr.className = "more";
+  tr.dataset.more = more.parent;
+  const name = document.createElement("td");
+  name.className = "name";
+  name.style.paddingLeft = `${4 + depth * 16 + 18}px`;
+  const label = more.count > SHOW_MORE ? `Show ${formatCount(SHOW_MORE)} more` : "Show all";
+  name.textContent = `+ ${formatCount(more.count)} more items · ${label}`;
+  const size = document.createElement("td");
+  size.className = "num";
+  size.textContent = formatBytes(bytes);
+  const rest = document.createElement("td");
+  rest.colSpan = 5;
+  tr.title = `${formatCount(more.count)} more items in this folder, ${formatCount(bytes)} bytes together`;
+  tr.append(name, size, rest);
+  return tr;
+}
+
+function showMore(parent) {
+  shown.set(parent, (shown.get(parent) ?? SHOWN) + SHOW_MORE);
+  renderList();
+}
+
+// Makes sure the list does not hide `id` in its parent's "more" row.
+function unhide(id) {
+  const node = nodes.get(id);
+  const parent = node && node.parent !== null ? nodes.get(node.parent) : null;
+  if (!parent || !Array.isArray(parent.children)) return;
+  const index = [...parent.children].sort(siblingOrder()).findIndex((c) => c.id === id);
+  const limit = shown.get(node.parent) ?? SHOWN;
+  if (index >= limit) shown.set(node.parent, index + 1);
+}
+
 function rowOf(id) {
   return el.rows.querySelector(`tr[data-id="${id}"]`);
 }
@@ -529,6 +586,8 @@ async function reveal(id) {
       parent = ancestor.parent;
     }
     for (const ancestor of chain) expanded.add(ancestor);
+    unhide(id);
+    for (const ancestor of chain) unhide(ancestor);
     renderList();
     select(id, { scroll: true });
   } catch (e) {
@@ -548,6 +607,10 @@ async function openInFinder(id) {
 el.rows.addEventListener("click", (event) => {
   const tr = event.target.closest("tr");
   if (!tr) return;
+  if (tr.dataset.more !== undefined) {
+    showMore(Number(tr.dataset.more));
+    return;
+  }
   const id = Number(tr.dataset.id);
   if (event.target.classList.contains("twisty")) {
     toggle(id);
@@ -558,13 +621,13 @@ el.rows.addEventListener("click", (event) => {
 
 el.rows.addEventListener("dblclick", (event) => {
   const tr = event.target.closest("tr");
-  if (!tr || event.target.classList.contains("twisty")) return;
+  if (!tr || tr.dataset.more !== undefined || event.target.classList.contains("twisty")) return;
   openInFinder(Number(tr.dataset.id));
 });
 
 el.list.addEventListener("keydown", (event) => {
   if (store.loadedPath === null) return;
-  const rows = flatten(nodes, expanded, 0, siblingOrder());
+  const rows = flatten(nodes, expanded, 0, siblingOrder(), shown).filter((r) => !r.more);
   if (rows.length === 0) return;
   const index = rows.findIndex((r) => r.id === store.selection);
   const move = (to) => {
@@ -1052,7 +1115,59 @@ for (const tab of tabs) {
 
 el.scanForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  startScan(el.path.value.trim());
+  if (store.status && store.status.state === "scanning") stopScan();
+  else startScan(el.path.value.trim());
+});
+
+async function stopScan() {
+  try {
+    await postJSON("/api/scan/stop", {});
+  } catch (e) {
+    showMessage(e.message, true);
+  }
+}
+
+// The Disks menu: each disk with how full it is, the home folder, and the macOS folder
+// picker. Reloaded each time it is opened, since drives come and go.
+const CHOOSE = "choose:";
+
+async function loadPlaces() {
+  let data;
+  try {
+    data = await getJSON("/api/volumes");
+  } catch {
+    return;
+  }
+  const options = [new Option("Disks", "")];
+  for (const v of data.volumes) {
+    const used = Math.max(0, v.total - v.free);
+    const detail = v.kind === "network" ? "network, slow to scan" : `${formatBytes(used)} of ${formatBytes(v.total)} used`;
+    options.push(new Option(`${v.name} — ${detail}`, v.path));
+  }
+  if (data.home) options.push(new Option("Home folder", data.home));
+  if (data.chooser) options.push(new Option("Choose a folder…", CHOOSE));
+  el.places.replaceChildren(...options);
+}
+
+el.places.addEventListener("mousedown", loadPlaces);
+el.places.addEventListener("focus", loadPlaces);
+el.places.addEventListener("change", async () => {
+  const value = el.places.value;
+  el.places.value = "";
+  if (!value) return;
+  let path = value;
+  if (value === CHOOSE) {
+    try {
+      const chosen = await postJSON("/api/choose", {});
+      if (!chosen) return;
+      path = chosen.path;
+    } catch (e) {
+      showMessage(e.message, true);
+      return;
+    }
+  }
+  el.path.value = path;
+  startScan(path);
 });
 
 el.rescan.addEventListener("click", () => {
@@ -1076,6 +1191,7 @@ function forgetTree() {
   generation += 1;
   nodes.clear();
   expanded.clear();
+  shown.clear();
   pending.clear();
   store.selection = null;
   store.root = 0;
@@ -1353,6 +1469,7 @@ try {
 } catch {}
 renderControls();
 renderSortHeads();
+loadPlaces();
 document.getElementById("list-head").addEventListener("click", (event) => {
   const th = event.target.closest("th[data-sort]");
   if (th) setSort(th.dataset.sort);

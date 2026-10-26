@@ -11,6 +11,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -53,6 +54,21 @@ pub struct Live {
 /// The `start_scan` error while a scan runs; the API answers it with 409.
 pub const SCAN_RUNNING: &str = "a scan is running";
 
+/// The `stop_scan` error when none runs; the API answers it with 409.
+pub const NO_SCAN: &str = "no scan is running";
+
+/// How long a stopped scan may take to wind down before its preview replaces it.
+const STOP_WAIT: Duration = Duration::from_millis(1500);
+
+/// The state of a scan whose folder disappeared, such as a drive unplugged mid-scan.
+fn gone(path: PathBuf) -> State {
+    let error = format!(
+        "{} went away during the scan; was the drive disconnected?",
+        path.display()
+    );
+    State::Failed { path, error }
+}
+
 /// What the server knows about the scan.
 #[derive(Debug)]
 pub enum State {
@@ -70,6 +86,8 @@ pub enum State {
         tree: Arc<Tree>,
         duration: Duration,
         colours: Colours,
+        /// Stopped before the end: the folders it had not read count as empty.
+        stopped: bool,
     },
     Failed {
         path: PathBuf,
@@ -143,10 +161,11 @@ impl App {
                 path,
                 tree,
                 duration,
+                stopped,
                 ..
             } => {
                 let root = tree.root();
-                status_json(
+                let mut status = status_json(
                     "done",
                     Some(lossy(path)),
                     (
@@ -158,7 +177,9 @@ impl App {
                     duration.as_millis(),
                     tree.error_count,
                     None,
-                )
+                );
+                status["stopped"] = json!(stopped);
+                status
             }
             State::Failed { path, error } => {
                 status_json("failed", Some(lossy(path)), (0, 0, 0, 0), 0, 0, Some(error))
@@ -201,21 +222,69 @@ impl App {
         Ok(())
     }
 
-    fn finish_scan(&self, path: PathBuf, progress: &Progress, started: Instant) {
+    fn finish_scan(&self, path: PathBuf, progress: &Arc<Progress>, started: Instant) {
         let next = match scan::scan(&path, progress) {
+            Ok(_) if !path.exists() => gone(path),
             Ok(tree) => State::Done {
                 path,
                 colours: Colours::new(&tree),
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
+                stopped: progress.stop.load(AtomicOrdering::Relaxed),
             },
             Err(error) => State::Failed {
                 path,
                 error: error.to_string(),
             },
         };
-        *self.state.lock().unwrap() = next;
+        self.replace_scan(progress, next);
+    }
+
+    /// Puts `next` in place of the scan `progress` belongs to; false when that scan is
+    /// no longer the current state, which is then left alone.
+    fn replace_scan(&self, progress: &Arc<Progress>, next: State) -> bool {
+        {
+            let mut state = self.state.lock().unwrap();
+            if !matches!(&*state, State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress)) {
+                return false;
+            }
+            *state = next;
+        }
         self.notify_status();
+        true
+    }
+
+    /// Asks the running scan to stop. It ends with what it has read; if it is still
+    /// stuck after [`STOP_WAIT`], for instance on a network drive that stopped
+    /// answering, its preview takes its place at once.
+    pub fn stop_scan(self: &Arc<App>) -> Result<(), String> {
+        let (path, progress, started) = match &*self.state.lock().unwrap() {
+            State::Scanning {
+                path,
+                progress,
+                started,
+                ..
+            } => (path.clone(), progress.clone(), *started),
+            _ => return Err(NO_SCAN.to_string()),
+        };
+        progress.stop.store(true, AtomicOrdering::Relaxed);
+        let app = self.clone();
+        thread::spawn(move || {
+            thread::sleep(STOP_WAIT);
+            let finished = progress.finished.lock().unwrap().clone();
+            let tree = scan::partial(&lossy(&path), &finished);
+            app.replace_scan(
+                &progress,
+                State::Done {
+                    path,
+                    colours: Colours::new(&tree),
+                    tree: Arc::new(tree),
+                    duration: started.elapsed(),
+                    stopped: true,
+                },
+            );
+        });
+        Ok(())
     }
 
     /// The scan's progress counters identify it, so a ticker outlives neither its own
@@ -224,12 +293,18 @@ impl App {
         let mut built = 0;
         for ticks in 1.. {
             thread::sleep(TICK);
-            let root = match &*self.state.lock().unwrap() {
+            let (root, path) = match &*self.state.lock().unwrap() {
                 State::Scanning {
                     progress: p, path, ..
-                } if Arc::ptr_eq(p, progress) => lossy(path),
+                } if Arc::ptr_eq(p, progress) => (lossy(path), path.clone()),
                 _ => return,
             };
+            if ticks % LIVE_EVERY == 0 && !path.exists() {
+                // An unplugged drive: end now rather than wait on reads that may never return.
+                progress.stop.store(true, AtomicOrdering::Relaxed);
+                self.replace_scan(progress, gone(path));
+                return;
+            }
             if ticks % LIVE_EVERY == 0 {
                 let finished = progress.finished.lock().unwrap().clone();
                 if finished.len() != built {
@@ -258,7 +333,7 @@ impl App {
 
 /// `(total, free)` bytes of the volume holding `path`; free is what an ordinary user
 /// may still write.
-fn disk(path: &Path) -> Option<(u64, u64)> {
+pub fn disk(path: &Path) -> Option<(u64, u64)> {
     let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     // SAFETY: a valid C string and a statvfs the call fills in.

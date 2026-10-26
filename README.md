@@ -111,11 +111,15 @@ switch off and on again.
 
 ## The views
 
-The top bar holds the path field with Scan and Rescan, an Open in Finder button, the
+The top bar holds the Disks menu (each disk with how full it is, your home folder, and
+Choose a folder… for the macOS folder picker), the path field with Scan and Rescan, an Open in Finder button, the
 Logical and Physical size toggle, the Zoom and Root buttons for the treemap, and a
 status line with the scanned path, folder and file counts, total bytes and scan time.
 Sizes start in Physical, what the files take on disk; the status total follows the toggle.
-Press Rescan after clearing files in Finder to see the new figures.
+Press Rescan after clearing files in Finder to see the new figures. While a scan runs,
+Scan turns into Stop, which ends it and keeps what it has read so far; the status says
+the figures are partial. If the scanned drive is disconnected, the scan ends with an
+error saying so.
 
 Under the top bar, a bar shows the whole disk: the scanned folder, everything else, and
 the free space, with the sizes beside it.
@@ -129,7 +133,9 @@ to finish.
 
 The left pane is an expandable tree, sorted largest first. Click a column heading to
 sort by it instead, and click again to reverse; the page remembers the choice. The
-columns are Name, Size, %, Items, Files, Subdirs and Last change. The % column shows the share of the parent
+columns are Name, Size, %, Items, Files, Subdirs and Last change. A folder lists its
+200 largest items, then a row for the rest with their count and total size; click it
+to show 1,000 more. The % column shows the share of the parent
 with a bar behind the number. Sizes are in human units; hover a size for the exact
 byte count. Symlinks and hard links are marked as such, so a 0 byte entry is not a
 mystery. Click a row to select it, click the triangle to expand or collapse it, and

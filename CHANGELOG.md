@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A Disks menu next to the path field: the startup disk and connected drives with how full they are, your home folder, and Choose a folder… for the macOS folder picker.
+- Scan turns into Stop while a scan runs, keeping what it has read so far.
+- A drive disconnected mid-scan ends the scan with a clear error instead of waiting.
+- Folders with many thousands of items open at once: the list shows the 200 largest and a row for the rest.
+
 - Live updates: the list and the map fill in while the scan runs, refreshed about once a second.
 - The list sorts by any column: click Name, Size, Items, Files, Subdirs or Last change. Size, largest first, is the default.
 - A bar under the top bar shows the whole disk: the scanned folder, everything else, and the free space.
