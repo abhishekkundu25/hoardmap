@@ -51,15 +51,15 @@ function joinPath(parent, name) {
 }
 
 // Rows of the list in display order: every node reachable from `rootId` through
-// expanded nodes whose children are loaded.
-function flatten(cache, expanded, rootId) {
+// expanded nodes whose children are loaded, siblings ordered by `compare`.
+function flatten(cache, expanded, rootId, compare) {
   const rows = [];
   const walk = (id, depth, parent, path) => {
     const node = cache.get(id);
     if (!node) return;
     rows.push({ id, depth, node, parent, path });
     if (expanded.has(id) && Array.isArray(node.children)) {
-      for (const child of node.children) {
+      for (const child of [...node.children].sort(compare)) {
         walk(child.id, depth + 1, node, joinPath(path, child.name));
       }
     }
@@ -80,6 +80,57 @@ function shade(hex, amount) {
   const g = mix((n >> 8) & 255);
   const b = mix(n & 255);
   return `rgb(${r},${g},${b})`;
+}
+
+// What each sortable column orders by, and the direction a first click picks.
+const SORTS = {
+  name: { first: "asc" },
+  size: { first: "desc" },
+  items: { first: "desc", value: (n) => n.files + n.dirs },
+  files: { first: "desc", value: (n) => n.files },
+  dirs: { first: "desc", value: (n) => n.dirs },
+  mtime: { first: "desc", value: (n) => n.mtime },
+};
+
+const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+
+// The sibling order for the list's current sort; ties fall back to the name.
+function siblingOrder() {
+  const { key, dir } = store.sort;
+  const sign = dir === "asc" ? 1 : -1;
+  if (key === "name") return (a, b) => sign * byName(a, b);
+  const value = key === "size" ? (n) => bytesOf(n, store.mode) : SORTS[key].value;
+  return (a, b) => sign * (value(a) - value(b)) || byName(a, b);
+}
+
+function loadSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("sort"));
+    if (saved && SORTS[saved.key] && (saved.dir === "asc" || saved.dir === "desc")) return saved;
+  } catch {}
+  return { key: "size", dir: "desc" };
+}
+
+function setSort(key) {
+  const same = store.sort.key === key;
+  const dir = same ? (store.sort.dir === "asc" ? "desc" : "asc") : SORTS[key].first;
+  store.sort = { key, dir };
+  try {
+    localStorage.setItem("sort", JSON.stringify(store.sort));
+  } catch {}
+  renderSortHeads();
+  renderList();
+}
+
+function renderSortHeads() {
+  for (const th of document.querySelectorAll("#list-head th[data-sort]")) {
+    if (th.dataset.sort === store.sort.key) {
+      th.setAttribute("aria-sort", store.sort.dir === "asc" ? "ascending" : "descending");
+    } else {
+      th.removeAttribute("aria-sort");
+    }
+    th.title = `Sort by ${th.textContent.trim().toLowerCase()}`;
+  }
 }
 
 function bytesOf(node, mode) {
@@ -104,6 +155,8 @@ const store = {
   message: null,
   loadedPath: null,
   access: null,
+  // The list's sibling order; size, largest first, unless the viewer picked another.
+  sort: loadSort(),
 };
 
 const nodes = new Map();
@@ -114,6 +167,10 @@ let generation = 0;
 
 const $ = (id) => document.getElementById(id);
 const el = {
+  disk: $("disk"),
+  diskScan: $("disk-scan"),
+  diskOther: $("disk-other"),
+  diskLegend: $("disk-legend"),
   path: $("path"),
   scanForm: $("scan-form"),
   scan: $("scan"),
@@ -202,7 +259,36 @@ function showMessage(text, isError) {
 
 // Status line.
 
+// The volume the folder is on: this folder, everything else, and what is free. The
+// folder's part is its bytes on disk, so it compares with the volume in either mode.
+function renderDisk() {
+  const s = store.status;
+  const d = s && s.disk;
+  el.disk.hidden = !d || !d.total;
+  if (el.disk.hidden) return;
+  const used = Math.max(0, d.total - d.free);
+  const scanned = Math.min(s.physical, used);
+  const width = (bytes) => `${((100 * bytes) / d.total).toFixed(2)}%`;
+  el.diskScan.style.width = width(scanned);
+  el.diskOther.style.width = width(used - scanned);
+  const parts = [
+    ["var(--accent)", s.state === "done" ? "This folder" : "Scanned so far", scanned],
+    ["var(--disk-other)", "Everything else", used - scanned],
+    ["var(--disk-free)", "Free", d.free],
+  ];
+  el.diskLegend.textContent = "";
+  for (const [color, label, bytes] of parts) {
+    const key = document.createElement("span");
+    key.className = "key";
+    key.style.background = color;
+    el.diskLegend.append(key, `${label} ${formatBytes(bytes)}`);
+  }
+  el.diskLegend.append(` · ${formatBytes(d.total)} disk`);
+  el.disk.title = `${formatPercent(percent(used, d.total))} of the disk is in use`;
+}
+
 function renderStatus() {
+  renderDisk();
   const s = store.status;
   el.status.textContent = "";
   if (!s) return;
@@ -303,7 +389,7 @@ async function showErrors() {
 // Directory list.
 
 function renderList() {
-  const rows = flatten(nodes, expanded, 0);
+  const rows = flatten(nodes, expanded, 0, siblingOrder());
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
     fragment.appendChild(renderRow(row));
@@ -478,7 +564,7 @@ el.rows.addEventListener("dblclick", (event) => {
 
 el.list.addEventListener("keydown", (event) => {
   if (store.loadedPath === null) return;
-  const rows = flatten(nodes, expanded, 0);
+  const rows = flatten(nodes, expanded, 0, siblingOrder());
   if (rows.length === 0) return;
   const index = rows.findIndex((r) => r.id === store.selection);
   const move = (to) => {
@@ -833,7 +919,8 @@ let bottomRequest = 0;
 
 async function loadBottom() {
   const request = ++bottomRequest;
-  if (store.loadedPath === null) {
+  // A running scan's preview stops a few levels down, so its file lists would mislead.
+  if (store.loadedPath === null || store.status.state === "scanning") {
     el.extRows.textContent = "";
     el.largestRows.textContent = "";
     return;
@@ -1019,6 +1106,64 @@ async function loadTree() {
   loadBottom();
 }
 
+// While a scan runs, reloads its preview tree at most every LIVE_MS, keeping the
+// expanded folders, the selection, the zoom and the highlighted type by path.
+const LIVE_MS = 2000;
+let liveLoading = false;
+let liveShownAt = 0;
+
+async function refreshLive() {
+  const live = store.status.live;
+  if (liveLoading || live === store.liveShown || Date.now() - liveShownAt < LIVE_MS) return;
+  liveLoading = true;
+  store.liveShown = live;
+  liveShownAt = Date.now();
+  const pathOf = (id) => (id === null ? null : nodes.get(id)?.path ?? null);
+  const keep = {
+    expanded: [...expanded].map(pathOf).filter(Boolean),
+    selection: pathOf(store.selection),
+    root: pathOf(store.root),
+    highlightExt: store.highlightExt,
+  };
+  try {
+    await loadTree();
+    if (store.loadedPath === null) return;
+    for (const path of keep.expanded.sort((a, b) => a.length - b.length)) {
+      const id = await findPath(path);
+      if (id !== null) expanded.add(id);
+    }
+    const selection = keep.selection && (await findPath(keep.selection));
+    if (selection !== null && selection !== undefined) store.selection = selection;
+    const root = keep.root && (await findPath(keep.root));
+    if (root) store.root = root;
+    store.highlightExt = keep.highlightExt;
+    renderList();
+    renderCaption();
+    renderControls();
+    if (root) fetchTreemap();
+  } catch {
+    // The tree moved on under the walk; the next refresh catches up.
+  } finally {
+    liveLoading = false;
+  }
+}
+
+// The id of the node at `path` in the loaded tree, or null.
+async function findPath(path) {
+  const top = store.loadedPath;
+  if (path === top) return 0;
+  if (!path.startsWith(`${top}/`)) return null;
+  let id = 0;
+  for (const name of path.slice(top.length + 1).split("/")) {
+    const node = await fetchNode(id);
+    const child = node.children.find((c) => c.name === name);
+    if (!child) return null;
+    id = child.id;
+  }
+  await fetchNode(id);
+  return id;
+}
+
 function clearTree() {
   forgetTree();
   renderList();
@@ -1039,11 +1184,14 @@ function applyStatus(status) {
   renderStatus();
   renderControls();
   const becameDone = status.state === "done" && (!previous || previous.state !== "done" || store.loadedPath === null);
+  const newScan = status.state === "scanning" && previous && previous.state !== "scanning";
   if (becameDone) {
+    store.liveShown = undefined;
     loadTree();
-  } else if ((status.state === "scanning" || status.state === "failed") && store.loadedPath !== null) {
+  } else if ((newScan || status.state === "failed") && store.loadedPath !== null) {
     clearTree();
   }
+  if (status.state === "scanning" && status.live != null) refreshLive();
 }
 
 function connectEvents() {
@@ -1204,6 +1352,11 @@ try {
   if (localStorage.getItem("view") === "icicle") store.view = "icicle";
 } catch {}
 renderControls();
+renderSortHeads();
+document.getElementById("list-head").addEventListener("click", (event) => {
+  const th = event.target.closest("th[data-sort]");
+  if (th) setSort(th.dataset.sort);
+});
 
 const statusLoaded = getJSON("/api/status")
   .then(applyStatus)

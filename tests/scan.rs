@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use hoardmap::scan::{Method, NOT_SCANNED, Progress, scan, scan_skipping};
+use hoardmap::scan::{LIVE_DEPTH, Method, NOT_SCANNED, Progress, partial, scan, scan_skipping};
 use hoardmap::tree::{Kind, NodeId, ROOT, Tree};
 
 /// The fixture folder; removed on drop, with `locked/` made writable again first.
@@ -251,6 +251,59 @@ fn skipped_dir_is_counted_empty_and_listed() {
         .collect();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].path, skipped.to_string_lossy());
+}
+
+#[test]
+fn the_preview_of_a_finished_scan_matches_its_folders() {
+    let fx = Fixture::build();
+    let (tree, progress) = scan_fixture(&fx);
+    let finished = progress.finished.lock().unwrap().clone();
+    assert!(finished.iter().all(|f| f.path.len() <= LIVE_DEPTH));
+    let preview = partial("root", &finished);
+    assert_eq!(preview.nodes[ROOT as usize].name, "root");
+    for name in ["a", "b"] {
+        let full = &tree.nodes[child(&tree, ROOT, name) as usize];
+        let seen = &preview.nodes[child(&preview, ROOT, name) as usize];
+        assert_eq!(
+            (seen.size, seen.files, seen.dirs),
+            (full.size, full.files, full.dirs),
+            "{name}"
+        );
+    }
+    let c = child(&preview, child(&preview, ROOT, "b"), "c");
+    assert_eq!(preview.nodes[c as usize].kind, Kind::Dir);
+    // Largest first, like the scanned tree.
+    let sizes: Vec<u64> = preview.nodes[ROOT as usize]
+        .children
+        .iter()
+        .map(|&id| preview.nodes[id as usize].size)
+        .collect();
+    assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
+}
+
+#[test]
+fn a_preview_adds_up_folders_still_being_read() {
+    let file = |path: &[&str], size| hoardmap::scan::Finished {
+        path: path.iter().map(|s| s.to_string()).collect(),
+        kind: Kind::File,
+        size,
+        physical: size,
+        files: 0,
+        dirs: 0,
+        mtime: 7,
+    };
+    let preview = partial(
+        "/r",
+        &[
+            file(&["x", "one"], 10),
+            file(&["x", "y", "two"], 5),
+            file(&["top"], 1),
+        ],
+    );
+    let x = &preview.nodes[child(&preview, ROOT, "x") as usize];
+    assert_eq!((x.size, x.files, x.dirs, x.mtime), (15, 2, 1, 7));
+    let root = &preview.nodes[ROOT as usize];
+    assert_eq!((root.size, root.files, root.dirs), (16, 3, 2));
 }
 
 #[test]

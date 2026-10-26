@@ -243,7 +243,9 @@ impl Squarify<'_> {
         }
         let node = &self.tree.nodes[id as usize];
         if node.kind == Kind::Dir {
-            if area < self.min2 {
+            // A folder without children here is one a running scan has not opened up
+            // yet; it shows as one block.
+            if area < self.min2 || node.children.is_empty() {
                 self.out.rects.push(Rect {
                     id,
                     x,

@@ -23,7 +23,7 @@
 //! link there; the finished tree counts it once.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, Metadata};
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -36,7 +36,7 @@ use std::{env, mem};
 use rayon::prelude::*;
 
 use crate::access;
-use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ScanError, Tree};
+use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ROOT, ScanError, Tree};
 
 /// Counters a running scan increments and a reader samples.
 #[derive(Debug, Default)]
@@ -49,6 +49,24 @@ pub struct Progress {
     pub bytes: AtomicU64,
     /// Bytes allocated on disk for the non-directory entries seen.
     pub physical: AtomicU64,
+    /// The entries down to [`LIVE_DEPTH`] that the scan has finished, for [`partial`].
+    pub finished: Mutex<Vec<Finished>>,
+}
+
+/// How deep below the root a running scan reports finished entries.
+pub const LIVE_DEPTH: usize = 3;
+
+/// A file, or a folder with its subtree totals, that a running scan has finished.
+#[derive(Clone, Debug)]
+pub struct Finished {
+    /// File names from the root down to this entry.
+    pub path: Vec<String>,
+    pub kind: Kind,
+    pub size: u64,
+    pub physical: u64,
+    pub files: u32,
+    pub dirs: u32,
+    pub mtime: i64,
 }
 
 impl Progress {
@@ -78,6 +96,28 @@ struct Local {
 }
 
 impl Local {
+    /// `(size, physical, files, dirs, mtime)` of the subtree, hard links counted each
+    /// time; good enough for a running scan's preview.
+    fn totals(&self) -> (u64, u64, u32, u32, i64) {
+        if self.kind != Kind::Dir {
+            return (self.size, self.physical, 0, 0, self.mtime);
+        }
+        let mut sum = (0, 0, 0, 0, self.mtime);
+        for child in &self.children {
+            let (size, physical, files, dirs, mtime) = child.totals();
+            sum.0 += size;
+            sum.1 += physical;
+            if child.kind == Kind::Dir {
+                sum.2 += files;
+                sum.3 += 1 + dirs;
+            } else {
+                sum.2 += 1;
+            }
+            sum.4 = sum.4.max(mtime);
+        }
+        sum
+    }
+
     fn leaf(name: String, stat: &Stat) -> Local {
         Local {
             name,
@@ -185,6 +225,39 @@ struct Ctx<'a> {
     error_count: AtomicU64,
     /// Folders below the root that are counted but not read.
     skip: Vec<PathBuf>,
+    root: &'a Path,
+}
+
+impl Ctx<'_> {
+    /// Hands finished entries to [`Progress::finished`] when they are shallow enough.
+    fn finish(&self, dir: &Path, done: &[&Local]) {
+        let Ok(rel) = dir.strip_prefix(self.root) else {
+            return;
+        };
+        let depth = rel.components().count() + 1;
+        if depth > LIVE_DEPTH || done.is_empty() {
+            return;
+        }
+        let parent: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let entries = done.iter().map(|local| {
+            let mut path = parent.clone();
+            path.push(local.name.clone());
+            let (size, physical, files, dirs, mtime) = local.totals();
+            Finished {
+                path,
+                kind: local.kind,
+                size,
+                physical,
+                files,
+                dirs,
+                mtime,
+            }
+        });
+        self.progress.finished.lock().unwrap().extend(entries);
+    }
 }
 
 impl Ctx<'_> {
@@ -206,6 +279,97 @@ impl Ctx<'_> {
 /// the tree's `errors`.
 pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
     scan_with(path, progress, Method::default())
+}
+
+/// A tree of what a running scan has finished so far, named `root`. Folders still
+/// being read show the sum of their finished entries; finished folders deeper than
+/// [`LIVE_DEPTH`] show their totals without children.
+pub fn partial(root: &str, finished: &[Finished]) -> Tree {
+    let mut nodes = vec![Node {
+        name: root.to_string(),
+        parent: None,
+        kind: Kind::Dir,
+        size: 0,
+        physical: 0,
+        files: 0,
+        dirs: 0,
+        mtime: 0,
+        children: Vec::new(),
+        hard_link: false,
+    }];
+    // Finished nodes keep their reported totals; the others add up their children.
+    let mut fixed = vec![false];
+    let mut index: HashMap<(NodeId, &str), NodeId> = HashMap::new();
+    for entry in finished {
+        let mut at = ROOT;
+        for (depth, name) in entry.path.iter().enumerate() {
+            let last = depth + 1 == entry.path.len();
+            at = match index.get(&(at, name.as_str())) {
+                Some(&id) => id,
+                None => {
+                    let id = nodes.len() as NodeId;
+                    nodes.push(Node {
+                        name: name.clone(),
+                        parent: Some(at),
+                        kind: Kind::Dir,
+                        size: 0,
+                        physical: 0,
+                        files: 0,
+                        dirs: 0,
+                        mtime: 0,
+                        children: Vec::new(),
+                        hard_link: false,
+                    });
+                    fixed.push(false);
+                    nodes[at as usize].children.push(id);
+                    index.insert((at, name.as_str()), id);
+                    id
+                }
+            };
+            if last {
+                let node = &mut nodes[at as usize];
+                node.kind = entry.kind;
+                node.size = entry.size;
+                node.physical = entry.physical;
+                node.files = entry.files;
+                node.dirs = entry.dirs;
+                node.mtime = entry.mtime;
+                fixed[at as usize] = true;
+            }
+        }
+    }
+    // A parent is always created before its children, so a reverse pass sums upward.
+    for id in (1..nodes.len()).rev() {
+        let child = &nodes[id];
+        let (size, physical, mtime) = (child.size, child.physical, child.mtime);
+        let (files, dirs) = if child.kind == Kind::Dir {
+            (child.files, 1 + child.dirs)
+        } else {
+            (1, 0)
+        };
+        let parent = child.parent.unwrap() as usize;
+        if !fixed[parent] {
+            let p = &mut nodes[parent];
+            p.size += size;
+            p.physical += physical;
+            p.files += files;
+            p.dirs += dirs;
+            p.mtime = p.mtime.max(mtime);
+        }
+    }
+    for id in 0..nodes.len() {
+        let mut children = mem::take(&mut nodes[id].children);
+        children.sort_by(|&a, &b| {
+            let (a, b) = (&nodes[a as usize], &nodes[b as usize]);
+            by_size_then_name((a.size, &a.name), (b.size, &b.name))
+        });
+        nodes[id].children = children;
+    }
+    Tree {
+        nodes,
+        errors: Vec::new(),
+        error_count: 0,
+    }
 }
 
 /// Makes reading an item that lives only in the cloud fail at once instead of
@@ -273,6 +437,7 @@ pub fn scan_skipping(
         errors: Mutex::new(Vec::new()),
         error_count: AtomicU64::new(0),
         skip,
+        root: path,
     };
     let entries = list(path, &ctx)?;
     let children = build(path, entries, &ctx);
@@ -365,14 +530,18 @@ fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
             children.push(Local::leaf(name, &stat));
         }
     }
+    ctx.finish(dir, &children.iter().collect::<Vec<_>>());
     let descend = |(name, stat): (String, Stat)| {
         let path = dir.join(&name);
-        if ctx.skip.contains(&path) {
+        let grandchildren = if ctx.skip.contains(&path) {
             ctx.record(&path, &io::Error::other(NOT_SCANNED));
-            return Local::dir(name, &stat, Vec::new());
-        }
-        let grandchildren = read_children(&path, ctx);
-        Local::dir(name, &stat, grandchildren)
+            Vec::new()
+        } else {
+            read_children(&path, ctx)
+        };
+        let local = Local::dir(name, &stat, grandchildren);
+        ctx.finish(dir, &[&local]);
+        local
     };
     match subdirs.len() {
         0 => {}

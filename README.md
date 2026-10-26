@@ -117,10 +117,19 @@ status line with the scanned path, folder and file counts, total bytes and scan 
 Sizes start in Physical, what the files take on disk; the status total follows the toggle.
 Press Rescan after clearing files in Finder to see the new figures.
 
+Under the top bar, a bar shows the whole disk: the scanned folder, everything else, and
+the free space, with the sizes beside it.
+
+While a scan runs, the list and the map fill in as folders finish, about once a
+second, the way WinDirStat grows its tree. Expanded folders, the selection and the zoom
+stay put across those updates. The extension and largest-file lists wait for the scan
+to finish.
+
 ### Directory list
 
-The left pane is an expandable tree, sorted largest first. The columns are Name, Size,
-%, Items, Files, Subdirs and Last change. The % column shows the share of the parent
+The left pane is an expandable tree, sorted largest first. Click a column heading to
+sort by it instead, and click again to reverse; the page remembers the choice. The
+columns are Name, Size, %, Items, Files, Subdirs and Last change. The % column shows the share of the parent
 with a bar behind the number. Sizes are in human units; hover a size for the exact
 byte count. Symlinks and hard links are marked as such, so a 0 byte entry is not a
 mystery. Click a row to select it, click the triangle to expand or collapse it, and

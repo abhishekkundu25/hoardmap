@@ -122,6 +122,12 @@ fn status_reaches_done_with_the_fixture_totals() {
     assert!(status["physical"].as_u64().unwrap() > 0);
     assert_eq!(status["dirs"], 4);
     assert_eq!(status["files"], if fx.locked_unreadable { 6 } else { 7 });
+    let (total, free) = (&status["disk"]["total"], &status["disk"]["free"]);
+    assert!(total.as_u64().unwrap() > 0, "{status}");
+    assert!(
+        free.as_u64().unwrap() <= total.as_u64().unwrap(),
+        "{status}"
+    );
     assert_eq!(
         status["error_count"],
         if fx.locked_unreadable { 1 } else { 0 }

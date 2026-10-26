@@ -9,7 +9,7 @@
 use std::convert::Infallible;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -38,6 +38,18 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 /// How often the status goes out on the event streams while a scan runs.
 const TICK: Duration = Duration::from_millis(250);
 
+/// Ticks between rebuilds of a running scan's preview tree.
+const LIVE_EVERY: u32 = 4;
+
+/// A running scan's preview: a tree of what it has finished so far.
+#[derive(Debug)]
+pub struct Live {
+    pub tree: Arc<Tree>,
+    pub colours: Colours,
+    /// Finished entries it was built from.
+    pub entries: usize,
+}
+
 /// The `start_scan` error while a scan runs; the API answers it with 409.
 pub const SCAN_RUNNING: &str = "a scan is running";
 
@@ -49,6 +61,9 @@ pub enum State {
         path: PathBuf,
         progress: Arc<Progress>,
         started: Instant,
+        /// What the scan has finished so far, rebuilt every [`LIVE_EVERY`] ticks; the
+        /// tree endpoints answer from it until the scan is done.
+        live: Option<Live>,
     },
     Done {
         path: PathBuf,
@@ -87,8 +102,16 @@ impl App {
         }
     }
 
-    /// The `/api/status` document for the current state.
+    /// The `/api/status` document for the current state, with the size and free space
+    /// of the volume the folder is on.
     pub fn status(&self) -> serde_json::Value {
+        let mut status = self.state_json();
+        let disk = status["path"].as_str().and_then(|p| disk(Path::new(p)));
+        status["disk"] = json!(disk.map(|(total, free)| json!({ "total": total, "free": free })));
+        status
+    }
+
+    fn state_json(&self) -> serde_json::Value {
         match &*self.state.lock().unwrap() {
             State::Idle => status_json(
                 "idle",
@@ -102,14 +125,20 @@ impl App {
                 path,
                 progress,
                 started,
-            } => status_json(
-                "scanning",
-                Some(lossy(path)),
-                progress.snapshot(),
-                started.elapsed().as_millis(),
-                0,
-                None,
-            ),
+                live,
+            } => {
+                let mut status = status_json(
+                    "scanning",
+                    Some(lossy(path)),
+                    progress.snapshot(),
+                    started.elapsed().as_millis(),
+                    0,
+                    None,
+                );
+                // Changes whenever the preview does, so the page knows to reload it.
+                status["live"] = json!(live.as_ref().map(|l| l.entries));
+                status
+            }
             State::Done {
                 path,
                 tree,
@@ -160,6 +189,7 @@ impl App {
                 path: path.clone(),
                 progress: progress.clone(),
                 started,
+                live: None,
             };
         }
         self.notify_status();
@@ -191,18 +221,52 @@ impl App {
     /// The scan's progress counters identify it, so a ticker outlives neither its own
     /// scan nor into the next one.
     fn tick(&self, progress: &Arc<Progress>) {
-        loop {
+        let mut built = 0;
+        for ticks in 1.. {
             thread::sleep(TICK);
-            let running = matches!(
-                &*self.state.lock().unwrap(),
-                State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress)
-            );
-            if !running {
-                return;
+            let root = match &*self.state.lock().unwrap() {
+                State::Scanning {
+                    progress: p, path, ..
+                } if Arc::ptr_eq(p, progress) => lossy(path),
+                _ => return,
+            };
+            if ticks % LIVE_EVERY == 0 {
+                let finished = progress.finished.lock().unwrap().clone();
+                if finished.len() != built {
+                    built = finished.len();
+                    let tree = scan::partial(&root, &finished);
+                    let live = Live {
+                        colours: Colours::new(&tree),
+                        tree: Arc::new(tree),
+                        entries: built,
+                    };
+                    if let State::Scanning {
+                        progress: p,
+                        live: slot,
+                        ..
+                    } = &mut *self.state.lock().unwrap()
+                        && Arc::ptr_eq(p, progress)
+                    {
+                        *slot = Some(live);
+                    }
+                }
             }
             self.notify_status();
         }
     }
+}
+
+/// `(total, free)` bytes of the volume holding `path`; free is what an ordinary user
+/// may still write.
+fn disk(path: &Path) -> Option<(u64, u64)> {
+    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid C string and a statvfs the call fills in.
+    if unsafe { libc::statvfs(cpath.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let block = stat.f_frsize as u64;
+    Some((stat.f_blocks as u64 * block, stat.f_bavail as u64 * block))
 }
 
 fn status_json(

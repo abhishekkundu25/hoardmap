@@ -70,10 +70,14 @@ fn method_not_allowed(allow: &str) -> Response {
     error(405, "method not allowed").with_header("Allow", allow)
 }
 
-/// The finished tree and its colour table, or the 409 to answer with.
+/// The finished tree and its colour table, or a running scan's preview of them, or
+/// the 409 to answer with.
 fn tree(app: &App) -> Result<(Arc<Tree>, Colours), Response> {
     match &*app.state.lock().unwrap() {
         State::Done { tree, colours, .. } => Ok((tree.clone(), colours.clone())),
+        State::Scanning {
+            live: Some(live), ..
+        } => Ok((live.tree.clone(), live.colours.clone())),
         _ => Err(error(409, "no tree loaded")),
     }
 }

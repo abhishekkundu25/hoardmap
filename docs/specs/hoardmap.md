@@ -171,8 +171,15 @@ renames anything. The server exits by itself once the browser tab is gone.
   On a non-macOS build the command is `xdg-open <dir>`.
 - **API** (all JSON):
   - `GET /api/status` → `{state, path, dirs, files, bytes, physical, elapsed_ms,
-    error_count, error}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
-    the progress so far; when done they are the tree's totals.
+    error_count, error, disk, live}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
+    the progress so far; when done they are the tree's totals. `disk` is `{total, free}`
+    in bytes for the volume holding `path`, or null. `live`, while scanning, counts the
+    finished entries the preview was built from (null before the first preview).
+  - While scanning, the tree endpoints (`node`, `treemap`, `icicle`, `extensions`,
+    `largest`, `errors`) answer from a preview: the entries down to three levels below
+    the root that the scan has finished, rebuilt every second. Folders still being read
+    show the sum of what has finished in them; deeper folders show their totals with no
+    children. The ids change with each preview.
   - `GET /api/events` → SSE as above.
   - `POST /api/scan {"path"}` → 202 and starts a scan; 409 while one runs; 400 for a
     path that is not a directory.
