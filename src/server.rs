@@ -135,14 +135,18 @@ impl App {
     /// The `/api/status` document for the current state, with the size and free space
     /// of the volume the folder is on.
     pub fn status(&self) -> serde_json::Value {
-        let mut status = self.state_json();
+        self.status_of(&self.state.lock().unwrap())
+    }
+
+    fn status_of(&self, state: &State) -> serde_json::Value {
+        let mut status = self.state_json(state);
         let disk = *self.disk.lock().unwrap();
         status["disk"] = json!(disk.map(|(total, free)| json!({ "total": total, "free": free })));
         status
     }
 
-    fn state_json(&self) -> serde_json::Value {
-        match &*self.state.lock().unwrap() {
+    fn state_json(&self, state: &State) -> serde_json::Value {
+        match state {
             State::Idle => status_json(
                 "idle",
                 self.start.as_deref().map(lossy),
@@ -202,8 +206,11 @@ impl App {
     }
 
     /// Sends the current status to every open event stream.
+    /// Sent under the state lock, so the events go out in the order the state changed.
     pub fn notify_status(&self) {
-        self.events.send("status", &self.status().to_string());
+        let state = self.state.lock().unwrap();
+        self.events
+            .send("status", &self.status_of(&state).to_string());
     }
 
     /// Starts scanning `path` on its own thread, with a ticker that sends the status
@@ -348,7 +355,15 @@ impl App {
                     }
                 }
             }
-            self.notify_status();
+            // Checked and sent under the state lock, so a scan that has finished in the
+            // meantime gets neither a second `done` nor a late `scanning` from here.
+            match &*self.state.lock().unwrap() {
+                state @ State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress) => {
+                    self.events
+                        .send("status", &self.status_of(state).to_string());
+                }
+                _ => return,
+            }
         }
     }
 }

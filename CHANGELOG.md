@@ -11,6 +11,7 @@
 - Scan turns into Stop while a scan runs, keeping what it has read so far.
 - A drive disconnected mid-scan ends the scan with a clear error instead of waiting.
 - Folders with many thousands of items open at once: the list shows the 200 largest and a row for the rest.
+- Fixed a rare case where the page could keep showing "Scanning" after a scan had finished.
 
 ## 0.2.1 — 2026-10-26
 
