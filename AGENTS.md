@@ -13,7 +13,8 @@ deletes, moves or renames anything; do not add such an action.
   statistics.
 - `src/server.rs`: HTTP, static files, browser presence, exit when the last tab is gone.
 - `src/api.rs`: the JSON endpoints, documented in `docs/specs/macdirtree.md`.
-- `web/`: the page, embedded in the binary with `include_str!`; no build step.
+- `web/`: the page, embedded in the binary with `include_str!`; no build step, but a
+  page change needs a rebuild (`cargo build`) before the binary serves it.
 - Specs in `docs/specs/`, tickets in `docs/tickets/<name>/` with a README table.
 
 ## Build and test
@@ -26,6 +27,8 @@ timeout 120 cargo test                        # unit and integration tests
 timeout 120 cargo test --test resources       # idle CPU and exit checks, one file
 ```
 
+- Integration test files: `tests/resources.rs`, `tests/scan.rs`, `tests/treemap.rs`,
+  `tests/api.rs`, with shared helpers in `tests/common/mod.rs`.
 - Integration tests spawn the debug binary (`CARGO_BIN_EXE_macdirtree`) with
   `--no-open --linger 1` and put a stub `open` on `PATH`; nothing opens the user's
   browser or Finder from a test.
