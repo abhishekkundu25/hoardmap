@@ -226,6 +226,46 @@ fn node_0_lists_children_largest_first_and_unknown_ids_are_404() {
 }
 
 #[test]
+fn icicle_bars_stack_one_row_per_depth_under_their_parents() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let (status, layout) = get_json(&server, "/api/icicle?root=0&w=400&h=300");
+    assert_eq!(status, 200, "{layout}");
+    let bars = layout["rects"].as_array().unwrap();
+    let rows = layout["rows"].as_u64().unwrap();
+    assert!(rows >= 2, "{layout}");
+    let row = 300.0 / rows as f64;
+    assert_eq!(bars[0]["id"], 0);
+    assert_eq!(bars[0]["w"], 400.0);
+    let by_id = |id: &Value| bars.iter().find(|b| b["id"] == *id);
+    for b in bars {
+        let f = |k: &str| b[k].as_f64().unwrap();
+        assert!(
+            (f("y") - b["depth"].as_f64().unwrap() * row).abs() < 0.01,
+            "{b}"
+        );
+        assert!(f("x") >= -0.01 && f("x") + f("w") <= 400.01, "{b}");
+        assert!(b["name"].is_string(), "{b}");
+        if b["depth"] == 0 {
+            continue;
+        }
+        let (_, node) = get_json(&server, &format!("/api/node/{}", b["id"]));
+        let parent = by_id(&node["parent"]).unwrap_or_else(|| panic!("no parent bar for {b}"));
+        let p = |k: &str| parent[k].as_f64().unwrap();
+        assert!(
+            f("x") >= p("x") - 0.01 && f("x") + f("w") <= p("x") + p("w") + 0.01,
+            "{b}"
+        );
+    }
+    let names: Vec<&str> = bars.iter().map(|b| b["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"big.bin"), "{names:?}");
+    let (status, _) = get_json(&server, "/api/icicle?w=0&h=300");
+    assert_eq!(status, 400);
+    let (status, _) = get_json(&server, "/api/icicle?root=999999&w=400&h=300");
+    assert_eq!(status, 404);
+}
+
+#[test]
 fn treemap_rects_fit_the_viewport_with_extension_colours() {
     let fx = fixture();
     let server = start_done(&fx);

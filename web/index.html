@@ -23,8 +23,8 @@
     <button type="button" role="radio" aria-checked="false" data-mode="physical" title="Bytes allocated on disk">Physical</button>
   </div>
   <span class="sep"></span>
-  <button id="zoom" type="button" disabled title="Zoom the treemap to the selected folder">Zoom</button>
-  <button id="root" type="button" disabled title="Zoom the treemap back out to the scanned folder">Root</button>
+  <button id="zoom" type="button" disabled title="Zoom the map to the selected folder">Zoom</button>
+  <button id="root" type="button" disabled title="Zoom the map back out to the scanned folder">Root</button>
   <span id="status" role="status" aria-live="polite"></span>
 </header>
 
@@ -47,9 +47,15 @@
   </section>
   <div id="vsplit" class="splitter vertical" role="separator" aria-orientation="vertical" aria-label="Resize panes"></div>
   <section id="treemap">
-    <div id="treemap-caption" title=""></div>
+    <div id="treemap-head">
+      <div id="treemap-caption" title=""></div>
+      <div id="view" class="segmented" role="radiogroup" aria-label="Map view">
+        <button type="button" role="radio" aria-checked="true" data-view="treemap" title="Every file a block sized by bytes">Treemap</button>
+        <button type="button" role="radio" aria-checked="false" data-view="icicle" title="One row per folder level, sized by bytes">Icicle</button>
+      </div>
+    </div>
     <div id="treemap-pane">
-      <canvas id="canvas" aria-label="Treemap"></canvas>
+      <canvas id="canvas" aria-label="Disk map"></canvas>
     </div>
   </section>
 </main>

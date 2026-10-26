@@ -4,12 +4,14 @@
 //! - [`tree`]: the scanned tree, an arena of nodes with children sorted by size.
 //! - [`scan`]: builds a [`tree::Tree`] from the file system, in parallel, reporting progress.
 //! - [`treemap`]: squarified layout of a subtree into rectangles, and extension colours.
+//! - [`icicle`]: one row per depth, children under their parent by bytes.
 //! - [`server`]: the HTTP server, browser presence and the exit-when-closed rule.
 //! - [`api`]: the JSON endpoints the page calls, over the scan state.
 //! - [`cli`]: command-line options.
 
 pub mod api;
 pub mod cli;
+pub mod icicle;
 pub mod scan;
 pub mod server;
 pub mod tree;

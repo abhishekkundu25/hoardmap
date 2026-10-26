@@ -93,6 +93,7 @@ const store = {
   selection: null,
   root: 0,
   mode: "logical",
+  view: "treemap",
   highlightExt: null,
   layout: null,
   message: null,
@@ -113,6 +114,7 @@ const el = {
   rescan: $("rescan"),
   open: $("open"),
   mode: $("mode"),
+  view: $("view"),
   zoom: $("zoom"),
   root: $("root"),
   status: $("status"),
@@ -250,6 +252,9 @@ function renderControls() {
   el.root.disabled = !loaded || store.root === 0;
   for (const button of el.mode.querySelectorAll("button")) {
     button.setAttribute("aria-checked", String(button.dataset.mode === store.mode));
+  }
+  for (const button of el.view.querySelectorAll("button")) {
+    button.setAttribute("aria-checked", String(button.dataset.view === store.view));
   }
 }
 
@@ -529,7 +534,7 @@ async function fetchTreemap() {
   const { w, h } = paneSize();
   const request = ++layoutRequest;
   try {
-    const layout = await getJSON(`/api/treemap?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}`);
+    const layout = await getJSON(`/api/${store.view}?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}`);
     if (request !== layoutRequest) return;
     store.layout = layout;
     drawTreemap();
@@ -578,6 +583,10 @@ function drawTreemap() {
 
   const layout = store.layout;
   if (!layout) return;
+  if (layout.rows !== undefined) {
+    drawIcicle(layout, style);
+    return;
+  }
 
   const highlight = store.highlightExt;
   ctx.lineWidth = 1;
@@ -610,7 +619,48 @@ function drawTreemap() {
 function selectionBounds(layout) {
   const id = store.selection;
   if (id === null) return null;
-  return layout.dirs.find((d) => d.id === id) || layout.rects.find((r) => r.id === id) || null;
+  return (layout.dirs || []).find((d) => d.id === id) || layout.rects.find((r) => r.id === id) || null;
+}
+
+// Dark text on light bars, light text on dark ones.
+function labelColor(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const luminance = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+  return luminance > 150 ? "#1d1d1f" : "#ffffff";
+}
+
+function drawIcicle(layout, style) {
+  const accent = style.getPropertyValue("--accent").trim();
+  const border = style.getPropertyValue("--panel").trim();
+  const highlight = store.highlightExt;
+  ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  ctx.textBaseline = "middle";
+  for (const r of layout.rects) {
+    const dim = highlight !== null && (r.kind === "dir" || r.ext !== highlight);
+    ctx.globalAlpha = dim ? 0.3 : 1;
+    ctx.save();
+    ctx.translate(r.x, r.y);
+    ctx.fillStyle = cushion(r.color, r.h);
+    ctx.fillRect(0, 0, r.w, r.h);
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    if (r.w > 2) ctx.strokeRect(0.5, 0.5, r.w - 1, r.h - 1);
+    if (r.w > 36) {
+      ctx.beginPath();
+      ctx.rect(4, 0, r.w - 8, r.h);
+      ctx.clip();
+      ctx.fillStyle = labelColor(r.color);
+      ctx.fillText(`${r.name}  ${formatBytes(r.bytes)}`, 5, r.h / 2);
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  const selected = selectionBounds(layout);
+  if (selected) {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = accent;
+    ctx.strokeRect(selected.x + 1, selected.y + 1, Math.max(0, selected.w - 2), Math.max(0, selected.h - 2));
+  }
 }
 
 function hitTest(x, y) {
@@ -734,6 +784,23 @@ function setMode(mode) {
   fetchTreemap();
   loadBottom();
 }
+
+function setView(view) {
+  if (view === store.view) return;
+  store.view = view;
+  try {
+    localStorage.setItem("view", view);
+  } catch {}
+  store.layout = null;
+  renderControls();
+  drawTreemap();
+  fetchTreemap();
+}
+
+el.view.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-view]");
+  if (button) setView(button.dataset.view);
+});
 
 el.mode.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-mode]");
@@ -1025,6 +1092,11 @@ splitter($("vsplit"), "--list-w", "x");
 splitter($("hsplit"), "--bottom-h", "y");
 
 // Start.
+
+try {
+  if (localStorage.getItem("view") === "icicle") store.view = "icicle";
+} catch {}
+renderControls();
 
 getJSON("/api/status")
   .then(applyStatus)

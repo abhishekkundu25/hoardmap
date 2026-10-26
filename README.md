@@ -86,6 +86,17 @@ darker grey. The layout is recomputed by the server whenever the pane is resized
 - Zoom redraws the treemap with the selected folder as its root. Root goes back to the
   scanned folder. The caption above the treemap names the current root.
 
+### Icicle
+
+The Treemap and Icicle switch above the right pane changes the picture. The icicle
+draws one row per folder level: the current root across the top, and each folder or
+file under its parent with a width proportional to its bytes, largest on the left.
+Bars wide enough for text show the name and size. It shows where a large file sits in
+the hierarchy, which the treemap hides. Hover, click, double-click, Zoom, Root and the
+extension highlight work the same as in the treemap. Rows stay at least 18 pixels tall,
+so a very deep path is cut off at the bottom; zoom into a folder to see further down.
+The page remembers the view you picked.
+
 ### Extension list
 
 The Extensions tab at the bottom is the treemap legend. For each extension under the
@@ -215,11 +226,11 @@ Integration tests start the debug binary with `--no-open --linger 1` and put a s
   their parent, sub-pixel nodes are dropped or collapsed, colours rank the top fifteen
   extensions, extension and largest-file statistics, and a 200,000 file layout is fast.
 - `tests/api.rs`: every endpoint end to end against the fixture, the 400, 404, 409, 413
-  and 415 paths, the `Host` check, that `/api/open` runs `open -R` for a file and bare
+  and 415 paths, the icicle's rows and nesting, the `Host` check, that `/api/open` runs `open -R` for a file and bare
   `open` for a folder, and the no-delete source check.
 
 The JSON endpoints are `GET /api/status`, `GET /api/events` (server-sent events),
-`GET /api/node/{id}`, `GET /api/treemap`, `GET /api/extensions`, `GET /api/largest`,
+`GET /api/node/{id}`, `GET /api/treemap`, `GET /api/icicle`, `GET /api/extensions`, `GET /api/largest`,
 `GET /api/errors`, `POST /api/scan` and `POST /api/open`. Their shapes are in the spec.
 
 The spec is `docs/specs/macdirtree.md`. The build tickets, with the departures from the

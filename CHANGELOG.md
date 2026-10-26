@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Icicle view beside the treemap: one row per folder level, widths by bytes, names and sizes on the bars. Switch with Treemap and Icicle above the right pane.
+
 ## 0.1.0 — 2026-10-26
 
 - One command, `macdirtree [PATH]`, scans a folder (your home folder by default) and opens the result in your browser.

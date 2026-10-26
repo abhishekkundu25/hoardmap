@@ -13,6 +13,7 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+use crate::icicle;
 use crate::server::{App, Request, Response, SCAN_RUNNING, State};
 use crate::tree::{Kind, Node, NodeId, Tree};
 use crate::treemap::{self, Colours, Mode};
@@ -33,6 +34,7 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
         ("GET", "/api/status") => Response::json(200, &app.status()),
         ("GET", "/api/events") => Response::event_stream(),
         ("GET", "/api/treemap") => treemap(app, &Query::parse(&request.query)),
+        ("GET", "/api/icicle") => icicle(app, &Query::parse(&request.query)),
         ("GET", "/api/extensions") => extensions(app, &Query::parse(&request.query)),
         ("GET", "/api/largest") => largest(app, &Query::parse(&request.query)),
         ("GET", "/api/errors") => errors(app),
@@ -40,8 +42,8 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
         ("POST", "/api/open") => json_body(request).map_or_else(|r| r, |body| open(app, &body)),
         (
             _,
-            "/api/status" | "/api/events" | "/api/treemap" | "/api/extensions" | "/api/largest"
-            | "/api/errors",
+            "/api/status" | "/api/events" | "/api/treemap" | "/api/icicle" | "/api/extensions"
+            | "/api/largest" | "/api/errors",
         ) => method_not_allowed("GET"),
         (_, "/api/scan" | "/api/open") => method_not_allowed("POST"),
         _ => error(404, "not found"),
@@ -166,26 +168,28 @@ fn node(app: &App, id: &str) -> Response {
     Response::json(200, &json)
 }
 
+/// The viewport, minimum size, root and mode shared by the two layouts.
+fn viewport(query: &Query) -> Result<(NodeId, f32, f32, f32, Mode), Response> {
+    let w = query.pixels("w")?;
+    let h = query.pixels("h")?;
+    let min = match query.get("min") {
+        None | Some("") => 1.0,
+        Some(v) => v
+            .parse::<f32>()
+            .ok()
+            .filter(|m| m.is_finite())
+            .ok_or_else(|| error(400, "min must be a number of pixels"))?
+            .clamp(0.5, 100.0),
+    };
+    Ok((query.root()?, w, h, min, query.mode()?))
+}
+
 fn treemap(app: &App, query: &Query) -> Response {
     let (tree, colours) = match tree(app) {
         Ok(t) => t,
         Err(r) => return r,
     };
-    let parsed = (|| {
-        let w = query.pixels("w")?;
-        let h = query.pixels("h")?;
-        let min = match query.get("min") {
-            None | Some("") => 1.0,
-            Some(v) => v
-                .parse::<f32>()
-                .ok()
-                .filter(|m| m.is_finite())
-                .ok_or_else(|| error(400, "min must be a number of pixels"))?
-                .clamp(0.5, 100.0),
-        };
-        Ok((query.root()?, w, h, min, query.mode()?))
-    })();
-    let (root, w, h, min, mode) = match parsed {
+    let (root, w, h, min, mode) = match viewport(query) {
         Ok(p) => p,
         Err(r) => return r,
     };
@@ -196,6 +200,21 @@ fn treemap(app: &App, query: &Query) -> Response {
         200,
         &treemap::layout(&tree, root, w, h, min, mode, &colours),
     )
+}
+
+fn icicle(app: &App, query: &Query) -> Response {
+    let (tree, colours) = match tree(app) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let (root, w, h, min, mode) = match viewport(query) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if tree.get(root).is_none() {
+        return error(404, "no such node");
+    }
+    Response::json(200, &icicle::icicle(&tree, root, w, h, min, mode, &colours))
 }
 
 fn extensions(app: &App, query: &Query) -> Response {
