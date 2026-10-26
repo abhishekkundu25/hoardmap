@@ -117,7 +117,14 @@ struct Stat {
     dev: u64,
     /// Another volume is mounted here; the walk does not enter it.
     mount_point: bool,
+    /// A cloud folder (iCloud Drive, Google Drive, ...) whose listing is not on this Mac.
+    /// Reading it would download it, so the walk does not enter it.
+    dataless: bool,
 }
+
+/// `SF_DATALESS` from <sys/stat.h>: the item's contents are in the cloud, not on disk.
+#[cfg(target_os = "macos")]
+const SF_DATALESS: u32 = 0x4000_0000;
 
 impl Stat {
     fn of(meta: &Metadata) -> Stat {
@@ -140,6 +147,10 @@ impl Stat {
             nlink: meta.nlink(),
             dev: meta.dev(),
             mount_point: false,
+            #[cfg(target_os = "macos")]
+            dataless: std::os::macos::fs::MetadataExt::st_flags(meta) & SF_DATALESS != 0,
+            #[cfg(not(target_os = "macos"))]
+            dataless: false,
         }
     }
 }
@@ -194,6 +205,31 @@ pub fn scan(path: &Path, progress: &Progress) -> io::Result<Tree> {
     scan_with(path, progress, Method::default())
 }
 
+/// Makes reading an item that lives only in the cloud fail at once instead of
+/// downloading it, for the whole process: a scan reads sizes and must never fetch files.
+#[cfg(target_os = "macos")]
+fn never_download() {
+    // From <sys/resource.h>; not in the libc crate.
+    const IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES: libc::c_int = 3;
+    const IOPOL_SCOPE_PROCESS: libc::c_int = 0;
+    const IOPOL_MATERIALIZE_DATALESS_FILES_OFF: libc::c_int = 1;
+    unsafe extern "C" {
+        fn setiopolicy_np(
+            iotype: libc::c_int,
+            scope: libc::c_int,
+            policy: libc::c_int,
+        ) -> libc::c_int;
+    }
+    // SAFETY: plain integers; the call only sets a policy on this process.
+    unsafe {
+        setiopolicy_np(
+            IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES,
+            IOPOL_SCOPE_PROCESS,
+            IOPOL_MATERIALIZE_DATALESS_FILES_OFF,
+        );
+    }
+}
+
 /// [`scan`] with a chosen listing method.
 pub fn scan_with(path: &Path, progress: &Progress, method: Method) -> io::Result<Tree> {
     let meta = fs::metadata(path)?;
@@ -203,6 +239,8 @@ pub fn scan_with(path: &Path, progress: &Progress, method: Method) -> io::Result
             format!("{} is not a directory", path.display()),
         ));
     }
+    #[cfg(target_os = "macos")]
+    never_download();
     let ctx = Ctx {
         method,
         root_dev: meta.dev(),
@@ -285,7 +323,7 @@ fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
     for (name, stat) in entries {
         if stat.kind == Kind::Dir {
             ctx.progress.dirs.fetch_add(1, AtomicOrdering::Relaxed);
-            if stat.dev == ctx.root_dev && !stat.mount_point {
+            if stat.dev == ctx.root_dev && !stat.mount_point && !stat.dataless {
                 subdirs.push((name, stat));
             } else {
                 children.push(Local::dir(name, &stat, Vec::new()));
@@ -327,7 +365,7 @@ mod bulk {
     use std::path::Path;
     use std::ptr;
 
-    use super::{Ctx, Kind, Stat, mem};
+    use super::{Ctx, Kind, SF_DATALESS, Stat, mem};
 
     /// Not in the libc crate; from <sys/attr.h>.
     const ATTR_CMN_ERROR: u32 = 0x2000_0000;
@@ -363,6 +401,7 @@ mod bulk {
                 | libc::ATTR_CMN_DEVID
                 | libc::ATTR_CMN_OBJTYPE
                 | libc::ATTR_CMN_MODTIME
+                | libc::ATTR_CMN_FLAGS
                 | libc::ATTR_CMN_FILEID
                 | ATTR_CMN_ERROR,
             volattr: 0,
@@ -429,6 +468,7 @@ mod bulk {
             nlink: 1,
             dev: 0,
             mount_point: false,
+            dataless: false,
         };
         if common & libc::ATTR_CMN_NAME != 0 {
             let reference: libc::attrreference_t = read(entry, at);
@@ -454,6 +494,10 @@ mod bulk {
         if common & libc::ATTR_CMN_MODTIME != 0 {
             stat.mtime = read::<libc::timespec>(entry, at).tv_sec;
             at += mem::size_of::<libc::timespec>();
+        }
+        if common & libc::ATTR_CMN_FLAGS != 0 {
+            stat.dataless = read::<u32>(entry, at) & SF_DATALESS != 0;
+            at += mem::size_of::<u32>();
         }
         if common & libc::ATTR_CMN_FILEID != 0 {
             stat.ino = read::<u64>(entry, at);
