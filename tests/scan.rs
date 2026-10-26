@@ -282,6 +282,19 @@ fn the_preview_of_a_finished_scan_matches_its_folders() {
 }
 
 #[test]
+fn a_preview_keeps_its_ids_as_the_scan_goes_on() {
+    let fx = Fixture::build();
+    let (_, progress) = scan_fixture(&fx);
+    let finished = progress.finished.lock().unwrap().clone();
+    let early = partial("root", &finished[..finished.len() / 2]);
+    let later = partial("root", &finished);
+    for (id, node) in early.nodes.iter().enumerate() {
+        assert_eq!(later.nodes[id].name, node.name, "id {id}");
+        assert_eq!(later.nodes[id].parent, node.parent, "id {id}");
+    }
+}
+
+#[test]
 fn a_preview_adds_up_folders_still_being_read() {
     let file = |path: &[&str], size| hoardmap::scan::Finished {
         path: path.iter().map(|s| s.to_string()).collect(),

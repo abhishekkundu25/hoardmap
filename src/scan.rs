@@ -30,7 +30,6 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
-#[cfg(target_os = "macos")]
 use std::{env, mem};
 
 use rayon::prelude::*;
@@ -94,32 +93,13 @@ struct Local {
     ino: u64,
     nlink: u64,
     dev: u64,
+    /// Subtree counts, kept as the walk builds folders so a preview reads them at once.
+    files: u32,
+    dirs: u32,
     children: Vec<Local>,
 }
 
 impl Local {
-    /// `(size, physical, files, dirs, mtime)` of the subtree, hard links counted each
-    /// time; good enough for a running scan's preview.
-    fn totals(&self) -> (u64, u64, u32, u32, i64) {
-        if self.kind != Kind::Dir {
-            return (self.size, self.physical, 0, 0, self.mtime);
-        }
-        let mut sum = (0, 0, 0, 0, self.mtime);
-        for child in &self.children {
-            let (size, physical, files, dirs, mtime) = child.totals();
-            sum.0 += size;
-            sum.1 += physical;
-            if child.kind == Kind::Dir {
-                sum.2 += files;
-                sum.3 += 1 + dirs;
-            } else {
-                sum.2 += 1;
-            }
-            sum.4 = sum.4.max(mtime);
-        }
-        sum
-    }
-
     fn leaf(name: String, stat: &Stat) -> Local {
         Local {
             name,
@@ -130,22 +110,41 @@ impl Local {
             ino: stat.ino,
             nlink: stat.nlink,
             dev: stat.dev,
+            files: 0,
+            dirs: 0,
             children: Vec::new(),
         }
     }
 
+    /// A folder with the sums of its children: hard links counted each time, which the
+    /// flatten corrects; good enough for a running scan's preview.
     fn dir(name: String, stat: &Stat, children: Vec<Local>) -> Local {
-        Local {
+        let mut local = Local {
             name,
             kind: Kind::Dir,
-            size: children.iter().map(|c| c.size).sum(),
+            size: 0,
             physical: 0,
             mtime: stat.mtime,
             ino: stat.ino,
             nlink: stat.nlink,
             dev: stat.dev,
-            children,
+            files: 0,
+            dirs: 0,
+            children: Vec::new(),
+        };
+        for child in &children {
+            local.size += child.size;
+            local.physical += child.physical;
+            local.mtime = local.mtime.max(child.mtime);
+            if child.kind == Kind::Dir {
+                local.files += child.files;
+                local.dirs += 1 + child.dirs;
+            } else {
+                local.files += 1;
+            }
         }
+        local.children = children;
+        local
     }
 }
 
@@ -231,15 +230,11 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// Hands finished entries to [`Progress::finished`] when they are shallow enough.
+    /// Hands entries of a folder near the root to [`Progress::finished`].
     fn finish(&self, dir: &Path, done: &[&Local]) {
         let Ok(rel) = dir.strip_prefix(self.root) else {
             return;
         };
-        let depth = rel.components().count() + 1;
-        if depth > LIVE_DEPTH || done.is_empty() {
-            return;
-        }
         let parent: Vec<String> = rel
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -247,15 +242,14 @@ impl Ctx<'_> {
         let entries = done.iter().map(|local| {
             let mut path = parent.clone();
             path.push(local.name.clone());
-            let (size, physical, files, dirs, mtime) = local.totals();
             Finished {
                 path,
                 kind: local.kind,
-                size,
-                physical,
-                files,
-                dirs,
-                mtime,
+                size: local.size,
+                physical: local.physical,
+                files: local.files,
+                dirs: local.dirs,
+                mtime: local.mtime,
             }
         });
         self.progress.finished.lock().unwrap().extend(entries);
@@ -442,7 +436,7 @@ pub fn scan_skipping(
         root: path,
     };
     let entries = list(path, &ctx)?;
-    let children = build(path, entries, &ctx);
+    let children = build(path, entries, &ctx, 0);
     let root = Local::dir(
         path.to_string_lossy().into_owned(),
         &Stat::of(&meta),
@@ -499,12 +493,13 @@ fn list_portable(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
     Ok(out)
 }
 
-fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
+/// `depth` is how far `dir` is below the root, which is 0.
+fn read_children(dir: &Path, ctx: &Ctx, depth: usize) -> Vec<Local> {
     if ctx.progress.stop.load(AtomicOrdering::Relaxed) {
         return Vec::new();
     }
     match list(dir, ctx) {
-        Ok(entries) => build(dir, entries, ctx),
+        Ok(entries) => build(dir, entries, ctx, depth),
         Err(e) => {
             ctx.record(dir, &e);
             Vec::new()
@@ -512,8 +507,11 @@ fn read_children(dir: &Path, ctx: &Ctx) -> Vec<Local> {
     }
 }
 
-/// Counts `entries`, then reads the subfolders on the same volume in parallel.
-fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
+/// Counts `entries`, then reads the subfolders on the same volume in parallel. `depth`
+/// is how far `dir` is below the root, which is 0.
+fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx, depth: usize) -> Vec<Local> {
+    // Only entries this shallow go into the running scan's preview.
+    let live = depth < LIVE_DEPTH;
     let mut children = Vec::with_capacity(entries.len());
     let mut subdirs: Vec<(String, Stat)> = Vec::new();
     for (name, stat) in entries {
@@ -535,17 +533,21 @@ fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx) -> Vec<Local> {
             children.push(Local::leaf(name, &stat));
         }
     }
-    ctx.finish(dir, &children.iter().collect::<Vec<_>>());
+    if live {
+        ctx.finish(dir, &children.iter().collect::<Vec<_>>());
+    }
     let descend = |(name, stat): (String, Stat)| {
         let path = dir.join(&name);
         let grandchildren = if ctx.skip.contains(&path) {
             ctx.record(&path, &io::Error::other(NOT_SCANNED));
             Vec::new()
         } else {
-            read_children(&path, ctx)
+            read_children(&path, ctx, depth + 1)
         };
         let local = Local::dir(name, &stat, grandchildren);
-        ctx.finish(dir, &[&local]);
+        if live {
+            ctx.finish(dir, &[&local]);
+        }
         local
     };
     match subdirs.len() {
@@ -771,6 +773,7 @@ fn flatten(
         nlink,
         dev,
         mut children,
+        ..
     } = local;
     let id = nodes.len() as NodeId;
     let mut hard_link = false;

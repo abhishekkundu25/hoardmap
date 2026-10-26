@@ -1,7 +1,6 @@
 //! The disks a scan can start from: the startup disk and the drives mounted under
 //! `/Volumes`, with their size and free space, and the macOS folder picker.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -21,14 +20,20 @@ pub struct Volume {
 #[cfg(target_os = "macos")]
 pub fn list() -> Vec<Volume> {
     use std::ffi::CStr;
+    use std::sync::Mutex;
 
+    // getmntinfo fills one buffer shared by the whole process; requests come in on
+    // several threads, so one at a time reads it.
+    static GETMNTINFO: Mutex<()> = Mutex::new(());
+    let _guard = GETMNTINFO.lock().unwrap_or_else(|e| e.into_inner());
     let mut mounts: *mut libc::statfs = std::ptr::null_mut();
-    // SAFETY: getmntinfo points `mounts` at a buffer it owns and returns its length.
+    // SAFETY: getmntinfo points `mounts` at its buffer and returns its length.
     let count = unsafe { libc::getmntinfo(&mut mounts, libc::MNT_NOWAIT) };
     if count <= 0 {
         return Vec::new();
     }
-    // SAFETY: `count` entries, valid until the next getmntinfo call on this thread.
+    // SAFETY: `count` entries, valid until the next getmntinfo call, which the lock
+    // held until the end of this function keeps out.
     let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
     let mut out = Vec::new();
     for mount in mounts {
@@ -85,11 +90,11 @@ pub fn list() -> Vec<Volume> {
 /// The startup disk's name, such as "Macintosh HD": the /Volumes entry linking to /.
 #[cfg(target_os = "macos")]
 fn startup_name() -> String {
-    fs::read_dir("/Volumes")
+    std::fs::read_dir("/Volumes")
         .into_iter()
         .flatten()
         .flatten()
-        .find(|e| fs::read_link(e.path()).is_ok_and(|t| t == Path::new("/")))
+        .find(|e| std::fs::read_link(e.path()).is_ok_and(|t| t == Path::new("/")))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .unwrap_or_else(|| "Startup disk".into())
 }
@@ -97,7 +102,7 @@ fn startup_name() -> String {
 /// A Time Machine backup disk: millions of hard links whose sizes mean little.
 #[cfg(target_os = "macos")]
 fn is_backup(root: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(root) else {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return false;
     };
     entries.flatten().any(|e| {
@@ -120,6 +125,12 @@ pub fn choose_folder() -> Option<PathBuf> {
     if !output.status.success() {
         return None;
     }
+    // The picker ends folder paths with a slash; the scan names its root without one.
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    let path = match path.trim_end_matches('/') {
+        "" if path.is_empty() => return None,
+        "" => "/".to_string(),
+        trimmed => trimmed.to_string(),
+    };
+    Some(PathBuf::from(path))
 }

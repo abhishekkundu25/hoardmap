@@ -88,6 +88,9 @@ pub enum State {
         colours: Colours,
         /// Stopped before the end: the folders it had not read count as empty.
         stopped: bool,
+        /// The running scan's preview stood in for a scan that did not wind down: only
+        /// the top levels, and no unreadable folders.
+        preview: bool,
     },
     Failed {
         path: PathBuf,
@@ -106,6 +109,10 @@ pub struct App {
     pub native: bool,
     /// The folder to scan first; the idle status names it so the page can start it.
     pub start: Option<PathBuf>,
+    /// `(total, free)` of the scanned folder's volume, read when a scan starts and ends
+    /// rather than on each status, since a network drive that stopped answering blocks
+    /// the read.
+    disk: Mutex<Option<(u64, u64)>>,
 }
 
 impl App {
@@ -117,14 +124,19 @@ impl App {
             port,
             native,
             start: None,
+            disk: Mutex::new(None),
         }
+    }
+
+    fn read_disk(&self, path: &Path) {
+        *self.disk.lock().unwrap() = disk(path);
     }
 
     /// The `/api/status` document for the current state, with the size and free space
     /// of the volume the folder is on.
     pub fn status(&self) -> serde_json::Value {
         let mut status = self.state_json();
-        let disk = status["path"].as_str().and_then(|p| disk(Path::new(p)));
+        let disk = *self.disk.lock().unwrap();
         status["disk"] = json!(disk.map(|(total, free)| json!({ "total": total, "free": free })));
         status
     }
@@ -162,6 +174,7 @@ impl App {
                 tree,
                 duration,
                 stopped,
+                preview,
                 ..
             } => {
                 let root = tree.root();
@@ -179,6 +192,7 @@ impl App {
                     None,
                 );
                 status["stopped"] = json!(stopped);
+                status["preview"] = json!(preview);
                 status
             }
             State::Failed { path, error } => {
@@ -213,6 +227,7 @@ impl App {
                 live: None,
             };
         }
+        self.read_disk(&path);
         self.notify_status();
         let app = self.clone();
         let ticker = progress.clone();
@@ -223,6 +238,7 @@ impl App {
     }
 
     fn finish_scan(&self, path: PathBuf, progress: &Arc<Progress>, started: Instant) {
+        let path_for_disk = path.clone();
         let next = match scan::scan(&path, progress) {
             Ok(_) if !path.exists() => gone(path),
             Ok(tree) => State::Done {
@@ -231,12 +247,14 @@ impl App {
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
                 stopped: progress.stop.load(AtomicOrdering::Relaxed),
+                preview: false,
             },
             Err(error) => State::Failed {
                 path,
                 error: error.to_string(),
             },
         };
+        self.read_disk(&path_for_disk);
         self.replace_scan(progress, next);
     }
 
@@ -281,6 +299,7 @@ impl App {
                     tree: Arc::new(tree),
                     duration: started.elapsed(),
                     stopped: true,
+                    preview: true,
                 },
             );
         });
@@ -306,8 +325,11 @@ impl App {
                 return;
             }
             if ticks % LIVE_EVERY == 0 {
-                let finished = progress.finished.lock().unwrap().clone();
-                if finished.len() != built {
+                let finished = {
+                    let finished = progress.finished.lock().unwrap();
+                    (finished.len() != built).then(|| finished.clone())
+                };
+                if let Some(finished) = finished {
                     built = finished.len();
                     let tree = scan::partial(&root, &finished);
                     let live = Live {
@@ -555,6 +577,7 @@ pub fn spawn(config: Config) -> io::Result<u16> {
     let port = listener.local_addr()?.port();
     let mut app = App::new(config.linger, port, config.native);
     app.start = Some(config.path.clone());
+    app.read_disk(&config.path);
     let app = Arc::new(app);
     if config.scan_at_start
         && let Err(error) = app.start_scan(config.path.clone())

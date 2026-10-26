@@ -327,6 +327,11 @@ fn scan(app: &Arc<App>, body: &Value) -> Response {
     let Some(path) = body["path"].as_str().filter(|p| !p.is_empty()) else {
         return error(400, "path must be a non-empty string");
     };
+    // "/Users/me/" and "/Users/me" are one folder; the tree names its root without the slash.
+    let path = match path.trim_end_matches('/') {
+        "" => "/",
+        trimmed => trimmed,
+    };
     match app.start_scan(PathBuf::from(path)) {
         Ok(()) => Response::json(202, &app.status()),
         Err(e) if e == SCAN_RUNNING => error(409, &e),

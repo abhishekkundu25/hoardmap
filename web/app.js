@@ -56,17 +56,17 @@ const SHOWN = 200;
 const SHOW_MORE = 1000;
 
 // Rows of the list in display order: every node reachable from `rootId` through
-// expanded nodes whose children are loaded, siblings ordered by `compare`. A folder
+// expanded nodes whose children are loaded, siblings in the order `order(node)` gives. A folder
 // lists its first `shown.get(id)` (default SHOWN) children, then a row standing for
 // the rest: { more: { parent, count, children } }.
-function flatten(cache, expanded, rootId, compare, shown) {
+function flatten(cache, expanded, rootId, order, shown) {
   const rows = [];
   const walk = (id, depth, parent, path) => {
     const node = cache.get(id);
     if (!node) return;
     rows.push({ id, depth, node, parent, path });
     if (expanded.has(id) && Array.isArray(node.children)) {
-      const children = [...node.children].sort(compare);
+      const children = order(node);
       const limit = shown.get(id) ?? SHOWN;
       for (const child of children.slice(0, limit)) {
         walk(child.id, depth + 1, node, joinPath(path, child.name));
@@ -115,6 +115,19 @@ function siblingOrder() {
   if (key === "name") return (a, b) => sign * byName(a, b);
   const value = key === "size" ? (n) => bytesOf(n, store.mode) : SORTS[key].value;
   return (a, b) => sign * (value(a) - value(b)) || byName(a, b);
+}
+
+// A folder's children in the list's order, sorted once per sort, size mode and fetch:
+// the list re-renders and the arrow keys walk it far more often than any of those change.
+const sortedCache = new WeakMap();
+
+function sortedChildren(node) {
+  const key = `${store.sort.key}:${store.sort.dir}:${store.mode}`;
+  const hit = sortedCache.get(node.children);
+  if (hit && hit.key === key) return hit.sorted;
+  const sorted = [...node.children].sort(siblingOrder());
+  sortedCache.set(node.children, { key, sorted });
+  return sorted;
 }
 
 function loadSort() {
@@ -409,7 +422,7 @@ async function showErrors() {
 // Directory list.
 
 function renderList() {
-  const rows = flatten(nodes, expanded, 0, siblingOrder(), shown);
+  const rows = flatten(nodes, expanded, 0, sortedChildren, shown);
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
     fragment.appendChild(row.more ? renderMore(row) : renderRow(row));
@@ -522,7 +535,7 @@ function unhide(id) {
   const node = nodes.get(id);
   const parent = node && node.parent !== null ? nodes.get(node.parent) : null;
   if (!parent || !Array.isArray(parent.children)) return;
-  const index = [...parent.children].sort(siblingOrder()).findIndex((c) => c.id === id);
+  const index = sortedChildren(parent).findIndex((c) => c.id === id);
   const limit = shown.get(node.parent) ?? SHOWN;
   if (index >= limit) shown.set(node.parent, index + 1);
 }
@@ -627,7 +640,7 @@ el.rows.addEventListener("dblclick", (event) => {
 
 el.list.addEventListener("keydown", (event) => {
   if (store.loadedPath === null) return;
-  const rows = flatten(nodes, expanded, 0, siblingOrder(), shown).filter((r) => !r.more);
+  const rows = flatten(nodes, expanded, 0, sortedChildren, shown).filter((r) => !r.more);
   if (rows.length === 0) return;
   const index = rows.findIndex((r) => r.id === store.selection);
   const move = (to) => {
@@ -983,7 +996,8 @@ let bottomRequest = 0;
 async function loadBottom() {
   const request = ++bottomRequest;
   // A running scan's preview stops a few levels down, so its file lists would mislead.
-  if (store.loadedPath === null || store.status.state === "scanning") {
+  const s = store.status;
+  if (store.loadedPath === null || s.state === "scanning" || s.preview) {
     el.extRows.textContent = "";
     el.largestRows.textContent = "";
     return;
@@ -1131,7 +1145,15 @@ async function stopScan() {
 // picker. Reloaded each time it is opened, since drives come and go.
 const CHOOSE = "choose:";
 
-async function loadPlaces() {
+// Opening the menu fires both mousedown and focus; one request serves both.
+let placesLoading = null;
+
+function loadPlaces() {
+  placesLoading ??= fillPlaces().finally(() => (placesLoading = null));
+  return placesLoading;
+}
+
+async function fillPlaces() {
   let data;
   try {
     data = await getJSON("/api/volumes");
@@ -1204,14 +1226,18 @@ function forgetTree() {
 // Loads the new tree once a scan has finished.
 async function loadTree() {
   forgetTree();
+  const started = generation;
   store.loadedPath = store.status.path;
   try {
     await fetchNode(0);
   } catch (e) {
+    // A newer load replaced this one; it owns the view now.
+    if (started !== generation) return;
     store.loadedPath = null;
     showMessage(e.message, true);
     return;
   }
+  if (started !== generation) return;
   expanded.add(0);
   store.selection = 0;
   renderList();
@@ -1234,50 +1260,27 @@ async function refreshLive() {
   liveLoading = true;
   store.liveShown = live;
   liveShownAt = Date.now();
-  const pathOf = (id) => (id === null ? null : nodes.get(id)?.path ?? null);
-  const keep = {
-    expanded: [...expanded].map(pathOf).filter(Boolean),
-    selection: pathOf(store.selection),
-    root: pathOf(store.root),
-    highlightExt: store.highlightExt,
-  };
   try {
-    await loadTree();
-    if (store.loadedPath === null) return;
-    for (const path of keep.expanded.sort((a, b) => a.length - b.length)) {
-      const id = await findPath(path);
-      if (id !== null) expanded.add(id);
+    if (store.loadedPath === null) {
+      await loadTree();
+      return;
     }
-    const selection = keep.selection && (await findPath(keep.selection));
-    if (selection !== null && selection !== undefined) store.selection = selection;
-    const root = keep.root && (await findPath(keep.root));
-    if (root) store.root = root;
-    store.highlightExt = keep.highlightExt;
+    // A preview keeps each entry's id from one rebuild to the next, so the view keeps
+    // its ids and only fetches the figures again.
+    generation += 1;
+    nodes.clear();
+    pending.clear();
+    const keep = new Set([0, ...expanded, store.root, store.selection].filter((id) => id !== null));
+    await Promise.all([...keep].map((id) => fetchNode(id).catch(() => expanded.delete(id))));
     renderList();
     renderCaption();
     renderControls();
-    if (root) fetchTreemap();
+    fetchTreemap();
   } catch {
-    // The tree moved on under the walk; the next refresh catches up.
+    // The tree moved on during the fetches; the next refresh catches up.
   } finally {
     liveLoading = false;
   }
-}
-
-// The id of the node at `path` in the loaded tree, or null.
-async function findPath(path) {
-  const top = store.loadedPath;
-  if (path === top) return 0;
-  if (!path.startsWith(`${top}/`)) return null;
-  let id = 0;
-  for (const name of path.slice(top.length + 1).split("/")) {
-    const node = await fetchNode(id);
-    const child = node.children.find((c) => c.name === name);
-    if (!child) return null;
-    id = child.id;
-  }
-  await fetchNode(id);
-  return id;
 }
 
 function clearTree() {

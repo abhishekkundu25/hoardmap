@@ -179,7 +179,10 @@ renames anything. The server exits by itself once the browser tab is gone.
     `largest`, `errors`) answer from a preview: the entries down to three levels below
     the root that the scan has finished, rebuilt every second. Folders still being read
     show the sum of what has finished in them; deeper folders show their totals with no
-    children. The ids change with each preview.
+    children. An entry keeps its id from one preview to the next, so the page refetches
+    only what it shows; the finished tree has new ids. If a stopped scan does not wind
+    down within 1.5 s, the preview becomes its result and the done status says
+    `preview: true`.
   - `GET /api/events` → SSE as above.
   - `POST /api/scan {"path"}` → 202 and starts a scan; 409 while one runs; 400 for a
     path that is not a directory.
