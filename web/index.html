@@ -25,6 +25,8 @@
   <span class="sep"></span>
   <button id="zoom" type="button" disabled title="Zoom the map to the selected folder">Zoom</button>
   <button id="root" type="button" disabled title="Zoom the map back out to the scanned folder">Root</button>
+  <span class="sep"></span>
+  <button id="access-button" type="button" title="Full Disk Access, and what macdirtree will and won't do"><span id="access-dot" class="dot"></span>Full Disk Access</button>
   <span id="status" role="status" aria-live="polite"></span>
 </header>
 
@@ -94,12 +96,49 @@
     <button type="button" id="errors-close" aria-label="Close">×</button>
   </header>
   <div id="errors-body">
-    <p id="errors-hint" class="muted" hidden>"Operation not permitted" is macOS privacy protection, not a file permission. To scan these folders, give the terminal that launches macdirtree Full Disk Access (System Settings, Privacy &amp; Security, Full Disk Access), reopen the terminal, and rescan.</p>
+    <p id="errors-hint" class="muted" hidden>"Operation not permitted" is macOS privacy protection, not a file permission. <button type="button" id="errors-access">Full Disk Access</button> shows how to include these folders.</p>
     <table>
       <thead><tr><th class="name">Path</th><th class="name">Error</th></tr></thead>
       <tbody id="error-rows"></tbody>
     </table>
   </div>
+</dialog>
+
+<dialog id="access" aria-labelledby="access-title">
+  <header>
+    <h2 id="access-title">Welcome to macdirtree</h2>
+    <button type="button" id="access-close" aria-label="Close">×</button>
+  </header>
+  <div id="access-body">
+    <section class="block">
+      <h3>It only looks</h3>
+      <p>macdirtree reads sizes and nothing else. It cannot delete, move, rename or change a single file, and there is no button anywhere that tries.</p>
+      <p>When you find something big, double-click it, or select it and press Open in Finder. Finder opens at that spot with the item selected. What you do with it there is your call.</p>
+    </section>
+    <section class="block">
+      <h3>Full Disk Access <span class="muted">(optional)</span></h3>
+      <p id="access-on" hidden><span class="dot on"></span>Access is on. Folders macOS keeps private are part of the scan.</p>
+      <div id="access-off" hidden>
+        <p><span class="dot off"></span>Access is off. macOS keeps some folders private: app containers, Photos, Mail, Safari and the Trash. Without access they are skipped, listed as unreadable, and left out of the totals. Everything else works the same.</p>
+        <p class="muted">Without it, macOS may also ask once about each protected folder, such as Desktop, Documents and Downloads, while the scan runs. The scan waits at that folder until you answer. The scan starts when you close this window.</p>
+        <ol id="access-steps-native" hidden>
+          <li><button type="button" id="access-settings">Open Settings</button> at Privacy &amp; Security, Full Disk Access.</li>
+          <li>Turn on <b>macdirtree</b>. If it is not in the list, press <b>+</b> and pick it, or drag it in: <button type="button" id="access-reveal">Show macdirtree in Finder</button></li>
+          <li>macOS applies the change after a restart: <button type="button" id="access-relaunch">Relaunch macdirtree</button></li>
+        </ol>
+        <div id="access-steps-browser" hidden>
+          <p>Give access to the terminal app that started macdirtree, then quit that terminal completely, reopen it, and run macdirtree again.</p>
+          <p><button type="button" id="access-settings-browser">Open Settings</button></p>
+        </div>
+      </div>
+    </section>
+  </div>
+  <footer>
+    <label id="access-skip-label" hidden><input type="checkbox" id="access-skip"> Don't show this at launch</label>
+    <span class="grow"></span>
+    <button type="button" id="access-rescan" hidden>Rescan with access</button>
+    <button type="button" id="access-done" class="primary">Continue</button>
+  </footer>
 </dialog>
 
 <script src="/app.js"></script>

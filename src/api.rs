@@ -13,6 +13,7 @@ use std::thread;
 
 use serde_json::{Value, json};
 
+use crate::access;
 use crate::icicle;
 use crate::server::{App, Request, Response, SCAN_RUNNING, State};
 use crate::tree::{Kind, Node, NodeId, Tree};
@@ -40,12 +41,23 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
         ("GET", "/api/errors") => errors(app),
         ("POST", "/api/scan") => json_body(request).map_or_else(|r| r, |body| scan(app, &body)),
         ("POST", "/api/open") => json_body(request).map_or_else(|r| r, |body| open(app, &body)),
+        ("GET", "/api/access") => access_status(app),
+        ("POST", "/api/access/settings") => {
+            json_body(request).map_or_else(|r| r, |_| ran(access::open_settings()))
+        }
+        ("POST", "/api/access/reveal") if app.native => {
+            json_body(request).map_or_else(|r| r, |_| ran(access::reveal_app()))
+        }
+        ("POST", "/api/relaunch") if app.native => {
+            json_body(request).map_or_else(|r| r, |_| ran(access::relaunch()))
+        }
         (
             _,
             "/api/status" | "/api/events" | "/api/treemap" | "/api/icicle" | "/api/extensions"
             | "/api/largest" | "/api/errors",
         ) => method_not_allowed("GET"),
-        (_, "/api/scan" | "/api/open") => method_not_allowed("POST"),
+        (_, "/api/access") => method_not_allowed("GET"),
+        (_, "/api/scan" | "/api/open" | "/api/access/settings") => method_not_allowed("POST"),
         _ => error(404, "not found"),
     }
 }
@@ -299,6 +311,33 @@ fn scan(app: &Arc<App>, body: &Value) -> Response {
     }
 }
 
+fn access_status(app: &App) -> Response {
+    Response::json(
+        200,
+        &json!({
+            "granted": access::granted(),
+            "native": app.native,
+            "app": access::bundle().map(|b| lossy(&b)),
+        }),
+    )
+}
+
+/// 204 when the command started, 500 with its error otherwise.
+fn ran(result: io::Result<()>) -> Response {
+    match result {
+        Ok(()) => no_content(),
+        Err(e) => error(500, &format!("could not run open: {e}")),
+    }
+}
+
+fn no_content() -> Response {
+    Response {
+        status: 204,
+        headers: vec![("Cache-Control".into(), "no-store".into())],
+        body: crate::server::Body::Bytes(Vec::new()),
+    }
+}
+
 fn open(app: &App, body: &Value) -> Response {
     let (tree, _) = match tree(app) {
         Ok(t) => t,
@@ -311,14 +350,7 @@ fn open(app: &App, body: &Value) -> Response {
         return error(404, "no such node");
     };
     // The path comes from the tree alone; a request names a node, never a path.
-    match reveal(&tree.path(id), node.kind == Kind::Dir) {
-        Ok(()) => Response {
-            status: 204,
-            headers: vec![("Cache-Control".into(), "no-store".into())],
-            body: crate::server::Body::Bytes(Vec::new()),
-        },
-        Err(e) => error(500, &format!("could not run open: {e}")),
-    }
+    ran(reveal(&tree.path(id), node.kind == Kind::Dir))
 }
 
 /// `open -R <path>` for a file and `open <path>` for a directory on macOS; `xdg-open`
@@ -353,7 +385,7 @@ mod tests {
     use crate::server::Body;
 
     fn app() -> Arc<App> {
-        Arc::new(App::new(Duration::from_secs(1), 0))
+        Arc::new(App::new(Some(Duration::from_secs(1)), 0, false))
     }
 
     fn get(path: &str) -> Request {

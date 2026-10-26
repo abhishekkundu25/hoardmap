@@ -68,22 +68,35 @@ pub struct App {
     pub events: Broadcaster,
     /// The bound port, which a request's `Host` header must name.
     pub port: u16,
+    /// Served inside the native window rather than a browser tab.
+    pub native: bool,
+    /// The folder to scan first; the idle status names it so the page can start it.
+    pub start: Option<PathBuf>,
 }
 
 impl App {
-    pub fn new(linger: Duration, port: u16) -> App {
+    pub fn new(linger: Option<Duration>, port: u16, native: bool) -> App {
         App {
             state: Mutex::new(State::Idle),
             presence: Arc::new(Presence::new(linger)),
             events: Broadcaster::default(),
             port,
+            native,
+            start: None,
         }
     }
 
     /// The `/api/status` document for the current state.
     pub fn status(&self) -> serde_json::Value {
         match &*self.state.lock().unwrap() {
-            State::Idle => status_json("idle", None, (0, 0, 0), 0, 0, None),
+            State::Idle => status_json(
+                "idle",
+                self.start.as_deref().map(lossy),
+                (0, 0, 0),
+                0,
+                0,
+                None,
+            ),
             State::Scanning {
                 path,
                 progress,
@@ -206,10 +219,11 @@ fn status_json(
     })
 }
 
-/// Connected tabs, and the exit rule: linger after the last one leaves.
+/// Connected tabs, and the exit rule: linger after the last one leaves. Without a
+/// linger period the process never exits on its own.
 pub struct Presence {
     tabs: Mutex<Tabs>,
-    linger: Duration,
+    linger: Option<Duration>,
 }
 
 struct Tabs {
@@ -224,7 +238,7 @@ pub struct Tab {
 }
 
 impl Presence {
-    pub fn new(linger: Duration) -> Presence {
+    pub fn new(linger: Option<Duration>) -> Presence {
         Presence {
             tabs: Mutex::new(Tabs {
                 connected: 0,
@@ -258,9 +272,12 @@ impl Drop for Tab {
             }
             tabs.generation
         };
+        let Some(linger) = self.presence.linger else {
+            return;
+        };
         let presence = self.presence.clone();
         thread::spawn(move || {
-            thread::sleep(presence.linger);
+            thread::sleep(linger);
             let tabs = presence.tabs.lock().unwrap();
             if tabs.connected == 0 && tabs.generation == generation {
                 std::process::exit(0);
@@ -371,36 +388,79 @@ impl Response {
     }
 }
 
-/// Binds, prints the listening line, launches the browser and serves until the linger
-/// timer exits the process. Returns only when binding fails.
-pub fn run(options: Options) -> io::Result<Infallible> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, options.port))?;
+/// How [`spawn`] starts the server.
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub path: PathBuf,
+    /// Tried first; when it is taken, or 0, the OS picks one.
+    pub port: u16,
+    /// Exit this long after the last tab closes; `None` never exits on its own.
+    pub linger: Option<Duration>,
+    pub native: bool,
+    /// Scan `path` at once; otherwise wait for the page to ask.
+    pub scan_at_start: bool,
+}
+
+/// Binds 127.0.0.1, starts the scan of `config.path` and serves on a background
+/// thread. Returns the bound port.
+pub fn spawn(config: Config) -> io::Result<u16> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
+        .or_else(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))?;
     let port = listener.local_addr()?.port();
+    let mut app = App::new(config.linger, port, config.native);
+    app.start = Some(config.path.clone());
+    let app = Arc::new(app);
+    if config.scan_at_start
+        && let Err(error) = app.start_scan(config.path.clone())
+    {
+        eprintln!("macdirtree: {error}");
+        *app.state.lock().unwrap() = State::Failed {
+            path: config.path,
+            error,
+        };
+    }
+    thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let app = app.clone();
+                    thread::spawn(move || serve(&app, stream).ok());
+                }
+                Err(error) => {
+                    eprintln!("macdirtree: accept failed: {error}");
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    });
+    Ok(port)
+}
+
+/// Serves, prints the listening line and launches the browser; the linger timer ends
+/// the process. Returns only when binding fails.
+pub fn run(options: Options) -> io::Result<Infallible> {
+    let port = if options.port == 0 {
+        0
+    } else {
+        // An explicit port must be honoured or refused, not silently replaced.
+        TcpListener::bind((Ipv4Addr::LOCALHOST, options.port))?;
+        options.port
+    };
+    let port = spawn(Config {
+        path: options.path,
+        port,
+        linger: Some(options.linger),
+        native: false,
+        scan_at_start: true,
+    })?;
     let url = format!("http://127.0.0.1:{port}/");
     println!("Listening on {url}");
     io::stdout().flush()?;
     if options.open {
         launch_browser(&url);
     }
-    let app = Arc::new(App::new(options.linger, port));
-    if let Err(error) = app.start_scan(options.path.clone()) {
-        eprintln!("macdirtree: {error}");
-        *app.state.lock().unwrap() = State::Failed {
-            path: options.path,
-            error,
-        };
-    }
     loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let app = app.clone();
-                thread::spawn(move || serve(&app, stream).ok());
-            }
-            Err(error) => {
-                eprintln!("macdirtree: accept failed: {error}");
-                thread::sleep(Duration::from_millis(100));
-            }
-        }
+        thread::park();
     }
 }
 

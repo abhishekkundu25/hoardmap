@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Native Mac app (`tools/bundle-app.sh`): the same page in its own window, with a start screen that says macdirtree never changes your files and walks through Full Disk Access, which stays optional. A toolbar button reopens it at any time.
 - Icicle view beside the treemap: one row per folder level, widths by bytes, names and sizes on the bars. Switch with Treemap and Icicle above the right pane.
 
 ## 0.1.0 — 2026-10-26

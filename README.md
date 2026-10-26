@@ -1,8 +1,9 @@
 # macdirtree
 
 macdirtree is WinDirStat for the Mac. It scans a folder and shows where the bytes are
-in three linked views: a directory list, a treemap and an extension list. The page is
-served to your browser from a small Rust binary that listens on 127.0.0.1 only. From
+in three linked views: a directory list, a treemap or icicle, and an extension list.
+It comes two ways: a command that serves the page to your browser, and a native Mac
+app that shows the same page in its own window. Both listen on 127.0.0.1 only. From
 the page you can open any folder or file in Finder. That is the only thing it can do
 to your files; it never deletes, moves or renames anything.
 
@@ -46,6 +47,38 @@ Scans PATH (default: your home folder) and serves the result on 127.0.0.1.
 
 With `--no-open` the first line printed to stdout is the URL to visit, in the form
 `Listening on http://127.0.0.1:PORT/`. `--linger` accepts fractions of a second.
+
+## The Mac app
+
+The app is the same server and page in a native window, with the usual menus. Build it
+and copy it to `~/Applications`:
+
+```sh
+tools/bundle-app.sh --install
+```
+
+Without `--install` the bundle is left at `target/macdirtree.app`. Open it from Finder,
+Launchpad or with `open ~/Applications/macdirtree.app`. Closing the window quits it.
+
+The first time it starts, the app shows a start screen before it scans anything. The
+screen says what macdirtree does and does not do, and covers Full Disk Access:
+
+- Whether the app has access, read from a file only it can open.
+- Open Settings, which goes straight to Privacy & Security, Full Disk Access.
+- Show macdirtree in Finder, so you can drag the app into that list.
+- Relaunch macdirtree, because macOS applies the switch to a new process.
+- Continue without access, which scans everything macOS allows. Without access, macOS
+  may ask once about Desktop, Documents, Downloads and other protected folders as the
+  scan reaches them; the scan waits at that folder until you answer.
+
+Access is optional. The screen comes back at each launch until access is on, unless you
+tick "Don't show this at launch". The Full Disk Access button in the toolbar opens it
+at any time, with a green dot when access is on and an orange one when it is off. In the
+browser version the same button explains how to grant access to your terminal instead.
+
+macOS ties Full Disk Access to the app's signature. The bundle script signs ad hoc,
+which gives each build a new signature, so after a rebuild you may need to turn the
+switch off and on again.
 
 ## The views
 
@@ -229,9 +262,14 @@ Integration tests start the debug binary with `--no-open --linger 1` and put a s
   and 415 paths, the icicle's rows and nesting, the `Host` check, that `/api/open` runs `open -R` for a file and bare
   `open` for a folder, and the no-delete source check.
 
+The native app is `src/bin/macdirtree-app.rs`, built with `--features app` (tao, wry
+and muda). The plain `cargo build` leaves those out.
+
 The JSON endpoints are `GET /api/status`, `GET /api/events` (server-sent events),
 `GET /api/node/{id}`, `GET /api/treemap`, `GET /api/icicle`, `GET /api/extensions`, `GET /api/largest`,
-`GET /api/errors`, `POST /api/scan` and `POST /api/open`. Their shapes are in the spec.
+`GET /api/errors`, `GET /api/access`, `POST /api/scan`, `POST /api/open` and
+`POST /api/access/settings`; the app adds `POST /api/access/reveal` and
+`POST /api/relaunch`. Their shapes are in the spec.
 
 The spec is `docs/specs/macdirtree.md`. The build tickets, with the departures from the
 plan, are in `docs/tickets/macdirtree/`. `AGENTS.md` is the short map of the code.

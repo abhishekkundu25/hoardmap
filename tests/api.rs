@@ -632,3 +632,29 @@ fn source_never_deletes_moves_or_renames() {
     }
     assert!(checked >= 7, "only {checked} source files checked");
 }
+
+#[test]
+fn access_reports_the_grant_and_opens_the_settings_pane() {
+    let fx = fixture();
+    let mut server = start_done(&fx);
+    let (status, access) = get_json(&server, "/api/access");
+    assert_eq!(status, 200, "{access}");
+    assert!(access["granted"].is_boolean(), "{access}");
+    assert_eq!(access["native"], false);
+
+    let (status, _, _) = server.post("/api/access/settings", None, "{}");
+    assert_eq!(status, 415);
+    let (status, _) = post_json(&server, "/api/access/settings", "{}");
+    assert_eq!(status, 204);
+    wait_open_args(
+        &server.stub,
+        &format!("{}\n", macdirtree::access::SETTINGS_URL),
+    );
+
+    // Relaunching and revealing the bundle belong to the native app only.
+    let (status, _) = post_json(&server, "/api/relaunch", "{}");
+    assert_eq!(status, 404);
+    let (status, _) = post_json(&server, "/api/access/reveal", "{}");
+    assert_eq!(status, 404);
+    assert!(server.is_running());
+}

@@ -370,5 +370,37 @@ dialog h2 { margin: 0; font-size: 14px; font-weight: 600; }
 #errors-close { padding: 0 8px; font-size: 16px; line-height: 1.3; }
 #errors-body { overflow: auto; min-height: 0; }
 #errors-hint { margin: 0 0 8px; max-width: 70ch; }
+#errors-hint button { padding: 0 6px; font-size: 12px; }
+
+#access { width: min(620px, 92vw); }
+#access-body { overflow: auto; min-height: 0; padding: 4px 18px 8px; line-height: 1.45; }
+#access .block { background: none; padding: 6px 0; }
+#access .block + .block { border-top: 1px solid var(--border); }
+#access h3 { margin: 8px 0 4px; font-size: 13px; font-weight: 600; }
+#access p { margin: 6px 0; }
+#access ol { margin: 8px 0; padding-left: 20px; }
+#access li { margin: 6px 0; }
+#access li button, #access p button { padding: 1px 8px; font-size: 12px; }
+#access footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+#access footer .grow { flex: 1; }
+#access footer label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: var(--muted);
+}
+.dot.on { background: #34c759; }
+.dot.off { background: #ff9f0a; }
 #error-rows td { white-space: normal; word-break: break-all; padding: 4px 8px; }
 #error-rows tr { height: auto; }

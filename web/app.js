@@ -98,6 +98,7 @@ const store = {
   layout: null,
   message: null,
   loadedPath: null,
+  access: null,
 };
 
 const nodes = new Map();
@@ -131,6 +132,10 @@ const el = {
   errorRows: $("error-rows"),
   errorsTitle: $("errors-title"),
   errorsHint: $("errors-hint"),
+  errorsAccess: $("errors-access"),
+  access: $("access"),
+  accessButton: $("access-button"),
+  accessDot: $("access-dot"),
   errorsClose: $("errors-close"),
 };
 
@@ -1049,7 +1054,7 @@ function connectEvents() {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (el.errors.open) return;
+  if (el.errors.open || el.access.open) return;
   if (store.highlightExt !== null) {
     setHighlight(null);
     event.preventDefault();
@@ -1091,6 +1096,102 @@ function splitter(handle, cssVar, axis) {
 splitter($("vsplit"), "--list-w", "x");
 splitter($("hsplit"), "--bottom-h", "y");
 
+// Full Disk Access and the start screen.
+
+function storedFlag(name) {
+  try {
+    return localStorage.getItem(name) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function storeFlag(name, on) {
+  try {
+    localStorage.setItem(name, on ? "1" : "0");
+  } catch {}
+}
+
+async function loadAccess() {
+  try {
+    store.access = await getJSON("/api/access");
+  } catch (e) {
+    showMessage(e.message, true);
+  }
+  renderAccess();
+}
+
+function renderAccess() {
+  const a = store.access;
+  if (!a) return;
+  el.accessDot.className = `dot ${a.granted ? "on" : "off"}`;
+  el.accessButton.title = a.granted ? "Full Disk Access is on" : "Full Disk Access is off: some folders are skipped";
+  const welcomed = storedFlag("welcomed");
+  $("access-title").textContent = welcomed ? "Full Disk Access" : "Welcome to macdirtree";
+  $("access-on").hidden = !a.granted;
+  $("access-off").hidden = a.granted;
+  $("access-steps-native").hidden = !a.native;
+  $("access-steps-browser").hidden = a.native;
+  $("access-reveal").hidden = !a.app;
+  $("access-skip-label").hidden = !a.native || a.granted;
+  $("access-skip").checked = storedFlag("skipAccess");
+  const missed = store.status && store.status.state === "done" && store.status.error_count > 0;
+  $("access-rescan").hidden = !(a.granted && missed);
+  $("access-done").textContent = a.granted ? "Done" : "Continue without access";
+}
+
+async function showAccess() {
+  await loadAccess();
+  if (!el.access.open) el.access.showModal();
+}
+
+async function accessAction(url) {
+  try {
+    await postJSON(url, {});
+  } catch (e) {
+    showMessage(e.message, true);
+  }
+}
+
+el.accessButton.addEventListener("click", showAccess);
+el.errorsAccess.addEventListener("click", () => {
+  el.errors.close();
+  showAccess();
+});
+$("access-close").addEventListener("click", () => el.access.close());
+$("access-done").addEventListener("click", () => el.access.close());
+$("access-settings").addEventListener("click", () => accessAction("/api/access/settings"));
+$("access-settings-browser").addEventListener("click", () => accessAction("/api/access/settings"));
+$("access-reveal").addEventListener("click", () => accessAction("/api/access/reveal"));
+$("access-relaunch").addEventListener("click", () => {
+  $("access-relaunch").textContent = "Relaunching";
+  $("access-relaunch").disabled = true;
+  accessAction("/api/relaunch");
+});
+$("access-rescan").addEventListener("click", () => {
+  el.access.close();
+  if (store.status && store.status.path) startScan(store.status.path);
+});
+$("access-skip").addEventListener("change", (event) => storeFlag("skipAccess", event.target.checked));
+el.access.addEventListener("close", () => {
+  storeFlag("welcomed", true);
+  renderAccess();
+  scanIfIdle();
+});
+
+// The native app waits with its first scan until the start screen is gone.
+function scanIfIdle() {
+  const s = store.status;
+  if (s && s.state === "idle" && s.path && !el.access.open) startScan(s.path);
+}
+el.access.addEventListener("click", (event) => {
+  if (event.target === el.access) el.access.close();
+});
+// Coming back from System Settings: show whether the switch took effect.
+window.addEventListener("focus", () => {
+  if (el.access.open) loadAccess();
+});
+
 // Start.
 
 try {
@@ -1098,7 +1199,16 @@ try {
 } catch {}
 renderControls();
 
-getJSON("/api/status")
+const statusLoaded = getJSON("/api/status")
   .then(applyStatus)
   .catch((e) => showMessage(e.message, true))
   .finally(connectEvents);
+
+Promise.all([statusLoaded, loadAccess()]).then(() => {
+  const a = store.access;
+  if (a && a.native && (!storedFlag("welcomed") || (!a.granted && !storedFlag("skipAccess")))) {
+    showAccess();
+  } else {
+    scanIfIdle();
+  }
+});
