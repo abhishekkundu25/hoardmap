@@ -216,7 +216,7 @@ permitted` or `Not scanned`. That is macOS privacy protection (TCC), not file
 permissions. macOS blocks Safari and Mail data and the Trash outright, which gives
 `Operation not permitted`. For Desktop, Documents, Downloads, iCloud Drive and other
 cloud folders, other apps' data (`Library/Containers`, `Library/Group Containers`), and
-the Music and Photos libraries, macOS would instead stop and ask about each one. So
+the Music, TV and Photos libraries and their caches, macOS would instead stop and ask about each one. So
 hoardmap does not read them and lists them as `Not scanned`. hoardmap inherits its
 access from the app that launched it, and nothing in the code can bypass that.
 

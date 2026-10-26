@@ -38,10 +38,15 @@ pub fn prompting(home: &Path) -> Vec<PathBuf> {
         // Other apps' data.
         "Library/Containers",
         "Library/Group Containers",
-        // The Music and Photos libraries.
+        // The Music, TV and Photos libraries, and their caches and system copies.
         "Music/Music",
         "Music/iTunes",
+        "Movies/TV",
         "Pictures/Photos Library.photoslibrary",
+        "Library/Photos",
+        "Library/AppleMediaServices",
+        "Library/Caches/com.apple.Music",
+        "Library/Caches/com.apple.TV",
     ]
     .iter()
     .map(|name| home.join(name))
