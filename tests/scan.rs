@@ -294,3 +294,55 @@ fn scans_the_target_folder() {
         1 + tree.root().dirs as usize + tree.root().files as usize
     );
 }
+
+/// Every field of every node, for comparing two scans.
+#[cfg(target_os = "macos")]
+fn fingerprint(tree: &Tree) -> Vec<String> {
+    tree.nodes
+        .iter()
+        .map(|n| {
+            format!(
+                "{} {:?} {:?} {} {} {} {} {} {:?} {}",
+                n.name,
+                n.parent,
+                n.kind,
+                n.size,
+                n.physical,
+                n.files,
+                n.dirs,
+                n.mtime,
+                n.children,
+                n.hard_link
+            )
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn same_tree_both_ways(root: &Path) {
+    use hoardmap::scan::{Method, scan_with};
+    let bulk = scan_with(root, &Progress::default(), Method::Bulk).expect("bulk scan");
+    let portable = scan_with(root, &Progress::default(), Method::Portable).expect("portable scan");
+    assert_eq!(bulk.error_count, portable.error_count);
+    let (b, p) = (fingerprint(&bulk), fingerprint(&portable));
+    assert_eq!(b.len(), p.len(), "node counts differ");
+    for (x, y) in b.iter().zip(&p) {
+        assert_eq!(x, y);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bulk_and_portable_listing_agree_on_the_fixture() {
+    let fx = Fixture::build();
+    same_tree_both_ways(&fx.root);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bulk_and_portable_listing_agree_on_the_target_folder() {
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/build");
+    if target.is_dir() {
+        same_tree_both_ways(&target);
+    }
+}

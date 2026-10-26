@@ -235,6 +235,25 @@ API endpoint that could. The test `source_never_deletes_moves_or_renames` in
 `remove_dir`, `rename` or `trash` appears. Clearing space is done in Finder, by hand,
 after looking.
 
+## How it scans
+
+On macOS each folder is listed with `getattrlistbulk`, which returns names, types,
+sizes and allocated blocks for a batch of entries in one system call. Elsewhere, and
+on a Mac with `HOARDMAP_SCANNER=portable`, each folder is read with `read_dir` and
+each entry with `lstat`. Both build the same tree. Subfolders are read in parallel on
+every core.
+
+To time both on a folder of your own and check they agree:
+
+```sh
+cargo run --release --example scan_bench -- ~ 5
+```
+
+On a home folder of about 900,000 files with a warm cache, the bulk listing took a
+median of 2.0 s against 2.6 s; on a 180,000 file folder, 0.13 s against 0.21 s. On a
+folder that apps are writing to, a few entries can differ between the two scans
+because they changed in between.
+
 ## Privacy and safety
 
 - The server binds to 127.0.0.1 only. Nothing on your network can reach it.
