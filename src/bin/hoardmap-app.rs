@@ -1,9 +1,9 @@
-//! The native Mac app: the same server and page as the `macdirtree` command, shown in
+//! The native Mac app: the same server and page as the `hoardmap` command, shown in
 //! a window instead of a browser tab. Closing the window quits the app.
 
 use std::path::PathBuf;
 
-use macdirtree::server::{self, Config};
+use hoardmap::server::{self, Config};
 use muda::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
@@ -26,11 +26,11 @@ fn main() {
         native: true,
         // Without Full Disk Access, macOS asks about protected folders as the scan
         // reaches them; the page starts the scan once the start screen has explained that.
-        scan_at_start: macdirtree::access::granted(),
+        scan_at_start: hoardmap::access::granted(),
     }) {
         Ok(port) => port,
         Err(error) => {
-            eprintln!("macdirtree: {error}");
+            eprintln!("hoardmap: {error}");
             std::process::exit(1);
         }
     };
@@ -41,7 +41,7 @@ fn main() {
     menu.init_for_nsapp();
 
     let window = WindowBuilder::new()
-        .with_title("macdirtree")
+        .with_title("Hoardmap")
         .with_inner_size(LogicalSize::new(1400.0, 900.0))
         .with_min_inner_size(LogicalSize::new(720.0, 480.0))
         .build(&event_loop)
@@ -72,12 +72,12 @@ fn main() {
 /// the path field.
 fn menu_bar() -> Menu {
     let about = AboutMetadata {
-        name: Some("macdirtree".into()),
+        name: Some("Hoardmap".into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         ..Default::default()
     };
     let app = Submenu::with_items(
-        "macdirtree",
+        "Hoardmap",
         true,
         &[
             &PredefinedMenuItem::about(None, Some(about)),

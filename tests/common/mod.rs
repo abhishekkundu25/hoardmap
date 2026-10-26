@@ -73,7 +73,7 @@ pub struct OpenStub {
 impl OpenStub {
     pub fn new() -> OpenStub {
         let dir = std::env::temp_dir().join(format!(
-            "macdirtree-test-{}-{}",
+            "hoardmap-test-{}-{}",
             std::process::id(),
             NEXT_STUB.fetch_add(1, Ordering::Relaxed)
         ));
@@ -120,7 +120,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Spawns `macdirtree <stub dir> <args>` with the stub `open` first on PATH and
+    /// Spawns `hoardmap <stub dir> <args>` with the stub `open` first on PATH and
     /// waits for the listening line.
     pub fn start(args: &[&str]) -> Server {
         let stub = OpenStub::new();
@@ -129,14 +129,14 @@ impl Server {
     }
 
     pub fn start_in(path: &Path, args: &[&str], stub: OpenStub) -> Server {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_macdirtree"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hoardmap"))
             .arg(path)
             .args(args)
             .env("PATH", stub.path_env())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("spawn macdirtree");
+            .expect("spawn hoardmap");
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let mut first_line = String::new();
         stdout
@@ -345,7 +345,7 @@ pub fn fixture() -> Fixture {
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "macdirtree-api-{}-{}-{}",
+        "hoardmap-api-{}-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
         nanos

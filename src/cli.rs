@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub const USAGE: &str = "\
-Usage: macdirtree [PATH] [--port N] [--no-open] [--linger SECS] [--help]
+Usage: hoardmap [PATH] [--port N] [--no-open] [--linger SECS] [--help]
 
 Scans PATH (default: your home folder) and serves the result on 127.0.0.1.
 

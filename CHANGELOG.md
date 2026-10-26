@@ -2,12 +2,14 @@
 
 ## Unreleased
 
-- Native Mac app (`tools/bundle-app.sh`): the same page in its own window, with a start screen that says macdirtree never changes your files and walks through Full Disk Access, which stays optional. A toolbar button reopens it at any time.
+- Renamed from macdirtree to Hoardmap. The command is `hoardmap`, the app is `Hoardmap.app` with the bundle identifier `dev.hoardmap.app`, so Full Disk Access has to be granted to it again.
+- An app icon and logo, in the style of macOS icons: a treemap of glossy tiles on a squircle, the largest a gold hoard. It is the app icon, the page favicon, and sits beside the name in the toolbar and on the start screen. Source in `assets/hoardmap.svg`.
+- Native Mac app (`tools/bundle-app.sh`): the same page in its own window, with a start screen that says hoardmap never changes your files and walks through Full Disk Access, which stays optional. A toolbar button reopens it at any time.
 - Icicle view beside the treemap: one row per folder level, widths by bytes, names and sizes on the bars. Switch with Treemap and Icicle above the right pane.
 
 ## 0.1.0 — 2026-10-26
 
-- One command, `macdirtree [PATH]`, scans a folder (your home folder by default) and opens the result in your browser.
+- One command, `hoardmap [PATH]`, scans a folder (your home folder by default) and opens the result in your browser.
 - Scan progress in the page: folders, files, bytes and elapsed time while the scan runs.
 - Directory list sorted largest first with Name, Size, %, Items, Files, Subdirs and Last change, a share bar, lazy expansion and keyboard navigation.
 - Treemap of every file, area by size and colour by extension, relaid out on resize, with hover, click to select, double-click to open, and Zoom and Root.

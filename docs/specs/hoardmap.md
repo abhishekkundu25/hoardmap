@@ -1,4 +1,4 @@
-# macdirtree
+# hoardmap
 
 WinDirStat for macOS: scan a folder, see where the bytes are, open the folder in Finder.
 Rust binary, page served to the browser on 127.0.0.1, no build step, no network.
@@ -13,7 +13,7 @@ not want a delete button: clearing space is done in Finder, by hand, after looki
 
 ## Solution
 
-`macdirtree [PATH]` scans PATH (the home folder by default) in parallel, opens the
+`hoardmap [PATH]` scans PATH (the home folder by default) in parallel, opens the
 browser on a local page, and streams scan progress to it. When the scan is done the
 page shows:
 
@@ -223,7 +223,7 @@ renames anything. The server exits by itself once the browser tab is gone.
 - No browser automation. The page's logic that is testable without a DOM (size
   formatting, tree-state bookkeeping) stays in small pure functions.
 - Every test file runs under `timeout 120`; integration tests use the debug binary via
-  `CARGO_BIN_EXE_macdirtree`.
+  `CARGO_BIN_EXE_hoardmap`.
 - Budgets as pass/fail lines in the resource tests: idle CPU < 0.1 s per 2 s; exit
   within linger + 3 s.
 

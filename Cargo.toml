@@ -1,5 +1,5 @@
 [package]
-name = "macdirtree"
+name = "hoardmap"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -16,8 +16,8 @@ tao = { version = "0.37.2", optional = true }
 wry = { version = "0.57.1", optional = true }
 
 [[bin]]
-name = "macdirtree-app"
-path = "src/bin/macdirtree-app.rs"
+name = "hoardmap-app"
+path = "src/bin/hoardmap-app.rs"
 required-features = ["app"]
 
 [profile.release]

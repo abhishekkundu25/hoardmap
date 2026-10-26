@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds target/macdirtree.app from the macdirtree-app binary and signs it ad hoc.
+# Builds target/Hoardmap.app from the hoardmap-app binary and signs it ad hoc.
 #   tools/bundle-app.sh            build the bundle
 #   tools/bundle-app.sh --install  also copy it to ~/Applications
 # Full Disk Access is tied to the app's signature. An ad hoc signature changes with
@@ -9,21 +9,23 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
-cargo build --release --locked --features app --bin macdirtree-app
+cargo build --release --locked --features app --bin hoardmap-app
 
-app=target/macdirtree.app
+app=target/Hoardmap.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/macdirtree-app "$app/Contents/MacOS/macdirtree-app"
+cp assets/hoardmap.icns "$app/Contents/Resources/hoardmap.icns"
+cp target/release/hoardmap-app "$app/Contents/MacOS/hoardmap-app"
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>macdirtree</string>
-  <key>CFBundleDisplayName</key><string>macdirtree</string>
-  <key>CFBundleIdentifier</key><string>dev.macdirtree.app</string>
-  <key>CFBundleExecutable</key><string>macdirtree-app</string>
+  <key>CFBundleName</key><string>Hoardmap</string>
+  <key>CFBundleDisplayName</key><string>Hoardmap</string>
+  <key>CFBundleIconFile</key><string>hoardmap</string>
+  <key>CFBundleIdentifier</key><string>dev.hoardmap.app</string>
+  <key>CFBundleExecutable</key><string>hoardmap-app</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
@@ -35,12 +37,12 @@ cat >"$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - --identifier dev.macdirtree.app "$app"
+codesign --force --sign - --identifier dev.hoardmap.app "$app"
 echo "built $root/$app"
 
 if [ "${1:-}" = "--install" ]; then
   mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/macdirtree.app"
+  rm -rf "$HOME/Applications/Hoardmap.app"
   cp -R "$app" "$HOME/Applications/"
-  echo "installed $HOME/Applications/macdirtree.app"
+  echo "installed $HOME/Applications/Hoardmap.app"
 fi

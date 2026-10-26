@@ -1,5 +1,5 @@
-use macdirtree::cli::{self, USAGE};
-use macdirtree::server;
+use hoardmap::cli::{self, USAGE};
+use hoardmap::server;
 
 fn main() {
     let options = match cli::parse(std::env::args().skip(1)) {
@@ -9,14 +9,14 @@ fn main() {
             return;
         }
         Err(cli::Error::Usage(message)) => {
-            eprint!("macdirtree: {message}\n{USAGE}");
+            eprint!("hoardmap: {message}\n{USAGE}");
             std::process::exit(2);
         }
     };
     match server::run(options) {
         Ok(never) => match never {},
         Err(error) => {
-            eprintln!("macdirtree: {error}");
+            eprintln!("hoardmap: {error}");
             std::process::exit(1);
         }
     }

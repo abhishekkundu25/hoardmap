@@ -1,6 +1,6 @@
-# macdirtree: build tickets
+# hoardmap: build tickets
 
-Source: [docs/specs/macdirtree.md](../../specs/macdirtree.md). One slice per ticket for
+Source: [docs/specs/hoardmap.md](../../specs/hoardmap.md). One slice per ticket for
 `/parallel-slices`: slices in the same wave edit disjoint files. **Bold** files are
 locks, edited by one slice at a time in the order given. The skeleton (crate, `tree.rs`,
 module stubs, placeholder page) is the base commit; no slice edits `src/tree.rs` or

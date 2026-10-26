@@ -1,6 +1,6 @@
 # 01: Server, CLI and resource hygiene
 
-**What to build:** `macdirtree --no-open --linger 1` starts an HTTP server on
+**What to build:** `hoardmap --no-open --linger 1` starts an HTTP server on
 127.0.0.1, prints `Listening on http://127.0.0.1:PORT/` as its first stdout line, serves
 the embedded page files, streams `/api/events`, answers `/api/status` with
 `{"state":"idle"}`, uses no CPU while a tab is connected and idle, and exits 0 one
@@ -29,7 +29,7 @@ Shape:
   linger timer. The timer is one thread that sleeps `linger` and exits the process if
   presence is still 0 and the generation has not changed (a reconnect bumps it).
 - `tests/common/mod.rs`: `cpu_seconds(pid)` (ps on macOS, `/proc` on Linux), `Server`
-  helper that spawns `CARGO_BIN_EXE_macdirtree` with args, reads the port line, offers
+  helper that spawns `CARGO_BIN_EXE_hoardmap` with args, reads the port line, offers
   `get(path) -> (status, headers, body)` over a raw `TcpStream`, `open_events() ->
   TcpStream` (keeps the SSE socket), `wait_exit(timeout) -> Option<ExitStatus>`, and
   kills the child on drop.
@@ -39,7 +39,7 @@ Shape:
 **Status:** done
 
 - [ ] `tests/resources.rs`: first stdout line matches `Listening on http://127.0.0.1:\d+/`
-- [ ] `GET /` is 200 `text/html` and contains `macdirtree`; `/app.js` and `/style.css`
+- [ ] `GET /` is 200 `text/html` and contains `hoardmap`; `/app.js` and `/style.css`
       have their content types; `/nope` is 404
 - [ ] `GET /api/status` is 200 JSON with `state: "idle"`
 - [ ] with one events socket open, 2 s of idleness uses under 0.1 s of CPU (sample

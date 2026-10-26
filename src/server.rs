@@ -28,6 +28,7 @@ use crate::treemap::Colours;
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
 const STYLE_CSS: &str = include_str!("../web/style.css");
+const LOGO_SVG: &str = include_str!("../assets/hoardmap.svg");
 
 /// A request line plus headers longer than this is refused with 431.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -413,7 +414,7 @@ pub fn spawn(config: Config) -> io::Result<u16> {
     if config.scan_at_start
         && let Err(error) = app.start_scan(config.path.clone())
     {
-        eprintln!("macdirtree: {error}");
+        eprintln!("hoardmap: {error}");
         *app.state.lock().unwrap() = State::Failed {
             path: config.path,
             error,
@@ -427,7 +428,7 @@ pub fn spawn(config: Config) -> io::Result<u16> {
                     thread::spawn(move || serve(&app, stream).ok());
                 }
                 Err(error) => {
-                    eprintln!("macdirtree: accept failed: {error}");
+                    eprintln!("hoardmap: accept failed: {error}");
                     thread::sleep(Duration::from_millis(100));
                 }
             }
@@ -474,7 +475,7 @@ fn launch_browser(url: &str) {
         Ok(mut child) => {
             thread::spawn(move || child.wait().ok());
         }
-        Err(error) => eprintln!("macdirtree: could not run {program}: {error}"),
+        Err(error) => eprintln!("hoardmap: could not run {program}: {error}"),
     }
 }
 
@@ -510,6 +511,7 @@ fn route(app: &Arc<App>, request: &Request) -> Response {
         "/" => Response::new(200, "text/html; charset=utf-8", INDEX_HTML),
         "/app.js" => Response::new(200, "application/javascript; charset=utf-8", APP_JS),
         "/style.css" => Response::new(200, "text/css; charset=utf-8", STYLE_CSS),
+        "/logo.svg" => Response::new(200, "image/svg+xml", LOGO_SVG),
         _ => Response::text(404, "not found\n"),
     }
 }

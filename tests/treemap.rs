@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use macdirtree::tree::{Kind, Node, NodeId, ROOT, Tree, extension};
-use macdirtree::treemap::{
+use hoardmap::tree::{Kind, Node, NodeId, ROOT, Tree, extension};
+use hoardmap::treemap::{
     Bounds, Colours, Layout, Mode, PALETTE, Rect, extensions, largest, layout,
 };
 

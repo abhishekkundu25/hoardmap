@@ -1127,7 +1127,7 @@ function renderAccess() {
   el.accessDot.className = `dot ${a.granted ? "on" : "off"}`;
   el.accessButton.title = a.granted ? "Full Disk Access is on" : "Full Disk Access is off: some folders are skipped";
   const welcomed = storedFlag("welcomed");
-  $("access-title").textContent = welcomed ? "Full Disk Access" : "Welcome to macdirtree";
+  $("access-title").textContent = welcomed ? "Full Disk Access" : "Welcome to Hoardmap";
   $("access-on").hidden = !a.granted;
   $("access-off").hidden = a.granted;
   $("access-steps-native").hidden = !a.native;

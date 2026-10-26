@@ -1,4 +1,4 @@
-//! macdirtree: scan a directory tree, serve it to the browser as a directory list, a
+//! hoardmap: scan a directory tree, serve it to the browser as a directory list, a
 //! treemap and an extension list. Nothing here deletes a file.
 //!
 //! - [`tree`]: the scanned tree, an arena of nodes with children sorted by size.

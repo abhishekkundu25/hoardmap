@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>macdirtree</title>
-<link rel="icon" href="data:,">
+<title>Hoardmap</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header id="topbar">
-  <span id="brand">macdirtree</span>
+  <span id="brand"><img src="/logo.svg" alt="" width="22" height="22">Hoardmap</span>
   <form id="scan-form" autocomplete="off">
     <input id="path" type="text" name="path" placeholder="Folder to scan" spellcheck="false" aria-label="Folder to scan">
     <button id="scan" type="submit">Scan</button>
@@ -26,7 +26,7 @@
   <button id="zoom" type="button" disabled title="Zoom the map to the selected folder">Zoom</button>
   <button id="root" type="button" disabled title="Zoom the map back out to the scanned folder">Root</button>
   <span class="sep"></span>
-  <button id="access-button" type="button" title="Full Disk Access, and what macdirtree will and won't do"><span id="access-dot" class="dot"></span>Full Disk Access</button>
+  <button id="access-button" type="button" title="Full Disk Access, and what Hoardmap will and won't do"><span id="access-dot" class="dot"></span>Full Disk Access</button>
   <span id="status" role="status" aria-live="polite"></span>
 </header>
 
@@ -106,13 +106,14 @@
 
 <dialog id="access" aria-labelledby="access-title">
   <header>
-    <h2 id="access-title">Welcome to macdirtree</h2>
+    <img id="access-logo" src="/logo.svg" alt="" width="56" height="56">
+    <h2 id="access-title">Welcome to Hoardmap</h2>
     <button type="button" id="access-close" aria-label="Close">×</button>
   </header>
   <div id="access-body">
     <section class="block">
       <h3>It only looks</h3>
-      <p>macdirtree reads sizes and nothing else. It cannot delete, move, rename or change a single file, and there is no button anywhere that tries.</p>
+      <p>Hoardmap reads sizes and nothing else. It cannot delete, move, rename or change a single file, and there is no button anywhere that tries.</p>
       <p>When you find something big, double-click it, or select it and press Open in Finder. Finder opens at that spot with the item selected. What you do with it there is your call.</p>
     </section>
     <section class="block">
@@ -123,11 +124,11 @@
         <p class="muted">Without it, macOS may also ask once about each protected folder, such as Desktop, Documents and Downloads, while the scan runs. The scan waits at that folder until you answer. The scan starts when you close this window.</p>
         <ol id="access-steps-native" hidden>
           <li><button type="button" id="access-settings">Open Settings</button> at Privacy &amp; Security, Full Disk Access.</li>
-          <li>Turn on <b>macdirtree</b>. If it is not in the list, press <b>+</b> and pick it, or drag it in: <button type="button" id="access-reveal">Show macdirtree in Finder</button></li>
-          <li>macOS applies the change after a restart: <button type="button" id="access-relaunch">Relaunch macdirtree</button></li>
+          <li>Turn on <b>Hoardmap</b>. If it is not in the list, press <b>+</b> and pick it, or drag it in: <button type="button" id="access-reveal">Show Hoardmap in Finder</button></li>
+          <li>macOS applies the change after a restart: <button type="button" id="access-relaunch">Relaunch Hoardmap</button></li>
         </ol>
         <div id="access-steps-browser" hidden>
-          <p>Give access to the terminal app that started macdirtree, then quit that terminal completely, reopen it, and run macdirtree again.</p>
+          <p>Give access to the terminal app that started Hoardmap, then quit that terminal completely, reopen it, and run Hoardmap again.</p>
           <p><button type="button" id="access-settings-browser">Open Settings</button></p>
         </div>
       </div>

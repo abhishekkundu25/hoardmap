@@ -37,7 +37,7 @@ fn static_files_have_their_types_and_unknown_paths_are_404() {
             .starts_with("text/html")
     );
     assert_eq!(header(&headers, "Cache-Control"), Some("no-store"));
-    assert!(body.contains("macdirtree"), "{body}");
+    assert!(body.contains("Hoardmap"), "{body}");
 
     let (status, headers, _) = server.get("/app.js");
     assert_eq!(status, 200);
@@ -54,6 +54,11 @@ fn static_files_have_their_types_and_unknown_paths_are_404() {
             .unwrap()
             .starts_with("text/css")
     );
+
+    let (status, headers, body) = server.get("/logo.svg");
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "Content-Type"), Some("image/svg+xml"));
+    assert!(body.starts_with("<svg"), "{body}");
 
     let (status, _, _) = server.get("/nope");
     assert_eq!(status, 404);

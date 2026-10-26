@@ -47,4 +47,4 @@ Shape:
 - [ ] the page loads with no console errors and no request leaves 127.0.0.1
 - [ ] no text, button or menu mentions delete, trash, remove or move
 - [ ] `cargo test` still green (the server embeds the files; the status test still finds
-      `macdirtree` in the HTML)
+      `hoardmap` in the HTML)

@@ -1,6 +1,8 @@
-# macdirtree
+# Hoardmap
 
-macdirtree is WinDirStat for the Mac. It scans a folder and shows where the bytes are
+<img src="assets/hoardmap.svg" alt="Hoardmap icon" width="128">
+
+Hoardmap is WinDirStat for the Mac. It scans a folder and shows where the bytes are
 in three linked views: a directory list, a treemap or icicle, and an extension list.
 It comes two ways: a command that serves the page to your browser, and a native Mac
 app that shows the same page in its own window. Both listen on 127.0.0.1 only. From
@@ -15,19 +17,19 @@ You need macOS and Rust 1.85 or newer. Clone the repository and run:
 cargo install --path .
 ```
 
-This builds the `macdirtree` binary and puts it in `~/.cargo/bin`.
+This builds the `hoardmap` binary and puts it in `~/.cargo/bin`.
 
 ## Usage
 
 ```sh
-macdirtree
+hoardmap
 ```
 
 Scans your home folder and opens the page in your default browser. The scan starts at
 once and the page shows progress while it runs.
 
 ```sh
-macdirtree /some/folder
+hoardmap /some/folder
 ```
 
 Scans that folder instead. You can also type another path in the page and press Scan.
@@ -35,7 +37,7 @@ Scans that folder instead. You can also type another path in the page and press 
 Options:
 
 ```
-Usage: macdirtree [PATH] [--port N] [--no-open] [--linger SECS] [--help]
+Usage: hoardmap [PATH] [--port N] [--no-open] [--linger SECS] [--help]
 
 Scans PATH (default: your home folder) and serves the result on 127.0.0.1.
 
@@ -57,16 +59,16 @@ and copy it to `~/Applications`:
 tools/bundle-app.sh --install
 ```
 
-Without `--install` the bundle is left at `target/macdirtree.app`. Open it from Finder,
-Launchpad or with `open ~/Applications/macdirtree.app`. Closing the window quits it.
+Without `--install` the bundle is left at `target/Hoardmap.app`. Open it from Finder,
+Launchpad or with `open ~/Applications/Hoardmap.app`. Closing the window quits it.
 
 The first time it starts, the app shows a start screen before it scans anything. The
-screen says what macdirtree does and does not do, and covers Full Disk Access:
+screen says what hoardmap does and does not do, and covers Full Disk Access:
 
 - Whether the app has access, read from a file only it can open.
 - Open Settings, which goes straight to Privacy & Security, Full Disk Access.
-- Show macdirtree in Finder, so you can drag the app into that list.
-- Relaunch macdirtree, because macOS applies the switch to a new process.
+- Show hoardmap in Finder, so you can drag the app into that list.
+- Relaunch hoardmap, because macOS applies the switch to a new process.
 - Continue without access, which scans everything macOS allows. Without access, macOS
   may ask once about Desktop, Documents, Downloads and other protected folders as the
   scan reaches them; the scan waits at that folder until you answer.
@@ -168,10 +170,10 @@ totals do not include what is behind those folders.
 On a real home folder every unreadable entry reads `Operation not permitted`. That is
 macOS privacy protection (TCC), not file permissions. It covers app sandboxes under
 `Library/Containers` and `Library/Group Containers`, the Photos Library, Safari, Mail
-data and the Trash. macdirtree inherits its access from the app that launched it, and
+data and the Trash. hoardmap inherits its access from the app that launched it, and
 nothing in the code can bypass that.
 
-To scan those folders, give the terminal that launches macdirtree Full Disk Access:
+To scan those folders, give the terminal that launches hoardmap Full Disk Access:
 
 1. Open System Settings > Privacy & Security > Full Disk Access. This command opens
    that pane directly:
@@ -183,7 +185,7 @@ To scan those folders, give the terminal that launches macdirtree Full Disk Acce
 2. Add Terminal, or the terminal you use (iTerm, Warp, the VS Code terminal), and turn
    it on.
 3. Quit and reopen the terminal.
-4. Run macdirtree again, or press Rescan.
+4. Run hoardmap again, or press Rescan.
 
 The unreadable button in the page lists exactly which folders were skipped, so you can
 check the result.
@@ -198,7 +200,7 @@ request. That is the only action the server can take.
 
 ## What it never does
 
-macdirtree does not delete, move, rename or trash files, and it has no button, key or
+hoardmap does not delete, move, rename or trash files, and it has no button, key or
 API endpoint that could. The test `source_never_deletes_moves_or_renames` in
 `tests/api.rs` reads every source file and fails if a call such as `remove_file`,
 `remove_dir`, `rename` or `trash` appears. Clearing space is done in Finder, by hand,
@@ -262,7 +264,7 @@ Integration tests start the debug binary with `--no-open --linger 1` and put a s
   and 415 paths, the icicle's rows and nesting, the `Host` check, that `/api/open` runs `open -R` for a file and bare
   `open` for a folder, and the no-delete source check.
 
-The native app is `src/bin/macdirtree-app.rs`, built with `--features app` (tao, wry
+The native app is `src/bin/hoardmap-app.rs`, built with `--features app` (tao, wry
 and muda). The plain `cargo build` leaves those out.
 
 The JSON endpoints are `GET /api/status`, `GET /api/events` (server-sent events),
@@ -271,8 +273,8 @@ The JSON endpoints are `GET /api/status`, `GET /api/events` (server-sent events)
 `POST /api/access/settings`; the app adds `POST /api/access/reveal` and
 `POST /api/relaunch`. Their shapes are in the spec.
 
-The spec is `docs/specs/macdirtree.md`. The build tickets, with the departures from the
-plan, are in `docs/tickets/macdirtree/`. `AGENTS.md` is the short map of the code.
+The spec is `docs/specs/hoardmap.md`. The build tickets, with the departures from the
+plan, are in `docs/tickets/hoardmap/`. `AGENTS.md` is the short map of the code.
 
 ## Credits
 

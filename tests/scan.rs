@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use macdirtree::scan::{Progress, scan};
-use macdirtree::tree::{Kind, NodeId, ROOT, Tree};
+use hoardmap::scan::{Progress, scan};
+use hoardmap::tree::{Kind, NodeId, ROOT, Tree};
 
 /// The fixture folder; removed on drop, with `locked/` made writable again first.
 struct Fixture {
@@ -24,7 +24,7 @@ impl Fixture {
         // The clock ticks in microseconds on macOS, so parallel tests need the counter.
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
-            "macdirtree-scan-{}-{}",
+            "hoardmap-scan-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
