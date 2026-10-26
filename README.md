@@ -1,6 +1,16 @@
 # Hoardmap
 
+[![CI](https://github.com/abhishekkundu25/hoardmap/actions/workflows/ci.yml/badge.svg)](https://github.com/abhishekkundu25/hoardmap/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/abhishekkundu25/hoardmap)](https://github.com/abhishekkundu25/hoardmap/releases/latest)
+
 <img src="assets/hoardmap.svg" alt="Hoardmap icon" width="128">
+
+**[Download Hoardmap.dmg](https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg)** · [Website](https://abhishekkundu25.github.io/hoardmap/)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/img/treemap-dark.jpg">
+  <img src="site/img/treemap-light.jpg" alt="Hoardmap showing a home folder as a treemap, with the folder list on the left and file types below">
+</picture>
 
 Hoardmap is WinDirStat for the Mac. It scans a folder and shows where the bytes are
 in three linked views: a directory list, a treemap or icicle, and an extension list.
