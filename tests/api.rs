@@ -650,6 +650,8 @@ fn access_reports_the_grant_and_opens_the_settings_pane() {
     assert_eq!(status, 200, "{access}");
     assert!(access["granted"].is_boolean(), "{access}");
     assert_eq!(access["native"], false);
+    // The command is not an app bundle, so it is never in the wrong place.
+    assert_eq!(access["installed"], true);
 
     let (status, _, _) = server.post("/api/access/settings", None, "{}");
     assert_eq!(status, 415);

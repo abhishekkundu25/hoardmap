@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- No more Apple Music, TV or Photos prompts without Full Disk Access: their libraries, caches and system copies (`~/Movies/TV`, `~/Library/Photos` and others) are skipped like the other protected folders.
+
+- Relaunching after turning on Full Disk Access is more reliable: a helper waits for the old window to close, then opens the app again with its settings.
+- The start screen says when Hoardmap runs from Downloads or its installer disk, where Full Disk Access does not stick, and asks to move it to Applications.
+- The Mac app notes each launch step in `~/Library/Logs/Hoardmap/launch.log`, so a launch that never shows a window can be traced.
+
 ## 0.3.0 — 2026-10-27
 
 - Live updates: the list and the map fill in while the scan runs, refreshed about once a second, and keep the open folders and the selection.

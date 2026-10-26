@@ -1398,6 +1398,7 @@ function renderAccess() {
   const a = store.access;
   if (!a) return;
   el.accessDot.className = `dot ${a.granted ? "on" : "off"}`;
+  $("access-move").hidden = !a.native || a.installed;
   el.accessButton.title = a.granted ? "Full Disk Access is on" : "Full Disk Access is off: some folders are skipped";
   const welcomed = storedFlag("welcomed");
   $("access-title").textContent = welcomed ? "Full Disk Access" : "Welcome to Hoardmap";
@@ -1485,7 +1486,7 @@ const statusLoaded = getJSON("/api/status")
 
 Promise.all([statusLoaded, loadAccess()]).then(() => {
   const a = store.access;
-  if (a && a.native && (!storedFlag("welcomed") || (!a.granted && !storedFlag("skipAccess")))) {
+  if (a && a.native && (!storedFlag("welcomed") || !a.installed || (!a.granted && !storedFlag("skipAccess")))) {
     showAccess();
   } else {
     scanIfIdle();
