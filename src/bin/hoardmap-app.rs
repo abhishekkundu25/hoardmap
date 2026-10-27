@@ -1,5 +1,5 @@
-//! The native Mac app: the same server and page as the `hoardmap` command, shown in
-//! a window instead of a browser tab. Closing the window quits the app.
+//! The Mac app: the server and page in a native window. Folders arrive from Finder,
+//! the Dock icon or the `hoardmap` command. Closing the window quits the app.
 
 use std::path::PathBuf;
 

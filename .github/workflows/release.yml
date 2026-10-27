@@ -85,7 +85,7 @@ jobs:
           sed -e '1,2d' -e "s/\"VERSION\"/\"$version\"/" -e "s/\"SHA256\"/\"$app\"/" cask.rb >tap/Casks/hoardmap.rb
           cp README.tap.md tap/README.md
           cd tap
-          # The command now ships inside the app; the old formula installed a browser server.
+          # The command ships inside the app now, so the old formula goes.
           if [ -e Formula/hoardmap.rb ]; then git rm -q Formula/hoardmap.rb; fi
           git add -A
           git diff --cached --stat

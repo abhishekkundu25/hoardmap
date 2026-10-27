@@ -1,6 +1,6 @@
 //! `hoardmap [PATH]`: opens the Hoardmap app on a folder. Debug builds also have the
 //! test server the integration tests drive (`HOARDMAP_TEST_SERVER`); release builds
-//! have no way to serve the page to a browser.
+//! leave it out, so they cannot serve the page anywhere but the app's window.
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};

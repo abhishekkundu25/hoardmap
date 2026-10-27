@@ -1,7 +1,8 @@
 # hoardmap
 
 WinDirStat for macOS: scan a folder, see where the bytes are, open the folder in Finder.
-Rust binary, page served to the browser on 127.0.0.1, no build step, no network.
+Rust, a Mac app whose window shows a page served on 127.0.0.1, no build step, no
+network.
 
 > Since 0.4 there is no browser version: the page is shown only in the Mac app's
 > window, the `hoardmap` command opens the app on a folder (`open -b dev.hoardmap.app
@@ -20,8 +21,8 @@ not want a delete button: clearing space is done in Finder, by hand, after looki
 
 ## Solution
 
-`hoardmap [PATH]` scans PATH (the home folder by default) in parallel, opens the
-browser on a local page, and streams scan progress to it. When the scan is done the
+The app scans a folder (the home folder by default; `hoardmap PATH` or Finder hands it
+another) in parallel and streams scan progress to the page in its window. When the scan is done the
 page shows:
 
 - a **directory list**: an expandable tree sorted by size with columns Name, Size, %,
@@ -34,12 +35,12 @@ page shows:
 The three views are linked: selecting in one highlights in the others. Double-clicking
 a node, or the Open in Finder button, opens the folder in Finder, with the file
 selected when the node is a file. Nothing in the page or the server deletes, moves or
-renames anything. The server exits by itself once the browser tab is gone.
+renames anything. Closing the window quits the app.
 
 ## User stories
 
-1. As a Mac user, I want to run one command and get a browser page of my home folder's
-   disk usage, so that I do not install a native app.
+1. As a Mac user, I want to open one app and see my home folder's disk usage, so that
+   I find what fills the disk.
 2. As a user, I want to pass a folder path on the command line, so that I can scan one
    folder instead of my whole home.
 3. As a user, I want to type another path in the page and rescan, so that I can move
@@ -98,7 +99,8 @@ renames anything. The server exits by itself once the browser tab is gone.
     network can see my file names or open my folders.
 30. As a user, I want the page's actions (scan, open) to be refused when they come from
     another website, so that a malicious page cannot drive my server.
-31. As a user, I want a `--port` option, so that I can choose the port when the default
+31. (Retired in 0.4, like 32 to 34 and the exit-on-tab-close rule.) As a user, I want a
+    `--port` option, so that I can choose the port when the default
     random one does not suit me.
 32. As a user, I want `--no-open`, so that I can start the server from a script
     without the browser launching.
@@ -233,14 +235,12 @@ renames anything. The server exits by itself once the browser tab is gone.
 ## Testing decisions
 
 - A good test drives the binary or the public library functions and checks what the
-  user would see: JSON from the endpoints, rects that tile the viewport, the process
-  gone after the tab closes. No test reads private state.
+  user would see: JSON from the endpoints, rects that tile the viewport, the folder the
+  command hands to `open`. No test reads private state.
 - **Resource hygiene** (helpers in `tests/common/mod.rs`): CPU seconds of a process
   come from `ps -o time= -p PID` on macOS and `/proc/PID/stat` on Linux. The tests
-  check that a server idle after a scan uses under 0.1 s of CPU in 2 s with a tab
-  connected; that the process exits 0 within linger plus 3 s after its only tab
-  disconnects; that it is still alive after 3 s when `--linger` has not passed; and
-  that a reload (disconnect then reconnect within linger) keeps it alive.
+  check that a server idle after a scan uses under 0.1 s of CPU in 2 s with its page
+  connected, and that it neither exits nor opens anything on its own.
 - **Scanner** on a fixture tree built in a temp folder with known sizes, a hard-linked
   pair, a symlink, a dotfile, nested empty dirs and an unreadable dir (mode 000,
   skipped when running as root): sizes, counts, order, hard-link accounting, error
@@ -248,16 +248,15 @@ renames anything. The server exits by itself once the browser tab is gone.
 - **Treemap**: rects never overlap, stay inside the viewport, their total area matches
   the root's share, children of a directory lie inside its bounds, sub-pixel nodes are
   dropped or collapsed, a zero-size tree yields no rects.
-- **API end to end** in `tests/api.rs`: start the binary on the fixture with `--no-open
-  --linger 1`, wait for `done`, check each endpoint's shape and figures, check 409/400/
+- **API end to end** in `tests/api.rs`: start the debug binary's test server on the
+  fixture (`HOARDMAP_TEST_SERVER=1`), wait for `done`, check each endpoint's shape and figures, check 409/400/
   404/415 paths, and check that `/api/open` ran a stub `open` from a temp `PATH` dir
   with `-R file` for a file and the bare dir for a directory.
-- No browser automation. The page's logic that is testable without a DOM (size
+- No UI automation. The page's logic that is testable without a DOM (size
   formatting, tree-state bookkeeping) stays in small pure functions.
 - Every test file runs under `timeout 120`; integration tests use the debug binary via
   `CARGO_BIN_EXE_hoardmap`.
-- Budgets as pass/fail lines in the resource tests: idle CPU < 0.1 s per 2 s; exit
-  within linger + 3 s.
+- Budget as a pass/fail line in the resource tests: idle CPU < 0.1 s per 2 s.
 
 ## Out of scope
 

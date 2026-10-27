@@ -108,7 +108,7 @@ pub struct App {
     /// without it in the [`cookie_name`] cookie is refused, so other programs on the
     /// Mac cannot use the server.
     pub token: String,
-    /// Served inside the native window rather than a browser tab.
+    /// Served to the app's window; false only for the debug test server.
     pub native: bool,
     /// The folder to scan first; the idle status names it so the page can start it.
     pub start: Mutex<Option<PathBuf>>,

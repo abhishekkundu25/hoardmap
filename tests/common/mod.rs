@@ -173,7 +173,7 @@ impl Server {
         format!("http://127.0.0.1:{}/?token={}", self.port, self.token)
     }
 
-    /// The `Cookie` header line the page's browser sends.
+    /// The `Cookie` header line the app's window sends.
     pub fn cookie(&self) -> String {
         format!("Cookie: hoardmap-{}={}\r\n", self.port, self.token)
     }

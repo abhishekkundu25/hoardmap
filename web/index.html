@@ -130,15 +130,11 @@
       <div id="access-off" hidden>
         <p><span class="dot off"></span>Access is off. macOS keeps some folders private: Desktop, Documents, Downloads, iCloud Drive, other apps' data, Music, Photos, Mail, Safari and the Trash. Without access they are skipped, listed as unreadable, and left out of the totals. Everything else works the same.</p>
         <p class="muted">Hoardmap skips them rather than make macOS ask you about each one. The scan starts when you close this window.</p>
-        <ol id="access-steps-native" hidden>
+        <ol id="access-steps">
           <li><button type="button" id="access-settings">Open Settings</button> at Privacy &amp; Security, Full Disk Access.</li>
           <li>Turn on <b>Hoardmap</b>. If it is not in the list, press <b>+</b> and pick it, or drag it in: <button type="button" id="access-reveal">Show Hoardmap in Finder</button></li>
           <li>macOS applies the change after a restart: <button type="button" id="access-relaunch">Relaunch Hoardmap</button></li>
         </ol>
-        <div id="access-steps-browser" hidden>
-          <p>Give access to the terminal app that started Hoardmap, then quit that terminal completely, reopen it, and run Hoardmap again.</p>
-          <p><button type="button" id="access-settings-browser">Open Settings</button></p>
-        </div>
       </div>
     </section>
   </div>
