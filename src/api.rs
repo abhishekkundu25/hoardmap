@@ -417,13 +417,12 @@ fn reveal(path: &Path, is_dir: bool) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use super::*;
     use crate::server::Body;
 
     fn app() -> Arc<App> {
-        Arc::new(App::new(Some(Duration::from_secs(1)), 0, false))
+        Arc::new(App::new(0, false))
     }
 
     fn get(path: &str) -> Request {

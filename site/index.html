@@ -502,15 +502,15 @@ footer a { color: var(--ink-2); }
     <div>
       <p class="eyebrow">For the terminal</p>
       <h2>Prefer a command?</h2>
-      <p class="sub">The <code>hoardmap</code> command scans any folder and opens the same map in your browser. It quits on its own when you close the tab.</p>
-      <p class="sub">Install it with Homebrew, <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/hoardmap-macos.tar.gz">download the command</a>, or build it from <a href="https://github.com/abhishekkundu25/hoardmap">source</a>.</p>
+      <p class="sub">The <code>hoardmap</code> command opens the app on any folder, straight from Terminal. Homebrew puts it on your PATH along with the app.</p>
+      <p class="sub">Or drop a folder on the Dock icon, or choose <b>Open With → Hoardmap</b> in Finder. <a href="https://github.com/abhishekkundu25/hoardmap">Source on GitHub</a>.</p>
     </div>
     <div class="term" aria-label="Terminal example">
       <div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="p">$</span> <span class="c">brew install</span> abhishekkundu25/tap/hoardmap
+<pre><span class="p">$</span> <span class="c">brew install --cask</span> abhishekkundu25/tap/hoardmap
 
 <span class="p">$</span> <span class="c">hoardmap</span> ~/Developer
-<span class="o">Listening on http://127.0.0.1:52817/</span></pre>
+<span class="o"># Hoardmap opens and scans ~/Developer</span></pre>
     </div>
   </div>
 </section>

@@ -1,9 +1,9 @@
 [package]
 name = "hoardmap"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Disk usage explorer for macOS: directory list, treemap and extension list in the browser"
+description = "Disk usage explorer Mac app: directory list, treemap and extension list"
 license = "MIT"
 
 [dependencies]

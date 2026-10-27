@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-28
+
+- Hoardmap is a Mac app only; there is no browser version any more. The `hoardmap` command now opens the app on a folder (`hoardmap ~/Developer`) instead of serving the page to a browser, and its `--port`, `--no-open` and `--linger` options are gone. Homebrew installs the command with the app (`brew install --cask abhishekkundu25/tap/hoardmap`); the separate `hoardmap` formula and the `hoardmap-macos.tar.gz` download are retired.
+- Open a folder in Hoardmap from Finder (Open With → Hoardmap) or by dropping it on the Dock icon. Hoardmap never becomes the default app for folders.
+- Only Hoardmap's own page can use its local server. Each launch makes a secret that the page receives when it opens; requests without it, from other programs on the Mac, are refused. Before, an app without Full Disk Access could ask a running Hoardmap to list protected folders.
+
 ## 0.3.3 — 2026-10-28
 
 - Scans are about 13% faster and use half the CPU: folders are read on the fast cores only, since more threads just queue for the file system. `HOARDMAP_THREADS` sets the count.

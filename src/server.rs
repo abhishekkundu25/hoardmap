@@ -1,16 +1,13 @@
-//! The HTTP server on 127.0.0.1: serves the page, routes `/api/*` to [`crate::api`],
-//! counts connected browser tabs and exits the process once the last tab has been
-//! gone for the linger period.
+//! The HTTP server on 127.0.0.1 behind the app's window: serves the page and routes
+//! `/api/*` to [`crate::api`]. Only the page the app loads holds the launch token.
 //!
 //! HTTP/1.1 is spoken directly over `std::net`: one thread per connection, one
 //! response per connection (`Connection: close`). An event stream owns its socket, so a
 //! blocking read on a clone of it notices the tab closing at once; nothing polls.
 
-use std::convert::Infallible;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -21,7 +18,6 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::api::{self, lossy};
-use crate::cli::Options;
 use crate::scan::{self, Progress};
 use crate::tree::Tree;
 use crate::treemap::Colours;
@@ -33,6 +29,10 @@ const LOGO_SVG: &str = include_str!("../assets/hoardmap.svg");
 
 /// A request line plus headers longer than this is refused with 431.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+/// The answer to a request without the launch token.
+const NO_TOKEN: &str =
+    "This address is from another launch. Open the one hoardmap printed, or reopen the app.\n";
+
 /// A request body longer than this is refused with 413.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -101,14 +101,17 @@ pub enum State {
 /// Shared by every connection thread.
 pub struct App {
     pub state: Mutex<State>,
-    pub presence: Arc<Presence>,
     pub events: Broadcaster,
     /// The bound port, which a request's `Host` header must name.
     pub port: u16,
-    /// Served inside the native window rather than a browser tab.
+    /// A secret made at launch. Only the page's own address carries it; a request
+    /// without it in the [`cookie_name`] cookie is refused, so other programs on the
+    /// Mac cannot use the server.
+    pub token: String,
+    /// Served to the app's window; false only for the debug test server.
     pub native: bool,
     /// The folder to scan first; the idle status names it so the page can start it.
-    pub start: Option<PathBuf>,
+    pub start: Mutex<Option<PathBuf>>,
     /// `(total, free)` of the scanned folder's volume, read when a scan starts and ends
     /// rather than on each status, since a network drive that stopped answering blocks
     /// the read.
@@ -116,14 +119,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(linger: Option<Duration>, port: u16, native: bool) -> App {
+    pub fn new(port: u16, native: bool) -> App {
         App {
             state: Mutex::new(State::Idle),
-            presence: Arc::new(Presence::new(linger)),
             events: Broadcaster::default(),
             port,
+            token: new_token(),
             native,
-            start: None,
+            start: Mutex::new(None),
             disk: Mutex::new(None),
         }
     }
@@ -149,7 +152,7 @@ impl App {
         match state {
             State::Idle => status_json(
                 "idle",
-                self.start.as_deref().map(lossy),
+                self.start.lock().unwrap().as_deref().map(lossy),
                 (0, 0, 0, 0),
                 0,
                 0,
@@ -279,6 +282,30 @@ impl App {
         true
     }
 
+    /// A folder handed over by Finder or the `hoardmap` command. Before the first scan
+    /// (the start screen is up) it becomes the folder that scan reads; otherwise it
+    /// replaces the current scan, stopping a running one first. Blocks while a running
+    /// scan winds down, so call it off the event loop.
+    pub fn open_folder(self: &Arc<App>, path: PathBuf) -> Result<(), String> {
+        if !path.is_dir() {
+            return Err(format!("{} is not a directory", path.display()));
+        }
+        if matches!(*self.state.lock().unwrap(), State::Idle) {
+            *self.start.lock().unwrap() = Some(path);
+            self.notify_status();
+            return Ok(());
+        }
+        if self.stop_scan().is_ok() {
+            let end = Instant::now() + STOP_WAIT + Duration::from_secs(1);
+            while matches!(*self.state.lock().unwrap(), State::Scanning { .. })
+                && Instant::now() < end
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+        self.start_scan(path)
+    }
+
     /// Asks the running scan to stop. It ends with what it has read; if it is still
     /// stuck after [`STOP_WAIT`], for instance on a network drive that stopped
     /// answering, its preview takes its place at once.
@@ -402,73 +429,6 @@ fn status_json(
     })
 }
 
-/// Connected tabs, and the exit rule: linger after the last one leaves. Without a
-/// linger period the process never exits on its own.
-pub struct Presence {
-    tabs: Mutex<Tabs>,
-    linger: Option<Duration>,
-}
-
-struct Tabs {
-    connected: usize,
-    /// Bumped on every connect, so a timer armed before a reconnect does nothing.
-    generation: u64,
-}
-
-/// One connected tab; dropping it is the disconnect.
-pub struct Tab {
-    presence: Arc<Presence>,
-}
-
-impl Presence {
-    pub fn new(linger: Option<Duration>) -> Presence {
-        Presence {
-            tabs: Mutex::new(Tabs {
-                connected: 0,
-                generation: 0,
-            }),
-            linger,
-        }
-    }
-
-    pub fn connect(self: &Arc<Self>) -> Tab {
-        let mut tabs = self.tabs.lock().unwrap();
-        tabs.connected += 1;
-        tabs.generation += 1;
-        Tab {
-            presence: self.clone(),
-        }
-    }
-
-    pub fn connected(&self) -> usize {
-        self.tabs.lock().unwrap().connected
-    }
-}
-
-impl Drop for Tab {
-    fn drop(&mut self) {
-        let generation = {
-            let mut tabs = self.presence.tabs.lock().unwrap();
-            tabs.connected -= 1;
-            if tabs.connected > 0 {
-                return;
-            }
-            tabs.generation
-        };
-        let Some(linger) = self.presence.linger else {
-            return;
-        };
-        let presence = self.presence.clone();
-        thread::spawn(move || {
-            thread::sleep(linger);
-            let tabs = presence.tabs.lock().unwrap();
-            if tabs.connected == 0 && tabs.generation == generation {
-                std::process::exit(0);
-            }
-        });
-    }
-}
-
 enum Signal {
     Event(String),
     /// The tab's socket closed.
@@ -577,22 +537,29 @@ pub struct Config {
     pub path: PathBuf,
     /// Tried first; when it is taken, or 0, the OS picks one.
     pub port: u16,
-    /// Exit this long after the last tab closes; `None` never exits on its own.
-    pub linger: Option<Duration>,
     pub native: bool,
     /// Scan `path` at once; otherwise wait for the page to ask.
     pub scan_at_start: bool,
 }
 
+/// A running server: the bound port, the page's address with the token, and the
+/// state, for handing it folders.
+pub struct Spawned {
+    pub port: u16,
+    pub url: String,
+    pub app: Arc<App>,
+}
+
 /// Binds 127.0.0.1, starts the scan of `config.path` and serves on a background
-/// thread. Returns the bound port.
-pub fn spawn(config: Config) -> io::Result<u16> {
+/// thread.
+pub fn spawn(config: Config) -> io::Result<Spawned> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
         .or_else(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))?;
     let port = listener.local_addr()?.port();
-    let mut app = App::new(config.linger, port, config.native);
-    app.start = Some(config.path.clone());
+    let app = App::new(port, config.native);
+    *app.start.lock().unwrap() = Some(config.path.clone());
     app.read_disk(&config.path);
+    let url = page_url(port, &app.token);
     let app = Arc::new(app);
     if config.scan_at_start
         && let Err(error) = app.start_scan(config.path.clone())
@@ -603,6 +570,7 @@ pub fn spawn(config: Config) -> io::Result<u16> {
             error,
         };
     }
+    let served = app.clone();
     thread::spawn(move || {
         loop {
             match listener.accept() {
@@ -617,49 +585,47 @@ pub fn spawn(config: Config) -> io::Result<u16> {
             }
         }
     });
-    Ok(port)
-}
-
-/// Serves, prints the listening line and launches the browser; the linger timer ends
-/// the process. Returns only when binding fails.
-pub fn run(options: Options) -> io::Result<Infallible> {
-    let port = if options.port == 0 {
-        0
-    } else {
-        // An explicit port must be honoured or refused, not silently replaced.
-        TcpListener::bind((Ipv4Addr::LOCALHOST, options.port))?;
-        options.port
-    };
-    let port = spawn(Config {
-        path: options.path,
+    Ok(Spawned {
         port,
-        linger: Some(options.linger),
-        native: false,
-        scan_at_start: true,
-    })?;
-    let url = format!("http://127.0.0.1:{port}/");
-    println!("Listening on {url}");
-    io::stdout().flush()?;
-    if options.open {
-        launch_browser(&url);
-    }
-    loop {
-        thread::park();
-    }
+        url,
+        app: served,
+    })
 }
 
-fn launch_browser(url: &str) {
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    match Command::new(program).arg(url).spawn() {
-        Ok(mut child) => {
-            thread::spawn(move || child.wait().ok());
-        }
-        Err(error) => eprintln!("hoardmap: could not run {program}: {error}"),
-    }
+/// The page's address with the launch token; the first visit trades it for a cookie.
+pub fn page_url(port: u16, token: &str) -> String {
+    format!("http://127.0.0.1:{port}/?token={token}")
+}
+
+/// The token's cookie. Cookies ignore the port, so the name carries it: two copies of
+/// the app on different ports keep theirs apart.
+pub fn cookie_name(port: u16) -> String {
+    format!("hoardmap-{port}")
+}
+
+/// 32 random bytes, hex.
+fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .expect("read /dev/urandom");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Compares in time that does not depend on where the strings differ.
+fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// The request carries the launch token in its cookie.
+fn has_token(app: &App, request: &Request) -> bool {
+    let name = cookie_name(app.port);
+    request.header("Cookie").is_some_and(|cookies| {
+        cookies
+            .split(';')
+            .filter_map(|c| c.trim().split_once('='))
+            .any(|(k, v)| k == name && same_secret(v, &app.token))
+    })
 }
 
 fn serve(app: &Arc<App>, mut stream: TcpStream) -> io::Result<()> {
@@ -683,6 +649,29 @@ fn route(app: &Arc<App>, request: &Request) -> Response {
     // would otherwise be same-origin here.
     if !host_allowed(request.header("Host"), app.port) {
         return Response::text(403, "forbidden\n");
+    }
+    // The address hoardmap opened: keep the token as a cookie and drop it from the
+    // address bar and history.
+    if request.path == "/"
+        && let Some(given) = request
+            .query
+            .split('&')
+            .find_map(|p| p.strip_prefix("token="))
+    {
+        if !same_secret(given, &app.token) {
+            return Response::text(403, NO_TOKEN);
+        }
+        let cookie = format!(
+            "{}={}; Path=/; HttpOnly; SameSite=Strict",
+            cookie_name(app.port),
+            app.token
+        );
+        return Response::text(303, "")
+            .with_header("Location", "/")
+            .with_header("Set-Cookie", &cookie);
+    }
+    if !has_token(app, request) {
+        return Response::text(403, NO_TOKEN);
     }
     if request.path.starts_with("/api/") {
         return api::handle(app, request);
@@ -816,7 +805,6 @@ fn head(response: &Response, framing: &str) -> Vec<u8> {
 
 fn serve_events(app: &Arc<App>, mut stream: TcpStream, response: &Response) -> io::Result<()> {
     let (sender, events) = app.events.subscribe();
-    let _tab = app.presence.connect();
     let mut watcher = stream.try_clone()?;
     thread::spawn(move || {
         let mut sink = [0u8; 1024];
@@ -859,6 +847,7 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         202 => "Accepted",
         204 => "No Content",
+        303 => "See Other",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -876,6 +865,39 @@ fn reason(status: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_are_long_random_and_compared_exactly() {
+        let (a, b) = (new_token(), new_token());
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+        assert!(same_secret(&a, &a.clone()));
+        assert!(!same_secret(&a, &b));
+        assert!(!same_secret(&a, &a[..63]));
+        assert!(!same_secret(&a, ""));
+    }
+
+    #[test]
+    fn the_token_is_read_from_this_ports_cookie_only() {
+        let app = App::new(8080, false);
+        let with = |cookie: &str| Request {
+            method: "GET".into(),
+            path: "/api/status".into(),
+            query: String::new(),
+            headers: vec![("Cookie".into(), cookie.into())],
+            body: Vec::new(),
+        };
+        let token = &app.token;
+        assert!(has_token(&app, &with(&format!("hoardmap-8080={token}"))));
+        assert!(has_token(
+            &app,
+            &with(&format!("a=1; hoardmap-8080={token}; b=2"))
+        ));
+        assert!(!has_token(&app, &with(&format!("hoardmap-8081={token}"))));
+        assert!(!has_token(&app, &with("hoardmap-8080=nope")));
+        assert!(!has_token(&app, &with("")));
+    }
 
     #[test]
     fn host_must_be_loopback_on_the_bound_port() {

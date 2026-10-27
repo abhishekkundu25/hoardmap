@@ -1,7 +1,9 @@
 # AGENTS.md
 
-hoardmap is a Rust binary that scans a folder and serves a disk-usage page
-(directory list, treemap, extension list) to the browser on 127.0.0.1. It never
+hoardmap is a Mac app, written in Rust, that scans a folder and shows a disk-usage
+page (directory list, treemap, extension list) in its window, served from 127.0.0.1
+inside the app behind a launch token. There is no browser version; the `hoardmap`
+command only opens the app on a folder. It never
 deletes, moves or renames anything; do not add such an action.
 
 ## Where things live
@@ -16,7 +18,13 @@ deletes, moves or renames anything; do not add such an action.
   any thread count must build the same tree.
 - `src/treemap.rs`: squarified layout, extension colours, extension and largest-file
   statistics.
-- `src/server.rs`: HTTP, static files, browser presence, exit when the last tab is gone.
+- `src/server.rs`: HTTP, static files, the launch token, and `App::open_folder` for
+  folders handed over by Finder or the command.
+- `src/main.rs`, `src/cli.rs`: the `hoardmap` command, `open -b dev.hoardmap.app PATH`.
+  Debug builds add the test server (`HOARDMAP_TEST_SERVER=1`); keep it out of release
+  builds (`cfg(debug_assertions)`).
+- `packaging/homebrew/`: the cask and tap README the release writes into
+  abhishekkundu25/homebrew-tap.
 - `src/api.rs`: the JSON endpoints, documented in `docs/specs/hoardmap.md`.
 - `src/volumes.rs`: the disks the Disks menu offers, and the macOS folder picker.
 - `assets/`: the logo. `hoardmap.svg` is the source, served as `/logo.svg` and
@@ -51,8 +59,8 @@ cargo run --release --example scan_bench -- ~ 5   # time both scanners, check th
 - Integration test files: `tests/resources.rs`, `tests/scan.rs`, `tests/treemap.rs`,
   `tests/api.rs`, with shared helpers in `tests/common/mod.rs`.
 - Integration tests spawn the debug binary (`CARGO_BIN_EXE_hoardmap`) with
-  `--no-open --linger 1` and put a stub `open` on `PATH`; nothing opens the user's
-  browser or Finder from a test.
+  `HOARDMAP_TEST_SERVER=1` and put a stub `open` on `PATH`; nothing opens Finder or the
+  app from a test.
 - Tests build their fixtures in the system temp folder and remove them.
 - The idle-CPU budget is a pass/fail line (under 0.1 s of CPU in 2 s). Run that test
   alone when the machine is busy before blaming a change.

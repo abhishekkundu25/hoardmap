@@ -1404,8 +1404,6 @@ function renderAccess() {
   $("access-title").textContent = welcomed ? "Full Disk Access" : "Welcome to Hoardmap";
   $("access-on").hidden = !a.granted;
   $("access-off").hidden = a.granted;
-  $("access-steps-native").hidden = !a.native;
-  $("access-steps-browser").hidden = a.native;
   $("access-reveal").hidden = !a.app;
   $("access-skip-label").hidden = !a.native || a.granted;
   $("access-skip").checked = storedFlag("skipAccess");
@@ -1435,7 +1433,6 @@ el.errorsAccess.addEventListener("click", () => {
 $("access-close").addEventListener("click", () => el.access.close());
 $("access-done").addEventListener("click", () => el.access.close());
 $("access-settings").addEventListener("click", () => accessAction("/api/access/settings"));
-$("access-settings-browser").addEventListener("click", () => accessAction("/api/access/settings"));
 $("access-reveal").addEventListener("click", () => accessAction("/api/access/reveal"));
 $("access-relaunch").addEventListener("click", () => {
   $("access-relaunch").textContent = "Relaunching";
