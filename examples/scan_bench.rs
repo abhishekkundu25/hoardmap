@@ -33,6 +33,7 @@ fn main() {
     // One unmeasured pass each warms the file system cache.
     let (_, bulk) = scan(Method::Bulk);
     let (_, portable) = scan(Method::Portable);
+    println!("{} walker threads", hoardmap::scan::default_threads());
     let root = bulk.root();
     println!(
         "{}: {} files, {} folders, {} unreadable",
