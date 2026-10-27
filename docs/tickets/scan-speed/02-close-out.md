@@ -6,9 +6,9 @@ README's Development section and AGENTS.md.
 
 **Blocked by:** 01.
 
-**Status:** open
+**Status:** done
 
 ## Acceptance
 
-- [ ] Full validation: fmt, both clippy runs, `cargo test`, `cargo test --test resources` alone.
-- [ ] Benchmark numbers recorded, budget met or the miss explained.
+- [x] Full validation: fmt, both clippy runs, `cargo test`, `cargo test --test resources` alone.
+- [x] Benchmark numbers recorded, budget met or the miss explained.

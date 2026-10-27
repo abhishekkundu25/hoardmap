@@ -11,7 +11,9 @@ deletes, moves or renames anything; do not add such an action.
 - `src/scan.rs`: file system to tree, in parallel, with progress atomics. On macOS it
   lists folders with `getattrlistbulk`; the portable `read_dir` plus `lstat` path is
   the fallback everywhere and `HOARDMAP_SCANNER=portable` forces it. Both must build
-  the same tree (`tests/scan.rs` checks).
+  the same tree (`tests/scan.rs` checks). The walk runs in its own pool of
+  `default_threads()` (the non-efficiency cores; `HOARDMAP_THREADS` overrides), and
+  any thread count must build the same tree.
 - `src/treemap.rs`: squarified layout, extension colours, extension and largest-file
   statistics.
 - `src/server.rs`: HTTP, static files, browser presence, exit when the last tab is gone.

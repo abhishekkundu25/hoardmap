@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Scans are about 13% faster and use half the CPU: folders are read on the fast cores only, since more threads just queue for the file system. `HOARDMAP_THREADS` sets the count.
+
 ## 0.3.2 — 2026-10-27
 
 - Install with Homebrew: `brew install --cask abhishekkundu25/tap/hoardmap` for the Mac app, `brew install abhishekkundu25/tap/hoardmap` for the command. The app opens straight away, and `brew upgrade` keeps it current.
