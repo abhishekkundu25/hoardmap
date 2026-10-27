@@ -4,7 +4,7 @@ Source: [docs/specs/scan-speed.md](../../specs/scan-speed.md).
 
 | # | Ticket | Blocked by | Files |
 |---|---|---|---|
-| 01 | [Thread cap and one sort](01-threads-and-sort.md) | none | `src/scan.rs`, `tests/scan.rs`, `examples/scan_bench.rs` |
+| 01 | [Thread cap and one sort](01-threads-and-sort.md) (done) | none | `src/scan.rs`, `tests/scan.rs`, `examples/scan_bench.rs` |
 | 02 | [Close-out](02-close-out.md) | 01 | `README.md`, `CHANGELOG.md`, `AGENTS.md`, this folder |
 
 ## Waves

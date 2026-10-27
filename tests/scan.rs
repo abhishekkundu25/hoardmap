@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use hoardmap::scan::{LIVE_DEPTH, Method, NOT_SCANNED, Progress, partial, scan, scan_skipping};
+use hoardmap::scan::{
+    LIVE_DEPTH, Method, NOT_SCANNED, Progress, partial, scan, scan_skipping, scan_with_threads,
+};
 use hoardmap::tree::{Kind, NodeId, ROOT, Tree};
 
 /// The fixture folder; removed on drop, with `locked/` made writable again first.
@@ -387,7 +389,6 @@ fn scans_the_target_folder() {
 }
 
 /// Every field of every node, for comparing two scans.
-#[cfg(target_os = "macos")]
 fn fingerprint(tree: &Tree) -> Vec<String> {
     tree.nodes
         .iter()
@@ -436,4 +437,54 @@ fn bulk_and_portable_listing_agree_on_the_target_folder() {
     if target.is_dir() {
         same_tree_both_ways(&target);
     }
+}
+
+fn same_tree_on_one_thread_and_eight(root: &Path) {
+    let scan = |threads| {
+        scan_with_threads(root, &Progress::default(), Method::default(), threads).expect("scan")
+    };
+    let (one, eight) = (scan(1), scan(8));
+    assert_eq!(one.error_count, eight.error_count);
+    let (a, b) = (fingerprint(&one), fingerprint(&eight));
+    assert_eq!(a.len(), b.len(), "node counts differ");
+    for (x, y) in a.iter().zip(&b) {
+        assert_eq!(x, y);
+    }
+}
+
+#[test]
+fn one_thread_and_many_build_the_same_tree() {
+    let fx = Fixture::build();
+    same_tree_on_one_thread_and_eight(&fx.root);
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/build");
+    if target.is_dir() {
+        same_tree_on_one_thread_and_eight(&target);
+    }
+}
+
+/// A folder removed on drop.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn a_hard_link_can_reorder_folders() {
+    // x/ and z/ hold the same 100-byte file; y/ holds 60 bytes. Before the hard link is
+    // counted once, x and z tie at 100 above y; after, z keeps nothing.
+    let root = Scratch(std::env::temp_dir().join(format!("hoardmap-links-{}", std::process::id())));
+    for dir in ["x", "y", "z"] {
+        fs::create_dir_all(root.0.join(dir)).unwrap();
+    }
+    write(&root.0.join("x/f.bin"), 100);
+    write(&root.0.join("y/g.bin"), 60);
+    fs::hard_link(root.0.join("x/f.bin"), root.0.join("z/f.bin")).unwrap();
+
+    let tree = scan(&root.0, &Progress::default()).expect("scan");
+    assert_eq!(names(&tree, ROOT), ["x", "y", "z"]);
+    let size = |name| tree.nodes[child(&tree, ROOT, name) as usize].size;
+    assert_eq!((size("x"), size("y"), size("z")), (100, 60, 0));
 }

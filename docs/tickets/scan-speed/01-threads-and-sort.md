@@ -6,13 +6,13 @@ spec's Solution and Implementation decisions.
 
 **Blocked by:** None.
 
-**Status:** open
+**Status:** done
 
 ## Acceptance
 
-- [ ] `pick_threads` unit tests: M-series layouts, one level, no sysctl, clamped to
+- [x] `pick_threads` unit tests: M-series layouts, one level, no sysctl, clamped to
       the logical count and to at least 1.
-- [ ] `HOARDMAP_THREADS` overrides the count; `scan_bench` prints the count it used.
-- [ ] `tests/scan.rs`: `one_thread_and_many_build_the_same_tree`.
-- [ ] `tests/scan.rs`: `a_hard_link_can_reorder_folders` (`x, y, z`).
-- [ ] `cargo fmt --check`, both clippy runs, `timeout 120 cargo test` green.
+- [x] `HOARDMAP_THREADS` overrides the count; `scan_bench` prints the count it used.
+- [x] `tests/scan.rs`: `one_thread_and_many_build_the_same_tree`.
+- [x] `tests/scan.rs`: `a_hard_link_can_reorder_folders` (`x, y, z`).
+- [x] `cargo fmt --check`, both clippy runs, `timeout 120 cargo test` green.
