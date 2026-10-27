@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.3 — 2026-10-28
+
 - Scans are about 13% faster and use half the CPU: folders are read on the fast cores only, since more threads just queue for the file system. `HOARDMAP_THREADS` sets the count.
 
 ## 0.3.2 — 2026-10-27
