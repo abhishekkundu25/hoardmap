@@ -49,8 +49,9 @@ jobs:
       id-token: write
     uses: ./.github/workflows/pages.yml
 
-  # Points the abhishekkundu25/homebrew-tap recipes at the new release. TAP_DEPLOY_KEY is
-  # the private half of a deploy key with write access to that repo only.
+  # Writes packaging/homebrew/hoardmap.rb and its README into abhishekkundu25/homebrew-tap
+  # for the new release. TAP_DEPLOY_KEY is the private half of a deploy key with write
+  # access to that repo only.
   tap:
     needs: release
     runs-on: ubuntu-latest
@@ -68,21 +69,27 @@ jobs:
           fi
           version=${GITHUB_REF_NAME#v}
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
-          sum() { awk -v f="$1" '$2 == f { print $1 }' SHA256SUMS; }
-          app=$(sum Hoardmap.zip)
-          cli=$(sum hoardmap-macos.tar.gz)
-          test -n "$app" && test -n "$cli"
+          app=$(awk '$2 == "Hoardmap.zip" { print $1 }' SHA256SUMS)
+          test -n "$app"
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/hoardmap.rb?ref=$GITHUB_REF_NAME" \
+            -H "Accept: application/vnd.github.raw" >cask.rb
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/README.md?ref=$GITHUB_REF_NAME" \
+            -H "Accept: application/vnd.github.raw" >README.tap.md
 
           mkdir -p ~/.ssh
           printf '%s\n' "$TAP_DEPLOY_KEY" >~/.ssh/tap
           chmod 600 ~/.ssh/tap
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone --depth 1 git@github.com:abhishekkundu25/homebrew-tap.git tap
+          # The template's two comment lines are for this repo, not the tap.
+          sed -e '1,2d' -e "s/\"VERSION\"/\"$version\"/" -e "s/\"SHA256\"/\"$app\"/" cask.rb >tap/Casks/hoardmap.rb
+          cp README.tap.md tap/README.md
           cd tap
-          sed -i -E "s/^  version \".*\"/  version \"$version\"/; s/^  sha256 \".*\"/  sha256 \"$app\"/" Casks/hoardmap.rb
-          sed -i -E "s|/download/v[^/]+/|/download/v$version/|; s/^  version \".*\"/  version \"$version\"/; s/^  sha256 \".*\"/  sha256 \"$cli\"/" Formula/hoardmap.rb
-          git diff --stat
-          if git diff --quiet; then exit 0; fi
+          # The command now ships inside the app; the old formula installed a browser server.
+          if [ -e Formula/hoardmap.rb ]; then git rm -q Formula/hoardmap.rb; fi
+          git add -A
+          git diff --cached --stat
+          if git diff --cached --quiet; then exit 0; fi
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -qam "Hoardmap $version"
+            commit -qm "Hoardmap $version"
           git push origin HEAD:main

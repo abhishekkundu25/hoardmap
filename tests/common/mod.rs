@@ -1,6 +1,6 @@
-//! Shared by the integration tests: the binary as a child process, raw HTTP over a
-//! socket, CPU accounting, a stub `open` on PATH so no test opens a browser, and the
-//! fixture tree the scanner tests use.
+//! Shared by the integration tests: the debug binary's test server as a child process,
+//! raw HTTP over a socket, CPU accounting, a stub `open` on PATH so no test opens
+//! Finder or the app, and the fixture tree the scanner tests use.
 #![allow(dead_code)]
 
 use std::fs::{self, File};
@@ -122,8 +122,8 @@ pub struct Server {
 }
 
 impl Server {
-    /// Spawns `hoardmap <stub dir> <args>` with the stub `open` first on PATH and
-    /// waits for the listening line.
+    /// Spawns the test server, `HOARDMAP_TEST_SERVER=1 hoardmap <stub dir> <args>`,
+    /// with the stub `open` first on PATH and waits for the listening line.
     pub fn start(args: &[&str]) -> Server {
         let stub = OpenStub::new();
         let path = stub.dir.clone();
@@ -135,6 +135,7 @@ impl Server {
             .arg(path)
             .args(args)
             .env("PATH", stub.path_env())
+            .env("HOARDMAP_TEST_SERVER", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()

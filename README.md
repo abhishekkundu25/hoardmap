@@ -18,9 +18,8 @@ Or **[download Hoardmap.dmg](https://github.com/abhishekkundu25/hoardmap/release
 
 Hoardmap is WinDirStat for the Mac. It scans a folder and shows where the bytes are
 in three linked views: a directory list, a treemap or icicle, and an extension list.
-It comes two ways: a command that serves the page to your browser, and a native Mac
-app that shows the same page in its own window. Both listen on 127.0.0.1 only. From
-the page you can open any folder or file in Finder. That is the only thing it can do
+It is a Mac app; the `hoardmap` command opens it on a folder from Terminal. From the
+app you can open any folder or file in Finder. That is the only thing it can do
 to your files; it never deletes, moves or renames anything.
 
 ## Install
@@ -28,20 +27,22 @@ to your files; it never deletes, moves or renames anything.
 With [Homebrew](https://brew.sh), the easiest way:
 
 ```sh
-brew install --cask abhishekkundu25/tap/hoardmap   # the Mac app
-brew install abhishekkundu25/tap/hoardmap          # the hoardmap command
+brew install --cask abhishekkundu25/tap/hoardmap
 ```
 
-The app goes into Applications, ready to open, and `brew upgrade` keeps it current. The
-recipes live in [abhishekkundu25/homebrew-tap](https://github.com/abhishekkundu25/homebrew-tap)
-and each release updates them.
+The app goes into Applications, ready to open, with the `hoardmap` command on your
+PATH, and `brew upgrade` keeps both current. The recipe lives in
+[abhishekkundu25/homebrew-tap](https://github.com/abhishekkundu25/homebrew-tap); each
+release writes it from `packaging/homebrew/`.
 
 Or download from the [Releases](../../releases) page has, for Apple silicon and Intel Macs on macOS 11
 or later:
 
 - `Hoardmap.dmg`: open it and drag Hoardmap onto Applications.
 - `Hoardmap.zip`: the same app, zipped.
-- `hoardmap-macos.tar.gz`: the `hoardmap` terminal command.
+
+The `hoardmap` command is inside the app, at
+`Hoardmap.app/Contents/MacOS/hoardmap`; link it onto your PATH if you want it.
 
 The newest DMG is always at
 `https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg`,
@@ -53,57 +54,41 @@ run `xattr -dr com.apple.quarantine /Applications/Hoardmap.app` once.
 
 ## Build from source
 
-You need macOS and Rust 1.85 or newer. Clone the repository and run:
-
-```sh
-cargo install --path .
-```
-
-This builds the `hoardmap` binary and puts it in `~/.cargo/bin`.
-
-## Usage
-
-```sh
-hoardmap
-```
-
-Scans your home folder and opens the page in your default browser. The scan starts at
-once and the page shows progress while it runs.
-
-```sh
-hoardmap /some/folder
-```
-
-Scans that folder instead. You can also type another path in the page and press Scan.
-
-Options:
-
-```
-Usage: hoardmap [PATH] [--port N] [--no-open] [--linger SECS] [--help]
-
-Scans PATH (default: your home folder) and serves the result on 127.0.0.1.
-
-  --port N        listen on port N (default: one the OS picks)
-  --no-open       do not launch the browser
-  --linger SECS   exit this many seconds after the last tab closes (default 10)
-  -h, --help      show this help
-```
-
-With `--no-open` the first line printed to stdout is the URL to visit, in the form
-`Listening on http://127.0.0.1:PORT/?token=TOKEN`. `--linger` accepts fractions of a
-second.
-
-## The Mac app
-
-The app is the same server and page in a native window, with the usual menus. Build it
-and copy it to `~/Applications`:
+You need macOS and Rust 1.85 or newer. Clone the repository, then build the app and
+copy it to `~/Applications`:
 
 ```sh
 tools/bundle-app.sh --install
 ```
 
-Without `--install` the bundle is left at `target/Hoardmap.app`. Open it from Finder,
-Launchpad or with `open ~/Applications/Hoardmap.app`. Closing the window quits it.
+Without `--install` the bundle is left at `target/Hoardmap.app`.
+
+## Usage
+
+Open Hoardmap from Applications, Launchpad or Spotlight. It scans your home folder and
+shows progress while it runs. To scan another folder, pick it from the Disks menu, type
+its path and press Scan, drop it on the Dock icon, or choose Open With > Hoardmap on it
+in Finder. Closing the window quits the app.
+
+From Terminal:
+
+```sh
+hoardmap ~/Developer      # open the app on a folder
+hoardmap                  # just open the app
+```
+
+```
+Usage: hoardmap [PATH] [--help]
+
+Opens the Hoardmap app, scanning PATH when one is given.
+```
+
+The command runs `open -b dev.hoardmap.app PATH` and exits; the app does the rest.
+
+## The Mac app
+
+The app is a native window showing the page from a small server inside it, on
+127.0.0.1 (see Privacy and safety).
 
 The first time it starts, the app shows a start screen before it scans anything. The
 screen says what hoardmap does and does not do, and covers Full Disk Access:
@@ -118,8 +103,7 @@ screen says what hoardmap does and does not do, and covers Full Disk Access:
 
 Access is optional. The screen comes back at each launch until access is on, unless you
 tick "Don't show this at launch". The Full Disk Access button in the toolbar opens it
-at any time, with a green dot when access is on and an orange one when it is off. In the
-browser version the same button explains how to grant access to your terminal instead.
+at any time, with a green dot when access is on and an orange one when it is off.
 
 macOS ties Full Disk Access to the app's signature. The bundle script signs ad hoc,
 which gives each build a new signature, so after a rebuild you may need to turn the
@@ -294,12 +278,13 @@ because they changed in between.
 ## Privacy and safety
 
 - The server binds to 127.0.0.1 only. Nothing on your network can reach it.
-- Other programs on your Mac cannot use it either. Each launch makes a random token
-  that only the address hoardmap opens carries. The first visit trades it for a cookie
-  (`HttpOnly`, `SameSite=Strict`) and drops it from the address bar, and every request
-  without that cookie is refused with 403. So an app that was not given Full Disk
-  Access cannot ask Hoardmap to list protected folders for it. A browser tab from an
-  earlier launch is refused too: open the new address.
+- Other programs on your Mac cannot use it either, and neither can a browser. Each
+  launch makes a random token that only the address the app's window loads carries.
+  The first load trades it for a cookie (`HttpOnly`, `SameSite=Strict`), and every
+  request without that cookie is refused with 403. So an app that was not given Full
+  Disk Access cannot ask Hoardmap to list protected folders for it.
+- There is no browser version. The `hoardmap` command only opens the app; release
+  builds contain no way to serve the page anywhere else.
 - It makes no network requests of its own.
 - The page loads no external scripts, fonts or styles. Everything is embedded in the
   binary and works offline.
@@ -312,17 +297,11 @@ because they changed in between.
 - The path for `open` is looked up in the scanned tree by node id. A request can never
   name a path of its own.
 
-## Exit rule
-
-The server exits by itself. It counts connected browser tabs through an event stream.
-When the last tab closes, a timer of `--linger` seconds starts, 10 by default. If no
-tab reconnects before it fires, the process exits with status 0. A reload within the
-linger period keeps it alive. Before the first tab ever connects the server waits
-indefinitely, so a slow browser launch does not lose it.
+## Idle cost
 
 While you look at the page the server does nothing. Its threads block until a request
 or a scan event arrives. A test in `tests/resources.rs` measures this: an idle server
-with a tab connected must use under 0.1 s of CPU in 2 s.
+with its page connected must use under 0.1 s of CPU in 2 s.
 
 ## Development
 
@@ -358,18 +337,22 @@ cargo build
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 timeout 120 cargo test                        # unit and integration tests
-timeout 120 cargo test --test resources       # idle CPU and exit checks, one file
+timeout 120 cargo test --test resources       # idle CPU checks, one file
 ```
 
 The page files under `web/` are embedded with `include_str!`, so a change to the page
 needs a rebuild. There is no frontend build step and no JavaScript dependency.
 
-Integration tests start the debug binary with `--no-open --linger 1` and put a stub
-`open` on `PATH`, so no test opens your browser or Finder.
+Integration tests start the debug binary's test server
+(`HOARDMAP_TEST_SERVER=1 hoardmap PATH`, which serves the page the way the app's window
+sees it and prints its address; release builds leave it out) and put a stub `open` on
+`PATH`, so no test opens Finder or the app.
 
-- `tests/resources.rs`: the listening line, static files and their content types, the
-  idle CPU budget, exit after the last tab closes, reload within linger, waiting for the
-  first tab, and that `--no-open` runs nothing.
+- `tests/cli.rs`: the command hands a folder to the app with `open -b`, makes it
+  absolute, refuses a file, a missing folder and the old browser options, and says how
+  to install the app when `open` fails.
+- `tests/resources.rs`: static files and their content types, the idle CPU budget, and
+  that the server neither exits nor opens anything on its own.
 - `tests/scan.rs`: the scanner on a fixture tree with known sizes, a hard-linked pair, a
   symlink, nested empty folders and an unreadable folder: totals, order, hard-link
   accounting, physical size, mtime roll-up, error count and progress.

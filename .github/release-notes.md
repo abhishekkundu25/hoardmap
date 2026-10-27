@@ -3,15 +3,13 @@
 The easiest way is [Homebrew](https://brew.sh); the app opens straight away and `brew upgrade` keeps it current:
 
 ```sh
-brew install --cask abhishekkundu25/tap/hoardmap   # the Mac app
-brew install abhishekkundu25/tap/hoardmap          # the hoardmap command
+brew install --cask abhishekkundu25/tap/hoardmap
 ```
 
 Or download:
 
 - **Hoardmap.dmg**: open it and drag Hoardmap onto Applications. Works on Apple silicon and Intel Macs, macOS 11 or later.
 - **Hoardmap.zip**: the same app, zipped.
-- **hoardmap-macos.tar.gz**: the `hoardmap` terminal command, which opens the same page in your browser.
 
 ## First launch of a downloaded copy
 

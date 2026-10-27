@@ -28,10 +28,9 @@ fn main() {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| "/".into());
-    let (port, url) = match server::spawn(Config {
+    let served = match server::spawn(Config {
         path: home,
         port: PREFERRED_PORT,
-        linger: None,
         native: true,
         // Without Full Disk Access the page starts the scan when its start screen closes,
         // so a grant made from that screen applies to the first scan.
@@ -43,7 +42,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let origin = format!("http://127.0.0.1:{port}");
+    let origin = format!("http://127.0.0.1:{}", served.port);
     log_launch(&format!("server on {origin}"));
 
     let event_loop = EventLoop::new();
@@ -60,7 +59,7 @@ fn main() {
 
     let allowed = origin.clone();
     let _webview = WebViewBuilder::new()
-        .with_url(url)
+        .with_url(served.url.clone())
         // The page is the only thing this window shows; links elsewhere stay out.
         .with_navigation_handler(move |url| url.starts_with(&allowed))
         .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
@@ -77,6 +76,19 @@ fn main() {
         *control_flow = ControlFlow::Wait;
         if let Event::NewEvents(StartCause::Init) = event {
             log_launch("running");
+        }
+        // A folder from Finder (Open With, or dropped on the Dock icon) or from the
+        // `hoardmap` command, which runs `open -b dev.hoardmap.app <folder>`.
+        if let Event::Opened { urls } = &event {
+            for path in urls.iter().filter_map(|url| url.to_file_path().ok()) {
+                log_launch("folder opened");
+                let app = served.app.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = app.open_folder(path) {
+                        log_launch(&format!("open folder: {error}"));
+                    }
+                });
+            }
         }
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,

@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use common::{Fixture, OpenStub, Server, assert_idle, fixture, header};
 use serde_json::Value;
 
-const ARGS: &[&str] = &["--no-open", "--linger", "1"];
 const JSON: Option<&str> = Some("application/json");
 
 fn lossy(path: &Path) -> String {
@@ -20,7 +19,7 @@ fn lossy(path: &Path) -> String {
 }
 
 fn start(fx: &Fixture) -> Server {
-    Server::start_in(&fx.root, ARGS, OpenStub::new())
+    Server::start_in(&fx.root, &[], OpenStub::new())
 }
 
 /// Starts on the fixture and waits for the scan to finish.
@@ -796,4 +795,39 @@ fn the_printed_address_trades_the_token_for_a_cookie() {
     let (status, _, body) = server.get("/");
     assert_eq!(status, 200);
     assert!(body.contains("<html"), "{body}");
+}
+
+#[test]
+fn a_folder_from_finder_waits_for_the_start_screen_or_replaces_the_scan() {
+    use hoardmap::server::{Config, spawn};
+
+    let (first, second) = (fixture(), fixture());
+    let served = spawn(Config {
+        path: first.root.clone(),
+        port: 0,
+        native: true,
+        scan_at_start: false,
+    })
+    .expect("spawn");
+    let app = served.app;
+    let status = || app.status();
+
+    // Before the first scan: it only becomes the folder the start screen will scan.
+    app.open_folder(second.root.clone()).unwrap();
+    assert_eq!(status()["state"], "idle");
+    assert_eq!(status()["path"], lossy(&second.root));
+
+    // After a scan: it replaces it.
+    app.start_scan(first.root.clone()).unwrap();
+    app.open_folder(second.root.clone()).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    while !(status()["state"] == "done" && status()["path"] == lossy(&second.root)) {
+        assert!(
+            Instant::now() < end,
+            "never scanned the second folder: {}",
+            status()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(app.open_folder(second.root.join("a/big.bin")).is_err());
 }

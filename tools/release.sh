@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds the release downloads into target/dist:
 #   Hoardmap.dmg             the app in a window that says to drag it to Applications
-#   Hoardmap.zip             the same app, zipped
-#   hoardmap-macos.tar.gz    the hoardmap command
+#   Hoardmap.zip             the same app, zipped (the Homebrew cask installs this)
 #   SHA256SUMS
+# The hoardmap command is inside the app, in Contents/MacOS.
 # Everything is universal (Apple silicon and Intel) and signed ad hoc. The names carry no
 # version, so releases/latest/download/Hoardmap.dmg always fetches the newest one.
 # Laying out the DMG window drives Finder, which macOS may ask you to allow once.
@@ -23,17 +23,6 @@ if [ -d "/Volumes/$volume" ]; then
 fi
 
 tools/bundle-app.sh --universal
-
-for target in aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build --release --locked --bin hoardmap --target "$target"
-done
-mkdir "$work/cli"
-lipo -create -output "$work/cli/hoardmap" \
-  target/aarch64-apple-darwin/release/hoardmap \
-  target/x86_64-apple-darwin/release/hoardmap
-codesign --force --sign - "$work/cli/hoardmap"
-cp README.md "$work/cli/"
-tar -czf "$dist/hoardmap-macos.tar.gz" -C "$work/cli" hoardmap README.md
 
 ditto -c -k --keepParent target/Hoardmap.app "$dist/Hoardmap.zip"
 

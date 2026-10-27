@@ -3,6 +3,13 @@
 WinDirStat for macOS: scan a folder, see where the bytes are, open the folder in Finder.
 Rust binary, page served to the browser on 127.0.0.1, no build step, no network.
 
+> Since 0.4 there is no browser version: the page is shown only in the Mac app's
+> window, the `hoardmap` command opens the app on a folder (`open -b dev.hoardmap.app
+> PATH`), and the presence, linger and browser-launch rules below are gone. The
+> integration tests drive the debug binary's test server (`HOARDMAP_TEST_SERVER=1`),
+> which release builds leave out. The rest of this spec still describes the scan, the
+> views and the API.
+
 ## Problem statement
 
 On Windows, WinDirStat shows a drive as a directory list, a treemap and an extension
@@ -152,11 +159,9 @@ renames anything. The server exits by itself once the browser tab is gone.
   OS picks). The first stdout line is `Listening on http://127.0.0.1:PORT/?token=TOKEN`. Each
   request is handled on its own thread. GET `/`, `/app.js`, `/style.css` serve the
   embedded files with the right content types and `Cache-Control: no-store`.
-- **Presence and exit**: GET `/api/events` is a Server-Sent Events stream. Its open
-  connections are the connected tabs. When the count falls from one to zero a timer of
-  `--linger` seconds (default 10) starts; if no tab connects before it fires, the
-  process exits 0. A tab that reconnects (reload) cancels the timer. Before the first
-  tab ever connects the server waits indefinitely. The stream sends `event: status`
+- **Events**: GET `/api/events` is a Server-Sent Events stream. (Until 0.4 its open
+  connections counted browser tabs and the process exited `--linger` seconds after the
+  last one left.) The stream sends `event: status`
   with the status JSON on every state change, every 250 ms while a scan runs, and a
   comment line every 15 s as keepalive; between those its thread blocks on a channel
   with a timeout, so an idle server has no busy thread.
@@ -165,8 +170,10 @@ renames anything. The server exits by itself once the browser tab is gone.
   HttpOnly; SameSite=Strict` (the port is in the name because cookies ignore ports).
   After the `Host` check, any other request without that cookie, pages and API alike,
   is 403. A wrong token in the address is 403 and sets nothing.
-- **Browser launch**: at start the server runs `open http://127.0.0.1:PORT/?token=TOKEN` unless
-  `--no-open`. The scan of PATH starts at once.
+- **Command** (since 0.4): `hoardmap [PATH]` makes PATH absolute, checks it is a
+  folder and runs `open -b dev.hoardmap.app PATH`; with no PATH it opens the app. The
+  app receives the folder as an open-documents event: before the first scan it becomes
+  the folder the start screen scans, otherwise it replaces the current scan.
 - **Cross-site protection**: POST endpoints require `Content-Type: application/json`
   (so a cross-origin request needs a preflight, which gets no CORS headers and fails)
   and a request body; anything else is 415 or 400. No CORS headers are ever sent.
