@@ -90,7 +90,8 @@ Scans PATH (default: your home folder) and serves the result on 127.0.0.1.
 ```
 
 With `--no-open` the first line printed to stdout is the URL to visit, in the form
-`Listening on http://127.0.0.1:PORT/`. `--linger` accepts fractions of a second.
+`Listening on http://127.0.0.1:PORT/?token=TOKEN`. `--linger` accepts fractions of a
+second.
 
 ## The Mac app
 
@@ -293,6 +294,12 @@ because they changed in between.
 ## Privacy and safety
 
 - The server binds to 127.0.0.1 only. Nothing on your network can reach it.
+- Other programs on your Mac cannot use it either. Each launch makes a random token
+  that only the address hoardmap opens carries. The first visit trades it for a cookie
+  (`HttpOnly`, `SameSite=Strict`) and drops it from the address bar, and every request
+  without that cookie is refused with 403. So an app that was not given Full Disk
+  Access cannot ask Hoardmap to list protected folders for it. A browser tab from an
+  earlier launch is refused too: open the new address.
 - It makes no network requests of its own.
 - The page loads no external scripts, fonts or styles. Everything is embedded in the
   binary and works offline.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Only Hoardmap's own page can use its local server. Each launch makes a secret that the page receives when it opens; requests without it, from other programs on the Mac, are refused. Before, an app without Full Disk Access could ask a running Hoardmap to list protected folders. The command's address now ends in `?token=…`.
+
 ## 0.3.3 — 2026-10-28
 
 - Scans are about 13% faster and use half the CPU: folders are read on the fast cores only, since more threads just queue for the file system. `HOARDMAP_THREADS` sets the count.

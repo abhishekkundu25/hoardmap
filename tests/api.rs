@@ -73,8 +73,9 @@ fn open_events_raw(server: &Server) -> TcpStream {
     let mut stream = server.connect();
     write!(
         stream,
-        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: text/event-stream\r\n\r\n",
-        server.port
+        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Accept: text/event-stream\r\n\r\n",
+        server.port,
+        server.cookie()
     )
     .unwrap();
     stream
@@ -580,7 +581,10 @@ fn host_header_must_name_loopback_on_the_bound_port() {
         } else {
             format!("Host: {host}\r\n")
         };
-        format!("GET /api/status HTTP/1.1\r\n{host}Connection: close\r\n\r\n")
+        format!(
+            "GET /api/status HTTP/1.1\r\n{host}{}Connection: close\r\n\r\n",
+            server.cookie()
+        )
     };
     for host in [
         &format!("127.0.0.1:{port}"),
@@ -703,4 +707,93 @@ fn volumes_lists_the_startup_disk_and_home() {
     // The folder picker opens a dialog, so only its guard is checked here.
     let (status, _, _) = server.post("/api/choose", None, "");
     assert_eq!(status, 415);
+}
+
+/// `request` without the token's cookie, with a wrong one, and with this token under
+/// another port's name: each is refused.
+fn refused_without_the_token(server: &Server, request: impl Fn(&str) -> String) {
+    let port = server.port;
+    for cookie in [
+        String::new(),
+        format!("Cookie: hoardmap-{port}=00\r\n"),
+        format!(
+            "Cookie: hoardmap-{}={}\r\n",
+            port.wrapping_add(1),
+            server.token
+        ),
+    ] {
+        let (status, _, body) = server.raw(&request(&cookie));
+        assert_eq!(status, 403, "{cookie:?}: {body}");
+        assert!(body.contains("another launch"), "{body}");
+    }
+}
+
+#[test]
+fn requests_without_the_token_are_refused() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let port = server.port;
+    for path in [
+        "/",
+        "/app.js",
+        "/api/status",
+        "/api/node/0",
+        "/api/events",
+        "/api/errors",
+    ] {
+        refused_without_the_token(&server, |cookie| {
+            format!(
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Connection: close\r\n\r\n"
+            )
+        });
+    }
+    for (path, body) in [
+        ("/api/open", r#"{"id":0}"#),
+        ("/api/scan", r#"{"path":"/"}"#),
+        ("/api/scan/stop", "{}"),
+        ("/api/choose", "{}"),
+    ] {
+        refused_without_the_token(&server, |cookie| {
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        });
+    }
+    // Nothing was opened or rescanned.
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(server.stub.open_args(), None);
+    assert_eq!(server.status()["state"], "done");
+}
+
+#[test]
+fn the_printed_address_trades_the_token_for_a_cookie() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let port = server.port;
+    let visit = |query: &str| {
+        server.raw(&format!(
+            "GET /?{query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        ))
+    };
+
+    let (status, headers, _) = visit(&format!("token={}", server.token));
+    assert_eq!(status, 303);
+    assert_eq!(header(&headers, "Location"), Some("/"));
+    let cookie = header(&headers, "Set-Cookie").expect("a cookie");
+    assert!(
+        cookie.starts_with(&format!("hoardmap-{port}={};", server.token)),
+        "{cookie}"
+    );
+    for attribute in ["Path=/", "HttpOnly", "SameSite=Strict"] {
+        assert!(cookie.contains(attribute), "{cookie}");
+    }
+
+    let (status, headers, body) = visit("token=0123");
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(header(&headers, "Set-Cookie"), None);
+
+    let (status, _, body) = server.get("/");
+    assert_eq!(status, 200);
+    assert!(body.contains("<html"), "{body}");
 }

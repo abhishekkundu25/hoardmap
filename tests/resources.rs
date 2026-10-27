@@ -13,17 +13,18 @@ const IDLE: &[&str] = &["--no-open", "--linger", "1"];
 #[test]
 fn first_stdout_line_is_the_listening_url() {
     let server = Server::start(IDLE);
-    let digits = server
+    let (digits, token) = server
         .first_line
         .strip_prefix("Listening on http://127.0.0.1:")
-        .and_then(|r| r.strip_suffix('/'))
+        .and_then(|r| r.split_once("/?token="))
         .expect("listening line");
     assert!(
         !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
         "{}",
         server.first_line
     );
-    assert_eq!(server.url(), format!("http://127.0.0.1:{}/", server.port));
+    assert_eq!(token.len(), 64, "{}", server.first_line);
+    assert_eq!(server.first_line, format!("Listening on {}", server.url()));
 }
 
 #[test]

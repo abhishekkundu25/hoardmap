@@ -149,7 +149,7 @@ renames anything. The server exits by itself once the browser tab is gone.
   directory's bounds: id, x, y, w, h) so the page can outline a selection. Sizes use
   the requested mode, logical or physical.
 - **HTTP**: `tiny_http` bound to `127.0.0.1:PORT` (PORT from `--port`, else 0 and the
-  OS picks). The first stdout line is `Listening on http://127.0.0.1:PORT/`. Each
+  OS picks). The first stdout line is `Listening on http://127.0.0.1:PORT/?token=TOKEN`. Each
   request is handled on its own thread. GET `/`, `/app.js`, `/style.css` serve the
   embedded files with the right content types and `Cache-Control: no-store`.
 - **Presence and exit**: GET `/api/events` is a Server-Sent Events stream. Its open
@@ -160,7 +160,12 @@ renames anything. The server exits by itself once the browser tab is gone.
   with the status JSON on every state change, every 250 ms while a scan runs, and a
   comment line every 15 s as keepalive; between those its thread blocks on a channel
   with a timeout, so an idle server has no busy thread.
-- **Browser launch**: at start the server runs `open http://127.0.0.1:PORT/` unless
+- **Launch token**: 32 random bytes, hex, made at start and kept only in memory. GET
+  `/?token=TOKEN` answers 303 to `/` with `Set-Cookie: hoardmap-PORT=TOKEN; Path=/;
+  HttpOnly; SameSite=Strict` (the port is in the name because cookies ignore ports).
+  After the `Host` check, any other request without that cookie, pages and API alike,
+  is 403. A wrong token in the address is 403 and sets nothing.
+- **Browser launch**: at start the server runs `open http://127.0.0.1:PORT/?token=TOKEN` unless
   `--no-open`. The scan of PATH starts at once.
 - **Cross-site protection**: POST endpoints require `Content-Type: application/json`
   (so a cross-origin request needs a preflight, which gets no CORS headers and fails)

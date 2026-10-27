@@ -28,7 +28,7 @@ fn main() {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| "/".into());
-    let port = match server::spawn(Config {
+    let (port, url) = match server::spawn(Config {
         path: home,
         port: PREFERRED_PORT,
         linger: None,
@@ -37,7 +37,7 @@ fn main() {
         // so a grant made from that screen applies to the first scan.
         scan_at_start: hoardmap::access::granted(),
     }) {
-        Ok(port) => port,
+        Ok(spawned) => spawned,
         Err(error) => {
             eprintln!("hoardmap: {error}");
             std::process::exit(1);
@@ -60,7 +60,7 @@ fn main() {
 
     let allowed = origin.clone();
     let _webview = WebViewBuilder::new()
-        .with_url(format!("{origin}/"))
+        .with_url(url)
         // The page is the only thing this window shows; links elsewhere stay out.
         .with_navigation_handler(move |url| url.starts_with(&allowed))
         .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)

@@ -117,6 +117,8 @@ pub struct Server {
     /// The first stdout line, without the newline.
     pub first_line: String,
     pub stub: OpenStub,
+    /// The launch token from the listening line.
+    pub token: String,
 }
 
 impl Server {
@@ -143,10 +145,10 @@ impl Server {
             .read_line(&mut first_line)
             .expect("read the port line");
         let first_line = first_line.trim_end().to_string();
-        let port = first_line
+        let (port, token) = first_line
             .strip_prefix("Listening on http://127.0.0.1:")
-            .and_then(|rest| rest.strip_suffix('/'))
-            .and_then(|port| port.parse().ok())
+            .and_then(|rest| rest.split_once("/?token="))
+            .and_then(|(port, token)| Some((port.parse().ok()?, token.to_string())))
             .unwrap_or_else(|| {
                 child.kill().ok();
                 panic!("unexpected first line: {first_line:?}")
@@ -157,6 +159,7 @@ impl Server {
             port,
             first_line,
             stub,
+            token,
         }
     }
 
@@ -164,8 +167,14 @@ impl Server {
         self.child.id()
     }
 
+    /// The page's address as printed, with the token.
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/", self.port)
+        format!("http://127.0.0.1:{}/?token={}", self.port, self.token)
+    }
+
+    /// The `Cookie` header line the page's browser sends.
+    pub fn cookie(&self) -> String {
+        format!("Cookie: hoardmap-{}={}\r\n", self.port, self.token)
     }
 
     /// A fresh connection with a 10 s read timeout.
@@ -180,8 +189,9 @@ impl Server {
     /// One GET with `Connection: close`: status, headers and body.
     pub fn get(&self, path: &str) -> (u16, Vec<(String, String)>, String) {
         self.raw(&format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-            self.port
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Connection: close\r\n\r\n",
+            self.port,
+            self.cookie()
         ))
     }
 
@@ -197,8 +207,9 @@ impl Server {
             .map(|t| format!("Content-Type: {t}\r\n"))
             .unwrap_or_default();
         self.raw(&format!(
-            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             self.port,
+            self.cookie(),
             body.len()
         ))
     }
@@ -241,8 +252,9 @@ impl Server {
         let mut stream = self.connect();
         write!(
             stream,
-            "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: text/event-stream\r\n\r\n",
-            self.port
+            "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Accept: text/event-stream\r\n\r\n",
+            self.port,
+            self.cookie()
         )
         .unwrap();
         let mut got = Vec::new();

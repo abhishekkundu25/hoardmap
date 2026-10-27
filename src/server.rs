@@ -33,6 +33,10 @@ const LOGO_SVG: &str = include_str!("../assets/hoardmap.svg");
 
 /// A request line plus headers longer than this is refused with 431.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+/// The answer to a request without the launch token.
+const NO_TOKEN: &str =
+    "This address is from another launch. Open the one hoardmap printed, or reopen the app.\n";
+
 /// A request body longer than this is refused with 413.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -105,6 +109,10 @@ pub struct App {
     pub events: Broadcaster,
     /// The bound port, which a request's `Host` header must name.
     pub port: u16,
+    /// A secret made at launch. Only the page's own address carries it; a request
+    /// without it in the [`cookie_name`] cookie is refused, so other programs on the
+    /// Mac cannot use the server.
+    pub token: String,
     /// Served inside the native window rather than a browser tab.
     pub native: bool,
     /// The folder to scan first; the idle status names it so the page can start it.
@@ -122,6 +130,7 @@ impl App {
             presence: Arc::new(Presence::new(linger)),
             events: Broadcaster::default(),
             port,
+            token: new_token(),
             native,
             start: None,
             disk: Mutex::new(None),
@@ -585,14 +594,15 @@ pub struct Config {
 }
 
 /// Binds 127.0.0.1, starts the scan of `config.path` and serves on a background
-/// thread. Returns the bound port.
-pub fn spawn(config: Config) -> io::Result<u16> {
+/// thread. Returns the bound port and the address of the page, which carries the token.
+pub fn spawn(config: Config) -> io::Result<(u16, String)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
         .or_else(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))?;
     let port = listener.local_addr()?.port();
     let mut app = App::new(config.linger, port, config.native);
     app.start = Some(config.path.clone());
     app.read_disk(&config.path);
+    let url = page_url(port, &app.token);
     let app = Arc::new(app);
     if config.scan_at_start
         && let Err(error) = app.start_scan(config.path.clone())
@@ -617,7 +627,43 @@ pub fn spawn(config: Config) -> io::Result<u16> {
             }
         }
     });
-    Ok(port)
+    Ok((port, url))
+}
+
+/// The page's address with the launch token; the first visit trades it for a cookie.
+pub fn page_url(port: u16, token: &str) -> String {
+    format!("http://127.0.0.1:{port}/?token={token}")
+}
+
+/// The token's cookie. Cookies ignore the port, so the name carries it: a browser
+/// that has the app and a `hoardmap` tab open keeps both.
+pub fn cookie_name(port: u16) -> String {
+    format!("hoardmap-{port}")
+}
+
+/// 32 random bytes, hex.
+fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .expect("read /dev/urandom");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Compares in time that does not depend on where the strings differ.
+fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+/// The request carries the launch token in its cookie.
+fn has_token(app: &App, request: &Request) -> bool {
+    let name = cookie_name(app.port);
+    request.header("Cookie").is_some_and(|cookies| {
+        cookies
+            .split(';')
+            .filter_map(|c| c.trim().split_once('='))
+            .any(|(k, v)| k == name && same_secret(v, &app.token))
+    })
 }
 
 /// Serves, prints the listening line and launches the browser; the linger timer ends
@@ -630,14 +676,13 @@ pub fn run(options: Options) -> io::Result<Infallible> {
         TcpListener::bind((Ipv4Addr::LOCALHOST, options.port))?;
         options.port
     };
-    let port = spawn(Config {
+    let (_, url) = spawn(Config {
         path: options.path,
         port,
         linger: Some(options.linger),
         native: false,
         scan_at_start: true,
     })?;
-    let url = format!("http://127.0.0.1:{port}/");
     println!("Listening on {url}");
     io::stdout().flush()?;
     if options.open {
@@ -683,6 +728,29 @@ fn route(app: &Arc<App>, request: &Request) -> Response {
     // would otherwise be same-origin here.
     if !host_allowed(request.header("Host"), app.port) {
         return Response::text(403, "forbidden\n");
+    }
+    // The address hoardmap opened: keep the token as a cookie and drop it from the
+    // address bar and history.
+    if request.path == "/"
+        && let Some(given) = request
+            .query
+            .split('&')
+            .find_map(|p| p.strip_prefix("token="))
+    {
+        if !same_secret(given, &app.token) {
+            return Response::text(403, NO_TOKEN);
+        }
+        let cookie = format!(
+            "{}={}; Path=/; HttpOnly; SameSite=Strict",
+            cookie_name(app.port),
+            app.token
+        );
+        return Response::text(303, "")
+            .with_header("Location", "/")
+            .with_header("Set-Cookie", &cookie);
+    }
+    if !has_token(app, request) {
+        return Response::text(403, NO_TOKEN);
     }
     if request.path.starts_with("/api/") {
         return api::handle(app, request);
@@ -859,6 +927,7 @@ fn reason(status: u16) -> &'static str {
         200 => "OK",
         202 => "Accepted",
         204 => "No Content",
+        303 => "See Other",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -876,6 +945,39 @@ fn reason(status: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_are_long_random_and_compared_exactly() {
+        let (a, b) = (new_token(), new_token());
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+        assert!(same_secret(&a, &a.clone()));
+        assert!(!same_secret(&a, &b));
+        assert!(!same_secret(&a, &a[..63]));
+        assert!(!same_secret(&a, ""));
+    }
+
+    #[test]
+    fn the_token_is_read_from_this_ports_cookie_only() {
+        let app = App::new(None, 8080, false);
+        let with = |cookie: &str| Request {
+            method: "GET".into(),
+            path: "/api/status".into(),
+            query: String::new(),
+            headers: vec![("Cookie".into(), cookie.into())],
+            body: Vec::new(),
+        };
+        let token = &app.token;
+        assert!(has_token(&app, &with(&format!("hoardmap-8080={token}"))));
+        assert!(has_token(
+            &app,
+            &with(&format!("a=1; hoardmap-8080={token}; b=2"))
+        ));
+        assert!(!has_token(&app, &with(&format!("hoardmap-8081={token}"))));
+        assert!(!has_token(&app, &with("hoardmap-8080=nope")));
+        assert!(!has_token(&app, &with("")));
+    }
 
     #[test]
     fn host_must_be_loopback_on_the_bound_port() {
