@@ -12,4 +12,4 @@ One slice: every file belongs to this change, so nothing runs beside it.
 
 | # | Status |
 |---|---|
-| 01 | open |
+| 01 | done: 68 rules (54 new), 18 with a caution; `groups` takes 7.2 ms on a 1,024,588-entry home folder (budget 50 ms). Maven got a caution for `mvn install` output. Known edges: `.gradle` beside a build file in the home folder itself would match `~/.gradle`; a tagged folder above a named one takes its subtree. |
