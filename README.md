@@ -189,15 +189,37 @@ The Largest files tab lists the biggest files under the current treemap root wit
 full paths. Click a row to select the file in the directory list; double-click it to
 open it in Finder.
 
-The Rebuildable tab gathers the folders their tools fill again on their own:
-`node_modules`, Cargo `target`, Python virtual environments, Swift `.build`, Xcode
-DerivedData, and the caches of Gradle, Homebrew, pip, npm, pnpm, Cargo, Go, uv and
-Hugging Face. Each group names its owner, says in a line how the folder comes back,
-and links the owner's documentation. A project folder is recognised by a file beside
-or inside it (`package.json`, `CACHEDIR.TAG`, `pyvenv.cfg`, `Package.swift`), so a
-folder that merely shares the name is left out. Click a group to highlight its folders
-in the treemap, and a folder to select it; double-click opens it in Finder. Hoardmap
-does not clear anything; that stays with you and the owning tool.
+The Rebuildable tab gathers the folders their tools fill again on their own. Project
+folders: `node_modules`, Cargo `target`, Python virtual environments and
+`__pycache__`, Swift `.build`, Gradle `.gradle` and `build`, Next.js `.next`,
+Turborepo, Parcel, Dart `.dart_tool`, and the mypy, pytest, Ruff and nox caches.
+Caches and downloads in the home folder: Xcode DerivedData, Gradle, Maven, Homebrew,
+pip, Poetry, pipenv, uv, npm, pnpm, Yarn, Bun, Deno, Cargo, Go, CocoaPods, Carthage,
+SwiftPM, Composer, NuGet, Playwright, Puppeteer, Electron, sccache, ccache and Bazel.
+Each group names its owner, says in a line how the folder comes back, and links the
+owner's documentation. A project folder is recognised by a file beside or inside it
+(`package.json`, `CACHEDIR.TAG`, `pyvenv.cfg`, `Package.swift`), so a folder that
+merely shares the name is left out; `dist`, `build` and `out` count only beside a
+project file that explains them, such as `vite.config.js`, `pyproject.toml`,
+`CMakeLists.txt` or `next.config.js`.
+
+Some groups carry a caution, shown in red under the group's line, naming what in the
+folder does not come back on its own: Docker Desktop's disk image (your containers and
+volumes), Android emulators and the Android SDK, downloaded models (Hugging Face,
+Ollama, LM Studio, PyTorch hub, Kaggle), Conda's package cache, JetBrains caches (Local
+History), VS Code extensions, Rust toolchains, nvm and fnm Node.js versions, the Dart
+pub cache, CocoaPods `Pods`, Composer `vendor`, and the generic `dist`, `build` and
+`out` folders. The last group, "Marked as a cache", gathers any other folder that holds
+a `CACHEDIR.TAG` file, the convention tools use to mark a cache; its caution says the
+tag is only a hint. Left out on purpose: Xcode Archives (Apple asks you to keep the
+archive of every build you ship), a project's `.yarn/cache` (committed under zero
+installs), iOS DeviceSupport, simulators and VS Code's cached data (no documentation
+from Apple or Microsoft), and whole tool folders such as `~/.m2` and `~/.gradle`,
+which hold settings and credentials beside the cache.
+
+Click a group to highlight its folders in the treemap, and a folder to select it;
+double-click opens it in Finder. Hoardmap does not clear anything; that stays with you
+and the owning tool.
 
 ### Logical and Physical
 
