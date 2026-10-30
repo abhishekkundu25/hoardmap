@@ -9,7 +9,7 @@ fn main() {
     use std::time::Instant;
 
     use hoardmap::scan::{Method, Progress, scan_with};
-    use hoardmap::tree::Tree;
+    use hoardmap::tree::{Shared, Tree};
 
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(
@@ -18,10 +18,14 @@ fn main() {
     );
     let runs: usize = args.next().map_or(5, |n| n.parse().expect("runs"));
 
-    let fingerprint = |tree: &Tree| -> Vec<(u64, u64, u32, u32, i64, bool)> {
+    // Only the bulk method sees clones, so allocation figures may differ; these may not.
+    let fingerprint = |tree: &Tree| -> Vec<(u64, u32, u32, i64, bool)> {
         tree.nodes
             .iter()
-            .map(|n| (n.size, n.physical, n.files, n.dirs, n.mtime, n.hard_link))
+            .map(|n| {
+                let hard_link = n.shared == Shared::HardLink;
+                (n.size, n.files, n.dirs, n.mtime, hard_link)
+            })
             .collect()
     };
     let scan = |method| {
@@ -41,6 +45,14 @@ fn main() {
         root.files,
         root.dirs,
         bulk.error_count
+    );
+    println!(
+        "on disk: bulk {} bytes, portable {}; clone-aware {}, \
+         {} bytes of clones counted once",
+        root.physical,
+        portable.root().physical,
+        bulk.clone_aware,
+        bulk.clone_counted_once
     );
     // Apps keep writing while the two scans run, so on a live folder a few entries can
     // differ in size or modification time; a folder nothing writes to matches exactly.

@@ -40,6 +40,7 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
         ("GET", "/api/extensions") => extensions(app, &Query::parse(&request.query)),
         ("GET", "/api/largest") => largest(app, &Query::parse(&request.query)),
         ("GET", "/api/errors") => errors(app),
+        ("GET", "/api/rebuildable") => rebuildable(app, &Query::parse(&request.query)),
         ("POST", "/api/scan") => json_body(request).map_or_else(|r| r, |body| scan(app, &body)),
         ("POST", "/api/scan/stop") => json_body(request).map_or_else(
             |r| r,
@@ -70,7 +71,7 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
         (
             _,
             "/api/status" | "/api/events" | "/api/treemap" | "/api/icicle" | "/api/extensions"
-            | "/api/largest" | "/api/errors",
+            | "/api/largest" | "/api/errors" | "/api/rebuildable",
         ) => method_not_allowed("GET"),
         (_, "/api/access" | "/api/volumes") => method_not_allowed("GET"),
         (_, "/api/choose") => method_not_allowed("POST"),
@@ -161,8 +162,9 @@ impl<'a> Query<'a> {
     }
 }
 
+/// `shared` is left out for a node that shares nothing.
 fn node_json(id: NodeId, node: &Node) -> Value {
-    json!({
+    let mut json = json!({
         "id": id,
         "name": node.name,
         "parent": node.parent,
@@ -172,9 +174,12 @@ fn node_json(id: NodeId, node: &Node) -> Value {
         "files": node.files,
         "dirs": node.dirs,
         "mtime": node.mtime,
-        "hard_link": node.hard_link,
         "has_children": !node.children.is_empty(),
-    })
+    });
+    if node.shared != crate::tree::Shared::None {
+        json["shared"] = json!(node.shared);
+    }
+    json
 }
 
 pub(crate) fn lossy(path: &Path) -> String {
@@ -321,6 +326,45 @@ fn errors(app: &App) -> Response {
         ),
         Err(r) => r,
     }
+}
+
+/// The rebuildable folders under `root`, grouped by rule; see [`crate::rebuildable::groups`].
+fn rebuildable(app: &App, query: &Query) -> Response {
+    let (tree, _) = match tree(app) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let (root, mode) = match query.root().and_then(|r| Ok((r, query.mode()?))) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if tree.get(root).is_none() {
+        return error(404, "no such node");
+    }
+    let groups = crate::rebuildable::groups(&tree, root, mode);
+    let total: u64 = groups.iter().map(|g| g.bytes).sum();
+    let groups: Vec<Value> = groups
+        .iter()
+        .map(|g| {
+            let folders: Vec<Value> = g
+                .folders
+                .iter()
+                .map(|f| json!({ "id": f.id, "path": lossy(&tree.path(f.id)), "bytes": f.bytes }))
+                .collect();
+            json!({
+                "key": g.rule.key,
+                "label": g.rule.label,
+                "owner": g.rule.owner,
+                "why": g.rule.why,
+                "source": g.rule.source,
+                "bytes": g.bytes,
+                "count": g.count,
+                "folders": folders,
+                "more": g.more,
+            })
+        })
+        .collect();
+    Response::json(200, &json!({ "total": total, "groups": groups }))
 }
 
 fn scan(app: &Arc<App>, body: &Value) -> Response {
@@ -488,6 +532,7 @@ mod tests {
             "/api/extensions",
             "/api/largest",
             "/api/errors",
+            "/api/rebuildable",
         ] {
             assert_eq!(handle(&app, &get(path)).status, 409, "{path}");
         }
@@ -532,6 +577,29 @@ mod tests {
                 .map(|(_, v)| v.as_str()),
             Some("POST")
         );
+    }
+
+    #[test]
+    fn node_json_names_what_a_file_shares() {
+        use crate::tree::Shared;
+        let mut file = Node {
+            name: "f".into(),
+            parent: Some(0),
+            kind: Kind::File,
+            size: 10,
+            physical: 4096,
+            files: 0,
+            dirs: 0,
+            mtime: 0,
+            children: vec![],
+            shared: Shared::None,
+        };
+        let json = node_json(1, &file);
+        assert!(json.get("shared").is_none());
+        for (shared, name) in [(Shared::HardLink, "hard_link"), (Shared::Clone, "clone")] {
+            file.shared = shared;
+            assert_eq!(node_json(1, &file)["shared"], name);
+        }
     }
 
     #[test]
