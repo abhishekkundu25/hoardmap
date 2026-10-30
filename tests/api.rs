@@ -120,6 +120,9 @@ fn status_reaches_done_with_the_fixture_totals() {
     let root = node(&server, 0);
     assert_eq!(status["physical"], root["physical"]);
     assert!(status["physical"].as_u64().unwrap() > 0);
+    // The fixture has no clones.
+    assert!(status["clone_aware"].is_boolean(), "{status}");
+    assert_eq!(status["clone_counted_once"], 0);
     assert_eq!(status["dirs"], 4);
     assert_eq!(status["files"], if fx.locked_unreadable { 6 } else { 7 });
     let (total, free) = (&status["disk"]["total"], &status["disk"]["free"]);
@@ -211,13 +214,15 @@ fn node_0_lists_children_largest_first_and_unknown_ids_are_404() {
         "files",
         "dirs",
         "mtime",
-        "hard_link",
         "has_children",
     ] {
         assert!(!children[0][key].is_null(), "child lacks {key}");
     }
     let link = children.iter().find(|c| c["name"] == "link.txt").unwrap();
-    assert_eq!(link["hard_link"], true);
+    assert_eq!(link["shared"], "hard_link");
+    assert_eq!((&link["size"], &link["physical"]), (&0.into(), &0.into()));
+    assert!(children[0]["shared"].is_null(), "{}", children[0]);
+    assert!(children[0]["hard_link"].is_null(), "{}", children[0]);
     assert_eq!(link["has_children"], false);
 
     let a = child_id(&server, 0, "a");

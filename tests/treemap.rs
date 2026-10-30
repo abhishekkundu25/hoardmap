@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use hoardmap::tree::{Kind, Node, NodeId, ROOT, Tree, extension};
+use hoardmap::tree::{Kind, Node, NodeId, ROOT, Shared, Tree, extension};
 use hoardmap::treemap::{
     Bounds, Colours, Layout, Mode, PALETTE, Rect, extensions, largest, layout,
 };
@@ -38,6 +38,8 @@ fn build(spec: Spec) -> Tree {
         nodes: Vec::new(),
         errors: Vec::new(),
         error_count: 0,
+        clone_aware: false,
+        clone_counted_once: 0,
     };
     add(&mut tree, None, spec);
     tree
@@ -55,7 +57,7 @@ fn add(tree: &mut Tree, parent: Option<NodeId>, spec: Spec) -> NodeId {
         dirs: 0,
         mtime: 0,
         children: Vec::new(),
-        hard_link: false,
+        shared: Shared::None,
     };
     match spec {
         Spec::Dir(name, children) => {
@@ -101,7 +103,7 @@ fn add(tree: &mut Tree, parent: Option<NodeId>, spec: Spec) -> NodeId {
         }
         Spec::Hard(name) => {
             let mut n = blank(&name, Kind::File);
-            n.hard_link = true;
+            n.shared = Shared::HardLink;
             tree.nodes.push(n);
         }
     }

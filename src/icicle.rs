@@ -130,7 +130,7 @@ pub fn icicle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::Node;
+    use crate::tree::{Node, Shared};
 
     fn node(
         name: &str,
@@ -149,7 +149,7 @@ mod tests {
             dirs: 0,
             mtime: 0,
             children,
-            hard_link: false,
+            shared: Shared::None,
         }
     }
 
@@ -166,6 +166,8 @@ mod tests {
             ],
             errors: vec![],
             error_count: 0,
+            clone_aware: false,
+            clone_counted_once: 0,
         };
         tree.nodes[1].physical = 8192;
         tree

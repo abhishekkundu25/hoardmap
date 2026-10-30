@@ -23,7 +23,7 @@
   <span class="sep"></span>
   <div id="mode" class="segmented" role="radiogroup" aria-label="Size mode">
     <button type="button" role="radio" aria-checked="false" data-mode="logical" title="Bytes the files contain">Logical</button>
-    <button type="button" role="radio" aria-checked="true" data-mode="physical" title="Bytes allocated on disk">Physical</button>
+    <button type="button" role="radio" aria-checked="true" data-mode="physical" title="Bytes allocated on disk; data shared by clones is counted once">Physical</button>
   </div>
   <span class="sep"></span>
   <button id="zoom" type="button" disabled title="Zoom the map to the selected folder">Zoom</button>
@@ -75,6 +75,7 @@
   <div class="tabs" role="tablist">
     <button type="button" role="tab" aria-selected="true" aria-controls="tab-extensions" data-tab="extensions">Extensions</button>
     <button type="button" role="tab" aria-selected="false" aria-controls="tab-largest" data-tab="largest">Largest files</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="tab-rebuildable" data-tab="rebuildable">Rebuildable</button>
     <span id="hint"></span>
   </div>
   <div id="tab-extensions" class="tab" role="tabpanel">
@@ -91,6 +92,14 @@
         <tr><th class="num">Size</th><th class="name">Path</th></tr>
       </thead>
       <tbody id="largest-rows"></tbody>
+    </table>
+  </div>
+  <div id="tab-rebuildable" class="tab" role="tabpanel" tabindex="0" aria-label="Rebuildable folders" hidden>
+    <table>
+      <thead>
+        <tr><th class="name">Folder</th><th class="owner">Filled by</th><th class="num">Size</th><th class="pct">%</th><th class="num">Folders</th></tr>
+      </thead>
+      <tbody id="rebuild-rows"></tbody>
     </table>
   </div>
 </section>

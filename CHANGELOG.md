@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Physical size counts APFS clones once. Files duplicated in Finder or installed by pnpm, uv or bun share their data, and Hoardmap used to count every copy in full, as `du` does, so folders could add up to more than the disk. Clones that still share all their data are counted once and marked in the list; a clone that has partly changed is counted in full, as before. This corrects the 0.1.0 note that Physical already showed what clones cost.
+- A Rebuildable tab gathers the folders their tools fill again: `node_modules`, Cargo `target`, Python virtual environments, Xcode DerivedData and the package and model caches of Homebrew, pip, npm, pnpm, Cargo, Go, uv, Gradle and Hugging Face, each with its owner and a link to the owner's documentation. Click a group to see its folders in the treemap.
+
 ## 0.4.0 — 2026-10-28
 
 - Hoardmap is a Mac app only; there is no browser version any more. The `hoardmap` command now opens the app on a folder (`hoardmap ~/Developer`) instead of serving the page to a browser, and its `--port`, `--no-open` and `--linger` options are gone. Homebrew installs the command with the app (`brew install --cask abhishekkundu25/tap/hoardmap`); the separate `hoardmap` formula and the `hoardmap-macos.tar.gz` download are retired.
