@@ -169,6 +169,21 @@ function statusBytes(s) {
   return store.mode === "physical" ? s.physical : s.bytes;
 }
 
+// What a file shares with others and what removing it would free now, in plain words;
+// "" for a file that shares nothing.
+function sharedNote(node) {
+  switch (node.shared) {
+    case "hard_link":
+      return "Hard link: counted under its first path.";
+    case "clone":
+      return node.physical > 0
+        ? `Shares all its data with other files (clones). Counted here once; removing it frees 0 bytes now.`
+        : `Shares all its data with another file, counted there. Removing it frees 0 bytes now.`;
+    default:
+      return "";
+  }
+}
+
 // Store and DOM.
 
 const store = {
@@ -178,6 +193,11 @@ const store = {
   mode: "physical",
   view: "treemap",
   highlightExt: null,
+  // The Rebuildable group whose folders the map highlights, by key, and their ids.
+  highlightGroup: null,
+  highlightIds: null,
+  // The last /api/rebuildable answer and the root node it was asked for.
+  rebuild: null,
   layout: null,
   message: null,
   loadedPath: null,
@@ -219,6 +239,8 @@ const el = {
   tooltip: $("tooltip"),
   extRows: $("ext-rows"),
   largestRows: $("largest-rows"),
+  rebuildTab: $("tab-rebuildable"),
+  rebuildRows: $("rebuild-rows"),
   hint: $("hint"),
   errors: $("errors"),
   errorRows: $("error-rows"),
@@ -347,6 +369,9 @@ function renderStatus() {
     case "done": {
       el.status.appendChild(path);
       add(`: ${formatCount(s.dirs)} folders, ${formatCount(s.files)} files, ${formatBytes(statusBytes(s))} in ${formatElapsed(s.elapsed_ms)}`);
+      if (store.mode === "physical") {
+        if (s.clone_counted_once > 0) add(` · ${formatBytes(s.clone_counted_once)} shared by clones, counted once`);
+      }
       if (s.stopped) add(" · stopped early, so these are partial", "error");
       if (s.error_count > 0) {
         const button = document.createElement("button");
@@ -441,7 +466,8 @@ function renderRow({ id, depth, node, parent, path }) {
   tr.setAttribute("role", "row");
   tr.setAttribute("aria-level", String(depth + 1));
   if (isDir && node.has_children) tr.setAttribute("aria-expanded", String(expanded.has(id)));
-  tr.title = `${path}\n${formatCount(bytes)} bytes${node.hard_link ? " (hard link)" : ""}`;
+  const note = sharedNote(node);
+  tr.title = `${path}\n${formatCount(bytes)} bytes${note ? `\n${note}` : ""}`;
 
   const name = document.createElement("td");
   name.className = "name";
@@ -461,18 +487,18 @@ function renderRow({ id, depth, node, parent, path }) {
     mark.textContent = "symlink";
     name.appendChild(mark);
   }
-  if (node.hard_link) {
+  if (note) {
     const mark = document.createElement("span");
     mark.className = "mark";
-    mark.textContent = "⇄";
-    mark.title = "hard link: counted under its first path";
+    mark.textContent = node.shared === "hard_link" ? "⇄" : "⧉";
+    mark.title = note;
     name.appendChild(mark);
   }
 
   const size = document.createElement("td");
   size.className = "num";
   size.textContent = formatBytes(bytes);
-  size.title = node.hard_link ? `hard link, ${formatCount(bytes)} bytes` : `${formatCount(bytes)} bytes`;
+  size.title = node.shared === "hard_link" ? `hard link, ${formatCount(bytes)} bytes` : `${formatCount(bytes)} bytes`;
 
   const pct = document.createElement("td");
   pct.className = "pct";
@@ -760,11 +786,11 @@ function drawTreemap() {
     return;
   }
 
-  const highlight = store.highlightExt;
+  const lit = highlightTest(layout);
   ctx.lineWidth = 1;
   ctx.strokeStyle = border;
   for (const r of layout.rects) {
-    const dim = highlight !== null && (r.kind === "dir" || r.ext !== highlight);
+    const dim = lit !== null && !lit(r);
     ctx.globalAlpha = dim ? 0.3 : 1;
     ctx.save();
     ctx.translate(r.x, r.y);
@@ -788,6 +814,24 @@ function drawTreemap() {
   }
 }
 
+// Whether a rect stays lit under the extension or Rebuildable highlight, or null when
+// nothing is highlighted. A rect is in a highlighted folder when its centre lies in the
+// folder's bounds, or for the icicle, under the folder's bar.
+function highlightTest(layout) {
+  const ext = store.highlightExt;
+  if (ext !== null) return (r) => r.kind !== "dir" && r.ext === ext;
+  const ids = store.highlightIds;
+  if (ids === null) return null;
+  const icicle = layout.rows !== undefined;
+  const areas = (icicle ? layout.rects : layout.dirs || []).filter((a) => ids.has(a.id));
+  return (r) => {
+    if (ids.has(r.id)) return true;
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    return areas.some((a) => cx >= a.x && cx < a.x + a.w && (icicle ? r.depth > a.depth : cy >= a.y && cy < a.y + a.h));
+  };
+}
+
 function selectionBounds(layout) {
   const id = store.selection;
   if (id === null) return null;
@@ -804,11 +848,11 @@ function labelColor(hex) {
 function drawIcicle(layout, style) {
   const accent = style.getPropertyValue("--accent").trim();
   const border = style.getPropertyValue("--panel").trim();
-  const highlight = store.highlightExt;
+  const lit = highlightTest(layout);
   ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   ctx.textBaseline = "middle";
   for (const r of layout.rects) {
-    const dim = highlight !== null && (r.kind === "dir" || r.ext !== highlight);
+    const dim = lit !== null && !lit(r);
     ctx.globalAlpha = dim ? 0.3 : 1;
     ctx.save();
     ctx.translate(r.x, r.y);
@@ -937,6 +981,8 @@ async function setRoot(id) {
   if (id === store.root) return;
   store.root = id;
   store.highlightExt = null;
+  store.highlightGroup = null;
+  store.highlightIds = null;
   try {
     await fetchNode(id);
   } catch (e) {
@@ -989,11 +1035,12 @@ el.root.addEventListener("click", () => setRoot(0));
 
 el.open.addEventListener("click", () => openInFinder(store.selection));
 
-// Bottom panel: extensions and largest files.
+// Bottom panel: extensions, largest files and rebuildable folders.
 
 let bottomRequest = 0;
 
 async function loadBottom() {
+  loadRebuildable();
   const request = ++bottomRequest;
   // A running scan's preview stops a few levels down, so its file lists would mislead.
   const s = store.status;
@@ -1060,15 +1107,41 @@ function renderExtensions(data) {
 }
 
 function renderHint() {
-  el.hint.textContent = store.highlightExt === null
-    ? ""
-    : `Highlighting ${store.highlightExt === "" ? "files without an extension" : `.${store.highlightExt}`} (Escape clears)`;
+  const ext = store.highlightExt;
+  const group = store.highlightGroup !== null ? rebuildGroup(store.highlightGroup) : null;
+  if (ext !== null) {
+    el.hint.textContent = `Highlighting ${ext === "" ? "files without an extension" : `.${ext}`} (Escape clears)`;
+  } else if (group) {
+    el.hint.textContent = `Highlighting ${group.label} folders (Escape clears)`;
+  } else {
+    el.hint.textContent = "";
+  }
 }
 
+// Highlights the files of one extension, or nothing; replaces a Rebuildable highlight.
 function setHighlight(ext) {
   store.highlightExt = ext;
+  store.highlightGroup = null;
+  store.highlightIds = null;
+  markHighlights();
+}
+
+// Highlights the folders of one Rebuildable group, or nothing; replaces an extension
+// highlight.
+function setGroupHighlight(key) {
+  const group = key !== null ? rebuildGroup(key) : null;
+  store.highlightExt = null;
+  store.highlightGroup = group ? key : null;
+  store.highlightIds = group ? new Set(group.folders.map((f) => f.id)) : null;
+  markHighlights();
+}
+
+function markHighlights() {
   for (const tr of el.extRows.children) {
-    tr.classList.toggle("highlight", ext !== null && tr.dataset.ext === ext);
+    tr.classList.toggle("highlight", store.highlightExt !== null && tr.dataset.ext === store.highlightExt);
+  }
+  for (const tr of el.rebuildRows.children) {
+    tr.classList.toggle("highlight", tr.classList.contains("group") && tr.dataset.group === store.highlightGroup);
   }
   renderHint();
   drawTreemap();
@@ -1112,6 +1185,195 @@ el.largestRows.addEventListener("click", (event) => {
 el.largestRows.addEventListener("dblclick", (event) => {
   const tr = event.target.closest("tr");
   if (tr) openInFinder(Number(tr.dataset.id));
+});
+
+// Rebuildable folders: one group per kind of folder a tool fills again, its folders
+// under it. Served from the preview during a scan, so the tab fills in as it runs.
+
+let rebuildRequest = 0;
+
+async function loadRebuildable() {
+  const request = ++rebuildRequest;
+  if (store.loadedPath === null) {
+    store.rebuild = null;
+    renderRebuildable();
+    return;
+  }
+  try {
+    const [data, root] = await Promise.all([
+      getJSON(`/api/rebuildable?root=${store.root}&mode=${store.mode}`),
+      fetchNode(store.root),
+    ]);
+    if (request !== rebuildRequest) return;
+    store.rebuild = { data, root };
+    renderRebuildable();
+  } catch (e) {
+    // During a scan the preview moves on under the request; the next refresh catches up.
+    if (request === rebuildRequest && store.status.state !== "scanning") showMessage(e.message, true);
+  }
+}
+
+function rebuildGroup(key) {
+  return (store.rebuild && store.rebuild.data.groups.find((g) => g.key === key)) || null;
+}
+
+// A folder's path below the current root; the root's own name when it is the folder.
+function relativePath(path, rootPath) {
+  const base = rootPath.endsWith("/") ? rootPath : `${rootPath}/`;
+  if (path.startsWith(base)) return path.slice(base.length);
+  return path.slice(path.lastIndexOf("/") + 1) || path;
+}
+
+function percentCell(bytes, whole) {
+  const pct = document.createElement("td");
+  pct.className = "pct";
+  const share = percent(bytes, whole);
+  const bar = document.createElement("span");
+  bar.className = "bar";
+  bar.style.setProperty("--pct", `${share.toFixed(2)}%`);
+  bar.textContent = formatPercent(share);
+  pct.appendChild(bar);
+  return pct;
+}
+
+function cell(className, text) {
+  const td = document.createElement("td");
+  td.className = className;
+  td.textContent = text;
+  return td;
+}
+
+function renderRebuildable() {
+  el.rebuildRows.textContent = "";
+  const rebuild = store.rebuild;
+  if (rebuild) el.rebuildRows.appendChild(rebuildRows(rebuild));
+  // The highlighted group's folders change as a scan finds more, or it is gone.
+  if (store.highlightGroup !== null) setGroupHighlight(store.highlightGroup);
+}
+
+function rebuildRows({ data, root }) {
+  const whole = bytesOf(root, store.mode);
+  const fragment = document.createDocumentFragment();
+  if (data.groups.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell("muted", store.status.state === "scanning" ? "No rebuildable folders found yet." : "No rebuildable folders under this folder.");
+    td.colSpan = 5;
+    tr.appendChild(td);
+    fragment.appendChild(tr);
+  }
+  for (const group of data.groups) {
+    const tr = document.createElement("tr");
+    tr.className = "group";
+    tr.dataset.group = group.key;
+    if (group.key === store.highlightGroup) tr.classList.add("highlight");
+    tr.title = `${formatCount(group.bytes)} bytes in ${formatCount(group.count)} ${group.count === 1 ? "folder" : "folders"}`;
+    tr.append(
+      cell("name", group.label),
+      cell("owner muted", group.owner),
+      cell("num", formatBytes(group.bytes)),
+      percentCell(group.bytes, whole),
+      cell("num", formatCount(group.count)),
+    );
+
+    // The source opens nowhere: the app window never navigates away from the page,
+    // so the address is plain text to copy.
+    const why = document.createElement("tr");
+    why.className = "why";
+    why.dataset.group = group.key;
+    const text = cell("name muted", `${group.why} Docs: `);
+    const source = document.createElement("span");
+    source.className = "source";
+    source.textContent = group.source;
+    text.appendChild(source);
+    text.colSpan = 5;
+    why.title = `${group.why}\nDocs: ${group.source}`;
+    why.appendChild(text);
+    fragment.append(tr, why);
+
+    for (const folder of group.folders) {
+      const row = document.createElement("tr");
+      row.className = "folder";
+      row.dataset.id = folder.id;
+      if (folder.id === store.selection) row.classList.add("selected");
+      row.title = `${folder.path}\n${formatCount(folder.bytes)} bytes`;
+      const path = cell("name", "");
+      path.colSpan = 2;
+      const inner = document.createElement("span");
+      inner.textContent = relativePath(folder.path, root.path);
+      path.appendChild(inner);
+      row.append(path, cell("num", formatBytes(folder.bytes)), percentCell(folder.bytes, whole), cell("num", ""));
+      fragment.appendChild(row);
+    }
+    if (group.more > 0) {
+      const more = document.createElement("tr");
+      more.className = "rest";
+      const td = cell("name muted", `and ${formatCount(group.more)} more`);
+      td.colSpan = 5;
+      more.appendChild(td);
+      fragment.appendChild(more);
+    }
+  }
+  return fragment;
+}
+
+// Marks `tr` as the table's current row; a folder row also selects its folder.
+function pickRebuildRow(tr, { scroll = false } = {}) {
+  for (const row of el.rebuildRows.children) row.classList.toggle("selected", row === tr);
+  if (scroll) tr.scrollIntoView({ block: "nearest" });
+  if (tr.dataset.id !== undefined) reveal(Number(tr.dataset.id));
+}
+
+el.rebuildRows.addEventListener("click", (event) => {
+  // Selecting the docs address to copy it is not a click on the group.
+  if (!window.getSelection().isCollapsed) return;
+  const tr = event.target.closest("tr");
+  if (!tr) return;
+  const key = tr.dataset.group;
+  if (key !== undefined) {
+    const head = el.rebuildRows.querySelector(`tr.group[data-group="${CSS.escape(key)}"]`);
+    pickRebuildRow(head);
+    setGroupHighlight(store.highlightGroup === key ? null : key);
+  } else if (tr.dataset.id !== undefined) {
+    pickRebuildRow(tr);
+  }
+});
+
+el.rebuildRows.addEventListener("dblclick", (event) => {
+  const tr = event.target.closest("tr.folder[data-id]");
+  if (tr) openInFinder(Number(tr.dataset.id));
+});
+
+// Up and Down walk the group and folder rows; Enter highlights a group or opens a folder
+// in Finder.
+el.rebuildTab.addEventListener("keydown", (event) => {
+  const rows = [...el.rebuildRows.querySelectorAll("tr.group, tr.folder[data-id]")];
+  if (rows.length === 0) return;
+  const index = rows.findIndex((r) => r.classList.contains("selected"));
+  const move = (to) => pickRebuildRow(rows[Math.max(0, Math.min(rows.length - 1, to))], { scroll: true });
+  switch (event.key) {
+    case "ArrowDown":
+      move(index < 0 ? 0 : index + 1);
+      break;
+    case "ArrowUp":
+      move(index < 0 ? 0 : index - 1);
+      break;
+    case "Home":
+      move(0);
+      break;
+    case "End":
+      move(rows.length - 1);
+      break;
+    case "Enter": {
+      if (index < 0) return;
+      const row = rows[index];
+      if (row.dataset.id !== undefined) openInFinder(Number(row.dataset.id));
+      else setGroupHighlight(store.highlightGroup === row.dataset.group ? null : row.dataset.group);
+      break;
+    }
+    default:
+      return;
+  }
+  event.preventDefault();
 });
 
 const tabs = document.querySelectorAll('.tabs [role="tab"]');
@@ -1218,6 +1480,9 @@ function forgetTree() {
   store.selection = null;
   store.root = 0;
   store.highlightExt = null;
+  store.highlightGroup = null;
+  store.highlightIds = null;
+  store.rebuild = null;
   store.layout = null;
   store.loadedPath = null;
   hideTooltip();
@@ -1276,6 +1541,7 @@ async function refreshLive() {
     renderCaption();
     renderControls();
     fetchTreemap();
+    loadRebuildable();
   } catch {
     // The tree moved on during the fetches; the next refresh catches up.
   } finally {
@@ -1328,7 +1594,7 @@ function connectEvents() {
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (el.errors.open || el.access.open) return;
-  if (store.highlightExt !== null) {
+  if (store.highlightExt !== null || store.highlightGroup !== null) {
     setHighlight(null);
     event.preventDefault();
   }
