@@ -1290,6 +1290,18 @@ function rebuildRows({ data, root }) {
     why.appendChild(text);
     fragment.append(tr, why);
 
+    // What in these folders does not come back on its own, in the warning colour.
+    if (group.caution) {
+      const caution = document.createElement("tr");
+      caution.className = "why";
+      caution.dataset.group = group.key;
+      const td = cell("name warn", `Caution: ${group.caution}`);
+      td.colSpan = 5;
+      caution.title = `Caution: ${group.caution}`;
+      caution.appendChild(td);
+      fragment.appendChild(caution);
+    }
+
     for (const folder of group.folders) {
       const row = document.createElement("tr");
       row.className = "folder";
