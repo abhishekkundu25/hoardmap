@@ -78,7 +78,7 @@
     <button type="button" role="tab" aria-selected="false" aria-controls="tab-rebuildable" data-tab="rebuildable">Rebuildable</button>
     <span id="hint"></span>
   </div>
-  <div id="tab-extensions" class="tab" role="tabpanel">
+  <div id="tab-extensions" class="tab" role="tabpanel" tabindex="0" aria-label="Extensions">
     <table>
       <thead>
         <tr><th class="name">Ext</th><th class="num">Size</th><th class="pct">%</th><th class="num">Files</th></tr>
@@ -86,7 +86,7 @@
       <tbody id="ext-rows"></tbody>
     </table>
   </div>
-  <div id="tab-largest" class="tab" role="tabpanel" hidden>
+  <div id="tab-largest" class="tab" role="tabpanel" tabindex="0" aria-label="Largest files" hidden>
     <table>
       <thead>
         <tr><th class="num">Size</th><th class="name">Path</th></tr>
