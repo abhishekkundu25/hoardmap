@@ -1697,18 +1697,19 @@ el.places.addEventListener("change", async () => {
 });
 
 el.rescan.addEventListener("click", () => {
-  if (store.status && store.status.path) startScan(store.status.path);
+  if (store.status && store.status.path) startScan(null);
 });
 
 // The path goes as typed: a folder name may end in a space. A text field drops the
 // line breaks of a pasted path on its own.
+// `null` rescans the server's own folder, whose real name may not survive as text.
 async function startScan(path) {
-  if (!path.trim()) {
+  if (path !== null && !path.trim()) {
     showMessage("Type a folder path to scan.", true);
     return;
   }
   try {
-    await postJSON("/api/scan", { path });
+    await postJSON("/api/scan", path === null ? {} : { path });
   } catch (e) {
     showMessage(e.message, true);
   }
@@ -1985,7 +1986,7 @@ $("access-relaunch").addEventListener("click", async () => {
 });
 $("access-rescan").addEventListener("click", () => {
   el.access.close();
-  if (store.status && store.status.path) startScan(store.status.path);
+  if (store.status && store.status.path) startScan(null);
 });
 $("access-skip").addEventListener("change", (event) => storeFlag("skipAccess", event.target.checked));
 el.access.addEventListener("close", () => {
@@ -1997,7 +1998,7 @@ el.access.addEventListener("close", () => {
 // The native app waits with its first scan until the start screen is gone.
 function scanIfIdle() {
   const s = store.status;
-  if (s && s.state === "idle" && s.path && !el.access.open) startScan(s.path);
+  if (s && s.state === "idle" && s.path && !el.access.open) startScan(null);
 }
 el.access.addEventListener("click", (event) => {
   if (event.target === el.access) el.access.close();
