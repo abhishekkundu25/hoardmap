@@ -30,7 +30,7 @@ close-out itself after the last landing: `README.md`, `CHANGELOG.md`,
 |---|---|
 | 01 | todo |
 | 02 | todo |
-| 03 | todo |
+| 03 | done: Gradle `build` cautioned; tool-specific sentinels outrank `package.json` (CMake over JS for `build`, Python over JS for `dist`); 35 sentinels checked by kind; Ollama caution covers `ollama create`; Time Machine by `Backups.backupdb` dir or APFS `backup_manifest.plist`. `groups` 17.7 ms on 1,001,401 fixture entries. Unverified live: a real APFS Time Machine disk. |
 | 04 | todo |
 | 05 | done: relaunch waits on `open -n` and the new instance waits up to 10 s for the old pid; one worker opens folders in order; release cleanup detaches; tap job serialised with a version guard; checkout@v5. Unverified live: LaunchServices relaunch, DMG detach, tap concurrency. |
 | close-out | todo |
