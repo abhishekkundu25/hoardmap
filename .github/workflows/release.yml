@@ -13,7 +13,7 @@ jobs:
   release:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -55,6 +55,9 @@ jobs:
   tap:
     needs: release
     runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
     permissions:
       contents: read
     env:
@@ -81,6 +84,15 @@ jobs:
           chmod 600 ~/.ssh/tap
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone --depth 1 git@github.com:abhishekkundu25/homebrew-tap.git tap
+          if [ -f tap/Casks/hoardmap.rb ]; then
+            current=$(sed -n 's/^  version "\(.*\)"/\1/p' tap/Casks/hoardmap.rb)
+            test -n "$current"
+            oldest=$(printf '%s\n' "$current" "$version" | sort -V | head -1)
+            if [ "$oldest" != "$current" ]; then
+              echo "::notice::Skipping Hoardmap $version; the tap already has $current"
+              exit 0
+            fi
+          fi
           # The template's two comment lines are for this repo, not the tap.
           sed -e '1,2d' -e "s/\"VERSION\"/\"$version\"/" -e "s/\"SHA256\"/\"$app\"/" cask.rb >tap/Casks/hoardmap.rb
           cp README.tap.md tap/README.md

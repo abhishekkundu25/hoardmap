@@ -16,6 +16,8 @@ pub const SETTINGS_URL: &str =
 /// Readable only with Full Disk Access, and present on every Mac.
 const PROBE: &str = "/Library/Application Support/com.apple.TCC/TCC.db";
 
+const RELAUNCH_WAIT_ARG: &str = "--relaunch-wait-for";
+
 /// Whether this process may read folders macOS keeps private. Always true off macOS.
 pub fn granted() -> bool {
     !cfg!(target_os = "macos") || std::fs::File::open(PROBE).is_ok()
@@ -113,26 +115,27 @@ pub fn log_launch(line: &str) {
 pub fn relaunch() -> io::Result<()> {
     match bundle() {
         Some(bundle) => {
-            // A helper outlives this process, waits for it to end so the new one gets
-            // the same port (and with it the page's saved settings), then opens the
-            // app. Its outcome goes to the launch log.
             log_launch("relaunch requested");
-            let log = launch_log().unwrap_or_else(|| "/dev/null".into());
-            Command::new("/bin/sh")
-                .args([
-                    "-c",
-                    r#"while kill -0 "$1" 2>/dev/null; do sleep 0.1; done
-                       if open "$2" >>"$3" 2>&1; then echo "$(date +%s) relaunch: opened" >>"$3"
-                       else echo "$(date +%s) relaunch: open failed" >>"$3"; fi"#,
-                    "relaunch",
-                ])
-                .arg(std::process::id().to_string())
+            let output = Command::new("/usr/bin/open")
+                .arg("-n")
                 .arg(&bundle)
-                .arg(log)
-                .spawn()?;
+                .arg("--args")
+                .arg(RELAUNCH_WAIT_ARG)
+                .arg(std::process::id().to_string())
+                .output()?;
+            if !output.status.success() {
+                return Err(io::Error::other(format!(
+                    "{}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+            log_launch("relaunch: opened");
         }
         None => {
             Command::new(std::env::current_exe()?)
+                .arg(RELAUNCH_WAIT_ARG)
+                .arg(std::process::id().to_string())
                 .args(std::env::args_os().skip(1))
                 .spawn()?;
         }
@@ -142,6 +145,31 @@ pub fn relaunch() -> io::Result<()> {
         std::process::exit(0);
     });
     Ok(())
+}
+
+/// Waits for the previous instance to release its port and saved page origin.
+/// Called before starting the native app's server or window.
+pub fn wait_for_relaunch() {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(OsStr::new(RELAUNCH_WAIT_ARG)) {
+        return;
+    }
+    let Some(pid) = args
+        .next()
+        .and_then(|arg| arg.to_str()?.parse::<libc::pid_t>().ok())
+        .filter(|pid| *pid > 0)
+    else {
+        return;
+    };
+    // Signal 0 checks whether the process exists without sending it a signal. The
+    // deadline covers a pid that another process took over after the old one ended.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while (unsafe { libc::kill(pid, 0) } == 0
+        || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+        && std::time::Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn open<'a>(args: impl IntoIterator<Item = &'a OsStr>) -> io::Result<()> {
