@@ -60,8 +60,15 @@ landed for them:
   module to be the last item, and the spec's HTTP section matches the `std::net`
   server.
 
-The third review (Claude Opus 5.5) found 10 issues, being fixed now: among them the
-path field drops leading white space again, a folder closed while opened folders are
+The third review (Claude Opus 5.5) found 10 issues, all fixed in 6937a89 and a5639da
+except #10: a failed folder request no longer drops a valid one, device numbers match,
+a connection that sends nothing is closed silently, the tap takes the newest stable
+release, the path field drops leading white space again, a folder closed while opened folders are
 being reopened stays closed, and the spec's HTTP and scan descriptions match the code.
 #10 stays a known limit: the folder picker and the path field pass names as text, so
 a folder whose name is not valid UTF-8 can only be rescanned, not chosen or typed.
+
+The final review (Claude Opus 5.5) found nothing blocking. Follow-ups: check that a
+real APFS Time Machine disk is still hidden; the no-delete guard accepts indented lines
+after the test module and does not read `src/bin/`; a request dropped as stale is not
+logged; overflow listings all wait on slot 0; rerun `scan_bench` on a quiet machine.
