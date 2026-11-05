@@ -4,6 +4,7 @@
 
 - Physical size counts APFS clones once. Files duplicated in Finder or installed by pnpm, uv or bun share their data, and Hoardmap used to count every copy in full, as `du` does, so folders could add up to more than the disk. Clones that still share all their data are counted once and marked in the list; a clone that has partly changed is counted in full, as before. This corrects the 0.1.0 note that Physical already showed what clones cost.
 - A Rebuildable tab gathers the folders their tools fill again: `node_modules`, Cargo `target`, Python virtual environments, Xcode DerivedData and the package and model caches of Homebrew, pip, npm, pnpm, Cargo, Go, uv, Gradle and Hugging Face, each with its owner and a link to the owner's documentation. Click a group to see its folders in the treemap.
+- The Rebuildable tab knows 68 kinds of folder, up from 14: Yarn, Bun, Maven, Poetry, `__pycache__`, `.next`, Docker's disk image, downloaded models, Android emulators and more. Groups whose folders also hold something that does not come back, such as Docker's containers or an emulator's apps, carry a caution in red, and a last group, "Marked as a cache", gathers any other folder a tool tagged with `CACHEDIR.TAG`.
 
 ## 0.4.0 — 2026-10-28
 

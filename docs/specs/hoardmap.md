@@ -228,9 +228,10 @@ renames anything. Closing the window quits the app.
   - `GET /api/largest?root=ID&n=N&mode=` → `{items: [{id, path, size, physical,
     mtime}]}` largest first, N capped at 1000.
   - `GET /api/rebuildable?root=ID&mode=` → `{total, groups: [{key, label, owner, why,
-    source, bytes, count, folders: [{id, path, bytes}], more}]}`: the folders their
-    tools fill again (`src/rebuildable.rs`), groups and folders largest first, at most
-    500 folders per group.
+    source, caution, bytes, count, folders: [{id, path, bytes}], more}]}`: the folders
+    their tools fill again (`src/rebuildable.rs`), groups and folders largest first, at
+    most 500 folders per group. `caution` is one sentence on what in the folders does
+    not come back on its own, or `null`.
   - `GET /api/errors` → `{count, items: [{path, error}]}`. Without Full Disk Access
     on macOS, the home folders that would each raise a macOS prompt are counted but
     not read, and listed with the error `Not scanned: needs Full Disk Access`.

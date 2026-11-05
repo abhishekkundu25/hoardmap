@@ -357,6 +357,7 @@ fn rebuildable(app: &App, query: &Query) -> Response {
                 "owner": g.rule.owner,
                 "why": g.rule.why,
                 "source": g.rule.source,
+                "caution": g.rule.caution,
                 "bytes": g.bytes,
                 "count": g.count,
                 "folders": folders,

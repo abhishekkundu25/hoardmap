@@ -1,5 +1,6 @@
 //! `/api/rebuildable` end to end: the binary scans a fixture of project folders and
-//! decoys, and the endpoint groups exactly the folders with a sentinel or a fixed path.
+//! decoys, and the endpoint groups exactly the folders with a sentinel, a fixed path or
+//! a cache tag, with a caution where the rule has one.
 
 mod common;
 
@@ -19,14 +20,20 @@ const NODE_MODULES: u64 = 200_001;
 const CARGO_TARGET: u64 = 300_003 + 177;
 const VENV: u64 = 50_005 + 41;
 const DERIVED_DATA: u64 = 100_007;
+const DOCKER: u64 = 120_011;
+const TAGGED: u64 = 20_013 + 43;
+const NEXT_BUILD: u64 = 10_009;
 
 /// Project folders in the system temp folder, removed on drop:
 /// - `proj/package.json` and `proj/node_modules/a/node_modules/b/big` (nested, once);
 /// - `rust/target/CACHEDIR.TAG` and `rust/target/debug/app`;
 /// - `py/.venv/pyvenv.cfg` and `py/.venv/lib/site.py`;
 /// - `Library/Developer/Xcode/DerivedData/App-x/Build/obj`;
-/// - decoys: `work/target/real.dat` (no sentinel) and `bare/node_modules/c` (no
-///   `package.json` beside it).
+/// - `Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw` (cautioned);
+/// - `tool/data/CACHEDIR.TAG` and `tool/data/blob` (a tagged folder of any name);
+/// - `web/package.json` and `web/.next/cache/x`;
+/// - decoys: `work/target/real.dat` (no sentinel), `bare/node_modules/c` (no
+///   `package.json` beside it) and `loose/dist/app.js` (a bare `dist`).
 struct Projects {
     root: PathBuf,
 }
@@ -60,6 +67,15 @@ impl Projects {
             "Library/Developer/Xcode/DerivedData/App-x/Build/obj",
             DERIVED_DATA,
         );
+        write(
+            "Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw",
+            DOCKER,
+        );
+        write("tool/data/CACHEDIR.TAG", 43);
+        write("tool/data/blob", 20_013);
+        write("web/package.json", 30);
+        write("web/.next/cache/x", NEXT_BUILD);
+        write("loose/dist/app.js", 6_007);
         write("work/target/real.dat", 400_009);
         write("bare/node_modules/c", 5_003);
         Projects { root }
@@ -135,7 +151,7 @@ fn summary(json: &Value) -> Vec<(String, u64, u64, Vec<String>)> {
 }
 
 #[test]
-fn groups_the_four_kinds_and_skips_the_decoys() {
+fn groups_each_kind_and_skips_the_decoys() {
     let projects = Projects::new();
     let server = start_done(&projects);
     let json = rebuildable(&server, "");
@@ -155,6 +171,12 @@ fn groups_the_four_kinds_and_skips_the_decoys() {
                 vec![projects.path("proj/node_modules")]
             ),
             (
+                "docker_disk".to_string(),
+                DOCKER,
+                1,
+                vec![projects.path("Library/Containers/com.docker.docker/Data/vms")]
+            ),
+            (
                 "xcode_derived_data".to_string(),
                 DERIVED_DATA,
                 1,
@@ -166,20 +188,42 @@ fn groups_the_four_kinds_and_skips_the_decoys() {
                 1,
                 vec![projects.path("py/.venv")]
             ),
+            (
+                "cache_tag".to_string(),
+                TAGGED,
+                1,
+                vec![projects.path("tool/data")]
+            ),
+            (
+                "next_build".to_string(),
+                NEXT_BUILD,
+                1,
+                vec![projects.path("web/.next")]
+            ),
         ]
     );
     assert_eq!(
         json["total"],
-        NODE_MODULES + CARGO_TARGET + VENV + DERIVED_DATA
+        NODE_MODULES + CARGO_TARGET + VENV + DERIVED_DATA + DOCKER + TAGGED + NEXT_BUILD
     );
     let text = json.to_string();
     assert!(!text.contains("work/target"), "{text}");
     assert!(!text.contains("bare/node_modules"), "{text}");
+    assert!(!text.contains("loose/dist"), "{text}");
     for group in json["groups"].as_array().unwrap() {
         for key in ["label", "owner", "why"] {
             assert!(!group[key].as_str().unwrap().is_empty(), "{group}");
         }
         assert!(group["source"].as_str().unwrap().starts_with("https://"));
+        let key = group["key"].as_str().unwrap();
+        if ["docker_disk", "cache_tag"].contains(&key) {
+            assert!(
+                group["caution"].as_str().is_some_and(|c| !c.is_empty()),
+                "{group}"
+            );
+        } else {
+            assert!(group["caution"].is_null(), "{group}");
+        }
         assert_eq!(group["more"], 0);
         let folder = &group["folders"][0];
         assert_eq!(folder["bytes"], group["bytes"]);
@@ -204,6 +248,7 @@ fn root_narrows_and_mode_changes_the_bytes() {
         )]
     );
     assert_eq!(json["total"], NODE_MODULES);
+    assert!(json["groups"][0]["caution"].is_null(), "{json}");
     let work = child_id(&server, 0, "work");
     let json = rebuildable(&server, &format!("?root={work}"));
     assert_eq!(json["groups"].as_array().unwrap().len(), 0);
@@ -252,4 +297,32 @@ fn conflict_without_a_tree() {
     let (status, json) = get_json(&server, "/api/rebuildable");
     assert_eq!(status, 409, "{json}");
     assert_eq!(json["error"], "no tree loaded");
+}
+
+/// Times `groups` on a real home folder. Run by hand, in release:
+/// `cargo test --release --test rebuildable -- --ignored --nocapture`. The budget is
+/// 50 ms for about a million entries.
+#[test]
+#[ignore = "scans the home folder; run by hand"]
+fn groups_on_the_home_folder() {
+    use hoardmap::scan::{Progress, scan};
+    use hoardmap::treemap::Mode;
+    use std::time::Instant;
+    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    let tree = scan(&home, &Progress::default()).expect("scan");
+    let start = Instant::now();
+    let groups = hoardmap::rebuildable::groups(&tree, 0, Mode::Physical);
+    let took = start.elapsed();
+    println!(
+        "groups: {} entries, {} groups, {:.1} ms",
+        tree.nodes.len(),
+        groups.len(),
+        took.as_secs_f64() * 1000.0
+    );
+    for g in &groups {
+        println!(
+            "  {:<20} {:>14} bytes {:>6} folders",
+            g.rule.key, g.bytes, g.count
+        );
+    }
 }
