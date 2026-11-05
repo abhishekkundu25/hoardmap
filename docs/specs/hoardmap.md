@@ -211,7 +211,7 @@ renames anything. Closing the window quits the app.
     down within 1.5 s, the preview becomes its result and the done status says
     `preview: true`.
   - `GET /api/events` → SSE as above.
-  - `POST /api/scan {"path"}` → 202 and starts a scan; 400 for a path that is not a
+  - `POST /api/scan {"path"}` or `{}` → 202 and starts a scan; `{}` uses the server's current or last folder, or its start folder while idle, preserving raw path bytes; 400 when no folder is available or for a path that is not a
     directory (checked first); 409 while a scan runs.
   - `POST /api/scan/stop {}` → 202 and ends the running scan with what it has read
     (`stopped: true` in the done status); 409 when none runs. A scan stuck on a drive

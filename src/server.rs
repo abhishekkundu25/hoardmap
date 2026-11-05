@@ -29,10 +29,13 @@ const LOGO_SVG: &str = include_str!("../assets/hoardmap.svg");
 
 /// A request line plus headers longer than this is refused with 431.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
-/// Includes event streams; well above the page's concurrent requests.
+/// General slots, including event streams; authenticated overflow is capped separately.
 pub const MAX_CONNECTIONS: usize = 64;
-/// Local requests have at most 64 KiB to send; idle readers release their slot.
+/// Absolute budget for the request head and body together.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(2);
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+const RESERVED_CONNECTIONS: usize = 8;
+const ADMISSION_TIMEOUT: Duration = Duration::from_millis(50);
 /// The answer to a request without the launch token.
 const NO_TOKEN: &str =
     "This address is from another launch. Open the one hoardmap printed, or reopen the app.\n";
@@ -120,6 +123,8 @@ pub struct App {
     /// rather than on each status, since a network drive that stopped answering blocks
     /// the read.
     disk: Mutex<Option<(u64, u64)>>,
+    /// (Last folder request, whether the first scan has been requested.)
+    folder_request: Mutex<(usize, bool)>,
 }
 
 impl App {
@@ -132,6 +137,7 @@ impl App {
             native,
             start: Mutex::new(None),
             disk: Mutex::new(None),
+            folder_request: Mutex::new((0, false)),
         }
     }
 
@@ -235,8 +241,33 @@ impl App {
 
     /// Starts scanning `path` on its own thread, with a ticker that sends the status
     /// every 250 ms until the scan ends. Refused while a scan runs or when `path` is not
-    /// a directory.
-    pub fn start_scan(self: &Arc<App>, path: PathBuf) -> Result<(), String> {
+    /// a directory. Without a path, uses the current folder's raw path.
+    pub fn start_scan(self: &Arc<App>, path: Option<PathBuf>) -> Result<(), String> {
+        let request = self.next_folder_request(true);
+        self.start_scan_for(path, request, false)
+    }
+
+    fn next_folder_request(&self, scan: bool) -> usize {
+        let mut request = self.folder_request.lock().unwrap();
+        request.0 += 1;
+        request.1 |= scan;
+        request.0
+    }
+
+    fn start_scan_for(
+        self: &Arc<App>,
+        path: Option<PathBuf>,
+        request: usize,
+        replace: bool,
+    ) -> Result<(), String> {
+        let path = path
+            .or_else(|| match &*self.state.lock().unwrap() {
+                State::Idle => self.start.lock().unwrap().clone(),
+                State::Scanning { path, .. }
+                | State::Done { path, .. }
+                | State::Failed { path, .. } => Some(path.clone()),
+            })
+            .ok_or("no folder to scan")?;
         let progress = Arc::new(Progress::default());
         let started = Instant::now();
         if !path.is_dir() {
@@ -245,8 +276,15 @@ impl App {
         let disk = disk(&path);
         {
             let mut state = self.state.lock().unwrap();
-            if matches!(*state, State::Scanning { .. }) {
-                return Err(SCAN_RUNNING.to_string());
+            let current = self.folder_request.lock().unwrap();
+            if request != current.0 {
+                return Ok(());
+            }
+            if let State::Scanning { progress, .. } = &*state {
+                if !replace {
+                    return Err(SCAN_RUNNING.to_string());
+                }
+                progress.stop.store(true, AtomicOrdering::Relaxed);
             }
             *self.disk.lock().unwrap() = disk;
             *state = State::Scanning {
@@ -304,26 +342,29 @@ impl App {
 
     /// A folder handed over by Finder or the `hoardmap` command. Before the first scan
     /// (the start screen is up) it becomes the folder that scan reads; otherwise it
-    /// replaces the current scan, stopping a running one first. Blocks while a running
-    /// scan winds down, so call it off the event loop.
+    /// replaces the current scan, stopping a running one first. Call off the event
+    /// loop because folder validation may block.
     pub fn open_folder(self: &Arc<App>, path: PathBuf) -> Result<(), String> {
+        let request = self.next_folder_request(false);
         if !path.is_dir() {
             return Err(format!("{} is not a directory", path.display()));
         }
-        if matches!(*self.state.lock().unwrap(), State::Idle) {
-            *self.start.lock().unwrap() = Some(path);
-            self.notify_status();
-            return Ok(());
-        }
-        if self.stop_scan().is_ok() {
-            let end = Instant::now() + STOP_WAIT + Duration::from_secs(1);
-            while matches!(*self.state.lock().unwrap(), State::Scanning { .. })
-                && Instant::now() < end
-            {
-                thread::sleep(Duration::from_millis(20));
+        {
+            let state = self.state.lock().unwrap();
+            let mut current = self.folder_request.lock().unwrap();
+            if request != current.0 {
+                return Ok(());
             }
+            if matches!(*state, State::Idle) && !current.1 {
+                *self.start.lock().unwrap() = Some(path);
+                drop(current);
+                drop(state);
+                self.notify_status();
+                return Ok(());
+            }
+            current.1 = true;
         }
-        self.start_scan(path)
+        self.start_scan_for(Some(path), request, true)
     }
 
     /// Asks the running scan to stop. It ends with what it has read; if it is still
@@ -577,6 +618,23 @@ pub struct Spawned {
 
 struct Connection(Arc<AtomicUsize>);
 
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let remaining = self
+            .until
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+        self.stream.set_read_timeout(Some(remaining))?;
+        self.stream.read(buf)
+    }
+}
+
 impl Drop for Connection {
     fn drop(&mut self) {
         self.0.fetch_sub(1, AtomicOrdering::Relaxed);
@@ -595,7 +653,7 @@ pub fn spawn(config: Config) -> io::Result<Spawned> {
     let url = page_url(port, &app.token);
     let app = Arc::new(app);
     if config.scan_at_start
-        && let Err(error) = app.start_scan(config.path.clone())
+        && let Err(error) = app.start_scan(Some(config.path.clone()))
     {
         eprintln!("hoardmap: {error}");
         *app.state.lock().unwrap() = State::Failed {
@@ -608,20 +666,46 @@ pub fn spawn(config: Config) -> io::Result<Spawned> {
         .name("http-listener".into())
         .spawn(move || {
             let active = Arc::new(AtomicUsize::new(0));
+            let reserved = Arc::new(AtomicUsize::new(0));
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        if active.load(AtomicOrdering::Relaxed) >= MAX_CONNECTIONS {
+                        let until = Instant::now() + READ_TIMEOUT;
+                        let overflow = active.load(AtomicOrdering::Relaxed) >= MAX_CONNECTIONS;
+                        let slots = if overflow { &reserved } else { &active };
+                        if overflow
+                            && reserved.load(AtomicOrdering::Relaxed) >= RESERVED_CONNECTIONS
+                        {
                             continue;
                         }
-                        active.fetch_add(1, AtomicOrdering::Relaxed);
-                        let connection = Connection(active.clone());
+                        slots.fetch_add(1, AtomicOrdering::Relaxed);
+                        let connection = Connection(slots.clone());
                         let app = app.clone();
+                        // The overflow check reads on this thread, so a silent client never
+                        // holds up `accept`.
                         if let Err(error) = thread::Builder::new()
                             .name("http-request".into())
                             .spawn(move || {
                                 let _connection = connection;
-                                serve(&app, stream).ok();
+                                let prepared = if overflow {
+                                    // shortcut: overflow requests have 50 ms; use readiness-based admission if local fragmentation needs longer.
+                                    let Ok(Some(request)) = read_request(Deadline {
+                                        stream: &stream,
+                                        until: Instant::now() + ADMISSION_TIMEOUT,
+                                    }) else {
+                                        return;
+                                    };
+                                    if !has_token(&app, &request)
+                                        && !launch_token(&request)
+                                            .is_some_and(|token| same_secret(token, &app.token))
+                                    {
+                                        return;
+                                    }
+                                    Some(request)
+                                } else {
+                                    None
+                                };
+                                serve(&app, stream, until, prepared).ok();
                             })
                         {
                             eprintln!("hoardmap: connection thread failed: {error}");
@@ -677,9 +761,31 @@ fn has_token(app: &App, request: &Request) -> bool {
     })
 }
 
-fn serve(app: &Arc<App>, mut stream: TcpStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
-    let request = match read_request(&stream) {
+fn launch_token(request: &Request) -> Option<&str> {
+    if request.path != "/" {
+        return None;
+    }
+    request
+        .query
+        .split('&')
+        .find_map(|part| part.strip_prefix("token="))
+}
+
+fn serve(
+    app: &Arc<App>,
+    mut stream: TcpStream,
+    until: Instant,
+    prepared: Option<Request>,
+) -> io::Result<()> {
+    stream.set_write_timeout(Some(READ_TIMEOUT))?;
+    let request = match prepared {
+        Some(request) => Ok(Some(request)),
+        None => read_request(Deadline {
+            stream: &stream,
+            until,
+        }),
+    };
+    let request = match request {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
         Err(status) => {
@@ -702,12 +808,7 @@ fn route(app: &Arc<App>, request: &Request) -> Response {
     }
     // The address hoardmap opened: keep the token as a cookie and drop it from the
     // address bar and history.
-    if request.path == "/"
-        && let Some(given) = request
-            .query
-            .split('&')
-            .find_map(|p| p.strip_prefix("token="))
-    {
+    if let Some(given) = launch_token(request) {
         if !same_secret(given, &app.token) {
             return Response::text(403, NO_TOKEN);
         }
@@ -818,15 +919,12 @@ fn read_request(stream: impl Read) -> Result<Option<Request>, u16> {
 /// Half-close, then discard what arrives until the client closes, within limits.
 fn drain(stream: &mut TcpStream) -> io::Result<()> {
     stream.shutdown(Shutdown::Write)?;
-    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let mut sink = [0u8; 8192];
-    let mut left = 16 * MAX_BODY_BYTES;
-    while left > 0 {
-        match stream.read(&mut sink) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => left = left.saturating_sub(n),
-        }
+    let mut reader = Deadline {
+        stream,
+        until: Instant::now() + DRAIN_TIMEOUT,
     }
+    .take((16 * MAX_BODY_BYTES) as u64);
+    io::copy(&mut reader, &mut io::sink()).ok();
     Ok(())
 }
 
@@ -919,6 +1017,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_default_scan_uses_the_idle_start_folder_or_reports_none() {
+        let app = Arc::new(App::new(0, false));
+        assert_eq!(app.start_scan(None).unwrap_err(), "no folder to scan");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        *app.start.lock().unwrap() = Some(path.clone());
+        app.start_scan(None).unwrap();
+        assert_eq!(app.status()["path"], lossy(&path));
+    }
+
+    #[test]
+    fn a_later_folder_request_wins_while_the_first_scan_is_being_prepared() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for finder in [true, false] {
+            let app = Arc::new(App::new(0, false));
+            *app.start.lock().unwrap() = Some(root.join("web"));
+            // HTTP scan A has registered and is paused before filesystem validation.
+            let first = app.next_folder_request(true);
+            if finder {
+                app.open_folder(root.join("assets")).unwrap();
+            } else {
+                app.start_scan(Some(root.join("assets"))).unwrap();
+            }
+            let end = Instant::now() + Duration::from_secs(5);
+            while app.status()["state"] != "done" {
+                assert!(Instant::now() < end);
+                thread::sleep(Duration::from_millis(10));
+            }
+            app.start_scan_for(Some(root.join("web")), first, false)
+                .unwrap();
+            assert_eq!(app.status()["path"], lossy(&root.join("assets")));
+        }
+    }
+
+    #[test]
+    fn trickling_during_drain_cannot_extend_its_deadline() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let writer = thread::spawn(move || {
+            while started.elapsed() < Duration::from_secs(2) {
+                if peer.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+        drain(&mut stream).unwrap();
+        let elapsed = started.elapsed();
+        drop(stream);
+        writer.join().unwrap();
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "drained for {elapsed:?}"
+        );
+    }
+
+    #[test]
     fn request_head_reads_stop_at_the_limit_before_buffering() {
         for prefix in ["GET /", "GET / HTTP/1.1\r\nX: "] {
             let mut input = io::Cursor::new(format!("{prefix}{}", "x".repeat(1024 * 1024)));
@@ -993,8 +1149,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let starting = app.clone();
         let worker = thread::spawn(move || {
-            tx.send(starting.start_scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")))
-                .unwrap();
+            tx.send(starting.start_scan(Some(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+            )))
+            .unwrap();
         });
         let result = rx.recv_timeout(Duration::from_secs(2));
         drop(state);

@@ -837,7 +837,7 @@ fn a_folder_from_finder_waits_for_the_start_screen_or_replaces_the_scan() {
     assert_eq!(status()["path"], lossy(&second.root));
 
     // After a scan: it replaces it.
-    app.start_scan(first.root.clone()).unwrap();
+    app.start_scan(Some(first.root.clone())).unwrap();
     app.open_folder(second.root.clone()).unwrap();
     let end = Instant::now() + Duration::from_secs(10);
     while !(status()["state"] == "done" && status()["path"] == lossy(&second.root)) {
@@ -950,7 +950,122 @@ fn a_connection_that_sends_nothing_is_closed_after_the_read_timeout() {
 }
 
 #[test]
-fn stopping_one_scan_then_starting_another_keeps_the_second_folders_disk_totals() {
+fn trickling_a_head_or_body_cannot_extend_the_request_deadline() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let fx = fixture();
+    let server = start_done(&fx);
+    for prefix in [
+        "GET / HTTP/1.1\r\nX: ".to_string(),
+        format!(
+            "POST /api/scan HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Content-Length: 1024\r\n\r\n",
+            server.port,
+            server.cookie()
+        ),
+    ] {
+        let mut stream = server.connect();
+        stream
+            .set_read_timeout(Some(READ_TIMEOUT + Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(prefix.as_bytes()).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let stopped = AtomicBool::new(false);
+        let started = Instant::now();
+        let mut response = Vec::new();
+        let result = thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stopped.load(Ordering::Relaxed) && started.elapsed() < READ_TIMEOUT * 3 {
+                    if writer.write_all(b"x").is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
+            let result = stream.read_to_end(&mut response);
+            stopped.store(true, Ordering::Relaxed);
+            result
+        });
+        result.unwrap();
+        assert_eq!(common::parse_response(&response).0, 400);
+        assert!(started.elapsed() < READ_TIMEOUT + Duration::from_secs(1));
+    }
+}
+
+#[test]
+fn authenticated_requests_answer_while_hostile_clients_keep_reconnecting() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut hostile: Vec<_> = (0..MAX_CONNECTIONS)
+        .map(|_| {
+            let mut stream = server.connect();
+            stream.write_all(b"GET / HTTP/1.1\r\nX: ").unwrap();
+            stream.set_nonblocking(true).unwrap();
+            stream
+        })
+        .collect();
+    let stopped = AtomicBool::new(false);
+    let reconnects = AtomicUsize::new(0);
+    let started = Instant::now();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) && started.elapsed() < READ_TIMEOUT * 4 {
+                for stream in &mut hostile {
+                    let closed = stream.read(&mut [0; 4096]).is_ok_and(|n| n == 0)
+                        || stream.write_all(b"x").is_err();
+                    if closed
+                        && let Ok(next) = TcpStream::connect_timeout(
+                            &([127, 0, 0, 1], server.port).into(),
+                            Duration::from_millis(100),
+                        )
+                    {
+                        next.set_nonblocking(true).unwrap();
+                        *stream = next;
+                        reconnects.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let result = std::panic::catch_unwind(|| {
+            for _ in 0..6 {
+                assert_eq!(server.get("/").0, 200);
+                thread::sleep(Duration::from_millis(500));
+            }
+            let port = server.port;
+            assert_eq!(
+                server
+                    .raw(&format!(
+                        "GET /?token={} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n",
+                        server.token
+                    ))
+                    .0,
+                303
+            );
+        });
+        stopped.store(true, Ordering::Relaxed);
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
+    });
+    assert!(reconnects.load(Ordering::Relaxed) > 0);
+}
+
+#[test]
+fn a_scan_without_a_path_rescans_the_last_folder() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    assert_eq!(post_json(&server, "/api/scan", r#"{"path":null}"#).0, 400);
+    std::fs::write(fx.root.join("new-file"), b"new bytes").unwrap();
+    assert_eq!(post_json(&server, "/api/scan", "{}").0, 202);
+    let status = server.wait_for("done", Duration::from_secs(5));
+    assert_eq!(status["path"], lossy(&fx.root));
+    assert_eq!(status["bytes"], fx.total_bytes() + 9);
+}
+
+#[test]
+fn a_stopped_scan_can_be_followed_by_a_scan_of_another_folder() {
     let (first, second) = (fixture(), fixture());
     for i in 0..20_000 {
         std::fs::write(first.root.join("a").join(format!("entry-{i}")), []).unwrap();
@@ -968,10 +1083,7 @@ fn stopping_one_scan_then_starting_another_keeps_the_second_folders_disk_totals(
     assert_eq!(status["path"], lossy(&second.root));
     assert_eq!(status["disk"]["total"], total);
     assert_eq!(status["bytes"], second.total_bytes());
-    thread::sleep(Duration::from_secs(2));
-    let later = server.status();
-    assert_eq!(later["path"], status["path"]);
-    assert_eq!(later["disk"], status["disk"]);
+    // Late completion with different disk totals is covered by the server unit test.
 }
 
 #[test]
