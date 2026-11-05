@@ -8,7 +8,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -29,6 +29,10 @@ const LOGO_SVG: &str = include_str!("../assets/hoardmap.svg");
 
 /// A request line plus headers longer than this is refused with 431.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+/// Includes event streams; well above the page's concurrent requests.
+pub const MAX_CONNECTIONS: usize = 64;
+/// Local requests have at most 64 KiB to send; idle readers release their slot.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// The answer to a request without the launch token.
 const NO_TOKEN: &str =
     "This address is from another launch. Open the one hoardmap printed, or reopen the app.\n";
@@ -131,10 +135,6 @@ impl App {
         }
     }
 
-    fn read_disk(&self, path: &Path) {
-        *self.disk.lock().unwrap() = disk(path);
-    }
-
     /// The `/api/status` document for the current state, with the size and free space
     /// of the volume the folder is on.
     pub fn status(&self) -> serde_json::Value {
@@ -225,20 +225,30 @@ impl App {
             .send("status", &self.status_of(&state).to_string());
     }
 
+    fn subscribe_status(&self) -> (Sender<Signal>, Receiver<Signal>) {
+        let state = self.state.lock().unwrap();
+        self.events.subscribe(format!(
+            "event: status\ndata: {}\n\n",
+            self.status_of(&state)
+        ))
+    }
+
     /// Starts scanning `path` on its own thread, with a ticker that sends the status
     /// every 250 ms until the scan ends. Refused while a scan runs or when `path` is not
     /// a directory.
     pub fn start_scan(self: &Arc<App>, path: PathBuf) -> Result<(), String> {
         let progress = Arc::new(Progress::default());
         let started = Instant::now();
+        if !path.is_dir() {
+            return Err(format!("{} is not a directory", path.display()));
+        }
+        let disk = disk(&path);
         {
             let mut state = self.state.lock().unwrap();
             if matches!(*state, State::Scanning { .. }) {
                 return Err(SCAN_RUNNING.to_string());
             }
-            if !path.is_dir() {
-                return Err(format!("{} is not a directory", path.display()));
-            }
+            *self.disk.lock().unwrap() = disk;
             *state = State::Scanning {
                 path: path.clone(),
                 progress: progress.clone(),
@@ -246,7 +256,6 @@ impl App {
                 live: None,
             };
         }
-        self.read_disk(&path);
         self.notify_status();
         let app = self.clone();
         let ticker = progress.clone();
@@ -273,19 +282,21 @@ impl App {
                 error: error.to_string(),
             },
         };
-        self.read_disk(&path_for_disk);
-        self.replace_scan(progress, next);
+        let disk = disk(&path_for_disk);
+        self.update_scan(progress, |state| {
+            *self.disk.lock().unwrap() = disk;
+            *state = next;
+        });
     }
 
-    /// Puts `next` in place of the scan `progress` belongs to; false when that scan is
-    /// no longer the current state, which is then left alone.
-    fn replace_scan(&self, progress: &Arc<Progress>, next: State) -> bool {
+    /// Updates only the current scan, including any disk totals belonging to it.
+    fn update_scan(&self, progress: &Arc<Progress>, update: impl FnOnce(&mut State)) -> bool {
         {
             let mut state = self.state.lock().unwrap();
             if !matches!(&*state, State::Scanning { progress: p, .. } if Arc::ptr_eq(p, progress)) {
                 return false;
             }
-            *state = next;
+            update(&mut state);
         }
         self.notify_status();
         true
@@ -335,17 +346,15 @@ impl App {
             let finished = progress.finished.lock().unwrap().clone();
             let mut tree = scan::partial(&lossy(&path), &finished);
             tree.clone_aware = progress.clone_aware.load(AtomicOrdering::Relaxed);
-            app.replace_scan(
-                &progress,
-                State::Done {
-                    path,
-                    colours: Colours::new(&tree),
-                    tree: Arc::new(tree),
-                    duration: started.elapsed(),
-                    stopped: true,
-                    preview: true,
-                },
-            );
+            let next = State::Done {
+                path,
+                colours: Colours::new(&tree),
+                tree: Arc::new(tree),
+                duration: started.elapsed(),
+                stopped: true,
+                preview: true,
+            };
+            app.update_scan(&progress, |state| *state = next);
         });
         Ok(())
     }
@@ -365,7 +374,7 @@ impl App {
             if ticks % LIVE_EVERY == 0 && !path.exists() {
                 // An unplugged drive: end now rather than wait on reads that may never return.
                 progress.stop.store(true, AtomicOrdering::Relaxed);
-                self.replace_scan(progress, gone(path));
+                self.update_scan(progress, |state| *state = gone(path));
                 return;
             }
             if ticks % LIVE_EVERY == 0 {
@@ -467,8 +476,9 @@ impl Broadcaster {
             .retain(|tx| tx.send(Signal::Event(text.clone())).is_ok());
     }
 
-    fn subscribe(&self) -> (Sender<Signal>, Receiver<Signal>) {
+    fn subscribe(&self, initial: String) -> (Sender<Signal>, Receiver<Signal>) {
         let (tx, rx) = mpsc::channel();
+        tx.send(Signal::Event(initial)).unwrap();
         self.subscribers.lock().unwrap().push(tx.clone());
         (tx, rx)
     }
@@ -565,6 +575,14 @@ pub struct Spawned {
     pub app: Arc<App>,
 }
 
+struct Connection(Arc<AtomicUsize>);
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, AtomicOrdering::Relaxed);
+    }
+}
+
 /// Binds 127.0.0.1, starts the scan of `config.path` and serves on a background
 /// thread.
 pub fn spawn(config: Config) -> io::Result<Spawned> {
@@ -573,7 +591,7 @@ pub fn spawn(config: Config) -> io::Result<Spawned> {
     let port = listener.local_addr()?.port();
     let app = App::new(port, config.native);
     *app.start.lock().unwrap() = Some(config.path.clone());
-    app.read_disk(&config.path);
+    *app.disk.lock().unwrap() = disk(&config.path);
     let url = page_url(port, &app.token);
     let app = Arc::new(app);
     if config.scan_at_start
@@ -586,20 +604,36 @@ pub fn spawn(config: Config) -> io::Result<Spawned> {
         };
     }
     let served = app.clone();
-    thread::spawn(move || {
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    let app = app.clone();
-                    thread::spawn(move || serve(&app, stream).ok());
-                }
-                Err(error) => {
-                    eprintln!("hoardmap: accept failed: {error}");
-                    thread::sleep(Duration::from_millis(100));
+    thread::Builder::new()
+        .name("http-listener".into())
+        .spawn(move || {
+            let active = Arc::new(AtomicUsize::new(0));
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if active.load(AtomicOrdering::Relaxed) >= MAX_CONNECTIONS {
+                            continue;
+                        }
+                        active.fetch_add(1, AtomicOrdering::Relaxed);
+                        let connection = Connection(active.clone());
+                        let app = app.clone();
+                        if let Err(error) = thread::Builder::new()
+                            .name("http-request".into())
+                            .spawn(move || {
+                                let _connection = connection;
+                                serve(&app, stream).ok();
+                            })
+                        {
+                            eprintln!("hoardmap: connection thread failed: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("hoardmap: accept failed: {error}");
+                        thread::sleep(Duration::from_millis(100));
+                    }
                 }
             }
-        }
-    });
+        })?;
     Ok(Spawned {
         port,
         url,
@@ -644,6 +678,7 @@ fn has_token(app: &App, request: &Request) -> bool {
 }
 
 fn serve(app: &Arc<App>, mut stream: TcpStream) -> io::Result<()> {
+    stream.set_read_timeout(Some(READ_TIMEOUT))?;
     let request = match read_request(&stream) {
         Ok(Some(request)) => request,
         Ok(None) => return Ok(()),
@@ -718,12 +753,16 @@ fn host_allowed(host: Option<&str>, port: u16) -> bool {
 
 /// Reads one request. `Ok(None)` when the client closed without sending one; `Err` is
 /// the status code to answer with.
-fn read_request(stream: &TcpStream) -> Result<Option<Request>, u16> {
-    let mut reader = BufReader::new(stream);
+fn read_request(stream: impl Read) -> Result<Option<Request>, u16> {
+    // Limit the source before buffering, including BufReader's read-ahead.
+    let mut reader = BufReader::new(stream.take(MAX_HEAD_BYTES as u64));
     let mut line = String::new();
     let mut total = reader.read_line(&mut line).map_err(|_| 400u16)?;
     if total == 0 {
         return Ok(None);
+    }
+    if !line.ends_with('\n') {
+        return Err(if total == MAX_HEAD_BYTES { 431 } else { 400 });
     }
     let mut parts = line.trim_end().split(' ');
     let (method, target) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -736,12 +775,9 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, u16> {
     loop {
         line.clear();
         let n = reader.read_line(&mut line).map_err(|_| 400u16)?;
-        if n == 0 {
-            return Err(400);
-        }
         total += n;
-        if total > MAX_HEAD_BYTES {
-            return Err(431);
+        if n == 0 || !line.ends_with('\n') {
+            return Err(if total == MAX_HEAD_BYTES { 431 } else { 400 });
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
@@ -772,6 +808,7 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, u16> {
         return Err(413);
     }
     request.body = vec![0; length];
+    reader.get_mut().set_limit(length as u64);
     reader.read_exact(&mut request.body).map_err(|_| 400u16)?;
     Ok(Some(request))
 }
@@ -819,27 +856,27 @@ fn head(response: &Response, framing: &str) -> Vec<u8> {
 }
 
 fn serve_events(app: &Arc<App>, mut stream: TcpStream, response: &Response) -> io::Result<()> {
-    let (sender, events) = app.events.subscribe();
+    let (sender, events) = app.subscribe_status();
+    stream.set_read_timeout(None)?;
     let mut watcher = stream.try_clone()?;
-    thread::spawn(move || {
-        let mut sink = [0u8; 1024];
-        while matches!(watcher.read(&mut sink), Ok(n) if n > 0) {}
-        sender.send(Signal::Gone).ok();
-    });
-    let result = stream_events(app, &mut stream, response, events);
+    thread::Builder::new()
+        .name("http-events".into())
+        .spawn(move || {
+            let mut sink = [0u8; 1024];
+            while matches!(watcher.read(&mut sink), Ok(n) if n > 0) {}
+            sender.send(Signal::Gone).ok();
+        })?;
+    let result = stream_events(&mut stream, response, events);
     stream.shutdown(Shutdown::Both).ok();
     result
 }
 
 fn stream_events(
-    app: &App,
     stream: &mut TcpStream,
     response: &Response,
     events: Receiver<Signal>,
 ) -> io::Result<()> {
     stream.write_all(&head(response, "Transfer-Encoding: chunked"))?;
-    let status = format!("event: status\ndata: {}\n\n", app.status());
-    write_chunk(stream, &status)?;
     loop {
         match events.recv_timeout(KEEPALIVE) {
             Ok(Signal::Event(text)) => write_chunk(stream, &text)?,
@@ -880,6 +917,123 @@ fn reason(status: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_head_reads_stop_at_the_limit_before_buffering() {
+        for prefix in ["GET /", "GET / HTTP/1.1\r\nX: "] {
+            let mut input = io::Cursor::new(format!("{prefix}{}", "x".repeat(1024 * 1024)));
+            assert!(matches!(read_request(&mut input), Err(431)));
+            assert_eq!(input.position(), MAX_HEAD_BYTES as u64);
+        }
+        let mut input = io::Cursor::new(format!(
+            "GET / HTTP/1.1\r\n{}",
+            "X: short\r\n".repeat(MAX_HEAD_BYTES)
+        ));
+        assert!(matches!(read_request(&mut input), Err(431)));
+        assert_eq!(input.position(), MAX_HEAD_BYTES as u64);
+    }
+
+    #[test]
+    fn an_exact_limit_head_still_reads_its_body_and_truncated_heads_fail() {
+        let prefix = "POST / HTTP/1.1\r\nContent-Length: 4\r\nX: ";
+        let padding = "x".repeat(MAX_HEAD_BYTES - prefix.len() - 4);
+        let request = format!("{prefix}{padding}\r\n\r\nbody");
+        assert_eq!(
+            read_request(request.as_bytes()).unwrap().unwrap().body,
+            b"body"
+        );
+        let oversized = format!("{prefix}{padding}x\r\n\r\nbody");
+        assert!(matches!(read_request(oversized.as_bytes()), Err(431)));
+        for head in [
+            "GET / HTTP/1.1",
+            "GET / HTTP/1.1\r\n",
+            "GET / HTTP/1.1\r\nX: a",
+        ] {
+            assert!(
+                matches!(read_request(head.as_bytes()), Err(400)),
+                "{head:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_scan_finishes_without_changing_the_current_disk_or_state() {
+        let app = App::new(0, false);
+        let old = Arc::new(Progress::default());
+        old.stop.store(true, AtomicOrdering::Relaxed);
+        let current = Arc::new(Progress::default());
+        *app.state.lock().unwrap() = State::Scanning {
+            path: PathBuf::from("replacement"),
+            progress: current.clone(),
+            started: Instant::now(),
+            live: None,
+        };
+        *app.disk.lock().unwrap() = Some((123, 45));
+        app.finish_scan(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("assets"),
+            &old,
+            Instant::now(),
+        );
+        assert_eq!(*app.disk.lock().unwrap(), Some((123, 45)));
+        assert!(
+            matches!(&*app.state.lock().unwrap(), State::Scanning { progress, .. } if Arc::ptr_eq(progress, &current))
+        );
+    }
+
+    #[test]
+    fn folder_validation_does_not_wait_for_the_state_lock() {
+        let app = Arc::new(App::new(0, false));
+        let mut state = app.state.lock().unwrap();
+        *state = State::Scanning {
+            path: PathBuf::from("current"),
+            progress: Arc::new(Progress::default()),
+            started: Instant::now(),
+            live: None,
+        };
+        let (tx, rx) = mpsc::channel();
+        let starting = app.clone();
+        let worker = thread::spawn(move || {
+            tx.send(starting.start_scan(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")))
+                .unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        drop(state);
+        worker.join().unwrap();
+        assert!(matches!(result, Ok(Err(error)) if error.ends_with("is not a directory")));
+    }
+
+    #[test]
+    fn event_snapshots_precede_later_statuses_under_the_state_lock() {
+        let app = Arc::new(App::new(0, false));
+        let mut state = app.state.lock().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let subscribing = app.clone();
+        let subscriber = thread::spawn(move || tx.send(subscribing.subscribe_status()).unwrap());
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        *state = State::Failed {
+            path: PathBuf::from("first"),
+            error: "first".into(),
+        };
+        drop(state);
+        let (_sender, events) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        subscriber.join().unwrap();
+        *app.state.lock().unwrap() = State::Failed {
+            path: PathBuf::from("second"),
+            error: "second".into(),
+        };
+        app.notify_status();
+        for expected in ["first", "second"] {
+            let Signal::Event(text) = events.recv().unwrap() else {
+                panic!("stream closed")
+            };
+            let data = text.strip_prefix("event: status\ndata: ").unwrap().trim();
+            let status: serde_json::Value = serde_json::from_str(data).unwrap();
+            assert_eq!(status["path"], expected);
+        }
+    }
 
     #[test]
     fn tokens_are_long_random_and_compared_exactly() {

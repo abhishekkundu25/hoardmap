@@ -3,13 +3,14 @@
 
 mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use common::{Fixture, OpenStub, Server, assert_idle, fixture, header};
+use hoardmap::server::{MAX_CONNECTIONS, READ_TIMEOUT};
 use serde_json::Value;
 
 const JSON: Option<&str> = Some("application/json");
@@ -838,4 +839,168 @@ fn a_folder_from_finder_waits_for_the_start_screen_or_replaces_the_scan() {
         thread::sleep(Duration::from_millis(20));
     }
     assert!(app.open_folder(second.root.join("a/big.bin")).is_err());
+}
+
+#[test]
+fn megabyte_request_lines_and_headers_are_refused_without_unbounded_memory() {
+    fn resident_bytes(server: &Server) -> u64 {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &server.pid().to_string()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap()
+            * 1024
+    }
+
+    let fx = fixture();
+    let server = start_done(&fx);
+    let before = resident_bytes(&server);
+    for prefix in ["GET /", "GET / HTTP/1.1\r\nX-Huge: "] {
+        for ending in ["", "\r\n\r\n"] {
+            let request = format!("{prefix}{}{ending}", "x".repeat(1024 * 1024));
+            let mut stream = server.connect();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut response = BufReader::new(stream);
+            let mut status_line = String::new();
+            response.read_line(&mut status_line).unwrap();
+            assert!(
+                status_line.starts_with("HTTP/1.1 431 ")
+                    || status_line.starts_with("HTTP/1.1 400 "),
+                "{status_line:?}"
+            );
+            assert!(resident_bytes(&server).saturating_sub(before) < 4 * 1024 * 1024);
+            response.get_ref().shutdown(Shutdown::Write).unwrap();
+            response.read_to_end(&mut Vec::new()).unwrap();
+        }
+    }
+    assert_eq!(server.get("/").0, 200);
+}
+
+#[test]
+fn idle_connections_past_the_cap_release_slots_and_the_page_still_answers() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut idle: Vec<_> = (0..MAX_CONNECTIONS + 8).map(|_| server.connect()).collect();
+    let mut refused = idle.pop().unwrap();
+    refused
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut byte = [0];
+    assert!(matches!(refused.read(&mut byte), Ok(0)));
+
+    let deadline = Instant::now() + READ_TIMEOUT + Duration::from_secs(3);
+    loop {
+        let mut page = server.connect();
+        page.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let sent = write!(
+            page,
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}\r\n",
+            server.port,
+            server.cookie()
+        );
+        let mut response = Vec::new();
+        if sent.is_ok() && page.read_to_end(&mut response).is_ok() && !response.is_empty() {
+            assert_eq!(common::parse_response(&response).0, 200);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "idle connections kept every slot"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(idle);
+    assert_eq!(server.get("/app.js").0, 200);
+}
+
+#[test]
+fn a_connection_that_sends_nothing_is_closed_after_the_read_timeout() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut stream = server.connect();
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT + Duration::from_secs(2)))
+        .unwrap();
+    let started = Instant::now();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    assert_eq!(common::parse_response(&response).0, 400);
+    assert!(started.elapsed() >= READ_TIMEOUT / 2);
+    assert!(started.elapsed() < READ_TIMEOUT + Duration::from_secs(2));
+    assert_eq!(server.get("/api/status").0, 200);
+}
+
+#[test]
+fn stopping_one_scan_then_starting_another_keeps_the_second_folders_disk_totals() {
+    let (first, second) = (fixture(), fixture());
+    for i in 0..20_000 {
+        std::fs::write(first.root.join("a").join(format!("entry-{i}")), []).unwrap();
+    }
+    let server = start_done(&second);
+    let scan = serde_json::json!({"path": first.root}).to_string();
+    assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
+    assert_eq!(post_json(&server, "/api/scan/stop", "{}").0, 202);
+    let stopped = server.wait_for("done", Duration::from_secs(5));
+    assert_eq!(stopped["stopped"], true);
+    let scan = serde_json::json!({"path": second.root}).to_string();
+    assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
+    let status = server.wait_for("done", Duration::from_secs(5));
+    let total = hoardmap::server::disk(&second.root).unwrap().0;
+    assert_eq!(status["path"], lossy(&second.root));
+    assert_eq!(status["disk"]["total"], total);
+    assert_eq!(status["bytes"], second.total_bytes());
+    thread::sleep(Duration::from_secs(2));
+    let later = server.status();
+    assert_eq!(later["path"], status["path"]);
+    assert_eq!(later["disk"], status["disk"]);
+}
+
+#[test]
+fn event_streams_outlive_the_request_timeout_and_never_go_back_after_done() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut stream = open_events_raw(&server);
+    let mut text = String::new();
+    read_until(&mut stream, &mut text, 0, "\n\n");
+    thread::sleep(READ_TIMEOUT + Duration::from_millis(250));
+    let from = text.len();
+    let scan = serde_json::json!({"path": fx.root}).to_string();
+    assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
+    read_until(&mut stream, &mut text, from, "\"state\":\"done\"");
+    let done = from + text[from..].find("\"state\":\"done\"").unwrap();
+    read_until(&mut stream, &mut text, done, "\n\n");
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut tail = Vec::new();
+    let error = stream.read_to_end(&mut tail).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    text.push_str(&String::from_utf8(tail).unwrap());
+    let statuses: Vec<Value> = text[from..]
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect();
+    assert_eq!(statuses.first().unwrap()["state"], "scanning");
+    let done = statuses
+        .iter()
+        .position(|status| status["state"] == "done")
+        .unwrap();
+    assert!(
+        statuses[done..]
+            .iter()
+            .all(|status| status["state"] == "done")
+    );
 }
