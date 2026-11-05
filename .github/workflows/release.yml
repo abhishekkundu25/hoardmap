@@ -71,6 +71,11 @@ jobs:
             exit 0
           fi
           version=${GITHUB_REF_NAME#v}
+          release=${version%%+*}
+          if [[ "$release" == *-* ]]; then
+            echo "::notice::Skipping Hoardmap $version; the tap only publishes stable versions"
+            exit 0
+          fi
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
           app=$(awk '$2 == "Hoardmap.zip" { print $1 }' SHA256SUMS)
           test -n "$app"
@@ -87,8 +92,9 @@ jobs:
           if [ -f tap/Casks/hoardmap.rb ]; then
             current=$(sed -n 's/^  version "\(.*\)"/\1/p' tap/Casks/hoardmap.rb)
             test -n "$current"
-            oldest=$(printf '%s\n' "$current" "$version" | sort -V | head -1)
-            if [ "$oldest" != "$current" ]; then
+            current_release=${current%%[-+]*}
+            oldest=$(printf '%s\n' "$current_release" "$release" | sort -V | head -1)
+            if [ "$oldest" != "$current_release" ]; then
               echo "::notice::Skipping Hoardmap $version; the tap already has $current"
               exit 0
             fi
