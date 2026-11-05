@@ -2,6 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::Write;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -110,6 +111,7 @@ fn root_totals_and_order() {
     let fx = Fixture::build();
     let (tree, _) = scan_fixture(&fx);
     let root = tree.root();
+    assert!(tree.raw_names.is_empty());
     assert_eq!(root.name, fx.root.to_string_lossy());
     assert_eq!(root.parent, None);
     assert_eq!(root.kind, Kind::Dir);
@@ -299,7 +301,8 @@ fn a_preview_keeps_its_ids_as_the_scan_goes_on() {
 #[test]
 fn a_preview_adds_up_folders_still_being_read() {
     let file = |path: &[&str], size| hoardmap::scan::Finished {
-        path: path.iter().map(|s| s.to_string()).collect(),
+        path: path.iter().map(|s| (*s).into()).collect(),
+        raw_root: None,
         kind: Kind::File,
         size,
         physical: size,
@@ -547,17 +550,23 @@ fn clones_are_counted_once() {
 }
 
 fn same_tree_on_one_thread_and_eight(root: &Path) {
-    let scan = |threads| {
-        scan_with_threads(root, &Progress::default(), Method::default(), threads).expect("scan")
-    };
-    let (one, eight) = (scan(1), scan(8));
-    assert_eq!(one.error_count, eight.error_count);
-    let figures = |t: &Tree| (t.clone_aware, t.clone_counted_once);
-    assert_eq!(figures(&one), figures(&eight));
-    let (a, b) = (fingerprint(&one), fingerprint(&eight));
-    assert_eq!(a.len(), b.len(), "node counts differ");
-    for (x, y) in a.iter().zip(&b) {
-        assert_eq!(x, y);
+    for method in [
+        Method::Portable,
+        #[cfg(target_os = "macos")]
+        Method::Bulk,
+    ] {
+        let scan =
+            |threads| scan_with_threads(root, &Progress::default(), method, threads).expect("scan");
+        let (one, eight) = (scan(1), scan(8));
+        assert_eq!(one.error_count, eight.error_count);
+        assert_eq!(one.raw_names, eight.raw_names);
+        let figures = |t: &Tree| (t.clone_aware, t.clone_counted_once);
+        assert_eq!(figures(&one), figures(&eight));
+        let (a, b) = (fingerprint(&one), fingerprint(&eight));
+        assert_eq!(a.len(), b.len(), "node counts differ");
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x, y);
+        }
     }
 }
 
@@ -596,4 +605,172 @@ fn a_hard_link_can_reorder_folders() {
     assert_eq!(names(&tree, ROOT), ["x", "y", "z"]);
     let size = |name| tree.nodes[child(&tree, ROOT, name) as usize].size;
     assert_eq!((size("x"), size("y"), size("z")), (100, 60, 0));
+}
+
+#[test]
+fn non_utf8_names_keep_their_subtrees_and_real_paths() {
+    use std::ffi::OsString;
+
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("hoardmap-raw-names-{}", std::process::id())));
+    fs::create_dir(&scratch.0).unwrap();
+    let root = scratch.0.join(OsString::from_vec(b"root\xff".to_vec()));
+    if let Err(error) = fs::create_dir(&root) {
+        if matches!(error.raw_os_error(), Some(libc::EILSEQ | libc::EINVAL)) {
+            println!("skipped: temp file system rejects non-UTF-8 names: {error}");
+            return;
+        }
+        panic!("create non-UTF-8 fixture: {error}");
+    }
+    let raw_name = OsString::from_vec(b"folder\xff".to_vec());
+    let display_name = raw_name.to_string_lossy().into_owned();
+    fs::create_dir(root.join(&raw_name)).unwrap();
+    fs::create_dir(root.join(&display_name)).unwrap();
+    let raw_file = OsString::from_vec(b"file\xfe".to_vec());
+    write(&root.join(&raw_name).join(&raw_file), 17);
+    write(&root.join(&display_name).join("other"), 9);
+    for method in [
+        Method::Portable,
+        #[cfg(target_os = "macos")]
+        Method::Bulk,
+    ] {
+        let tree = scan_with_threads(&root, &Progress::default(), method, 1).unwrap();
+        assert_eq!(tree.error_count, 0, "{method:?}");
+        assert_eq!(
+            (tree.root().size, tree.root().files, tree.root().dirs),
+            (26, 2, 2)
+        );
+        assert_eq!(tree.path(ROOT), root);
+        let id = tree
+            .nodes
+            .iter()
+            .position(|node| node.size == 17 && node.kind == Kind::File)
+            .unwrap();
+        assert_eq!(
+            tree.path(id as NodeId),
+            root.join(&raw_name).join(&raw_file)
+        );
+        assert_eq!(tree.raw_names.len(), 3);
+    }
+    same_tree_on_one_thread_and_eight(&root);
+    #[cfg(target_os = "macos")]
+    {
+        let (bulk, portable) = both_ways(&root);
+        assert_same(fingerprint(&bulk), fingerprint(&portable));
+        assert_eq!(bulk.raw_names, portable.raw_names);
+    }
+}
+
+#[test]
+fn stop_interrupts_listing_one_folder_with_200k_files() {
+    const FILES: u64 = 200_000;
+    let root =
+        Scratch(std::env::temp_dir().join(format!("hoardmap-stop-wide-{}", std::process::id())));
+    fs::create_dir(&root.0).unwrap();
+    for index in 0..FILES {
+        File::create(root.0.join(format!("{index:06}"))).unwrap();
+    }
+    for method in [
+        Method::Portable,
+        #[cfg(target_os = "macos")]
+        Method::Bulk,
+    ] {
+        let progress = Progress::default();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| scan_with_threads(&root.0, &progress, method, 1));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while progress.files.load(Ordering::Relaxed) == 0
+                && !worker.is_finished()
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let listed = progress.files.load(Ordering::Relaxed);
+            let stopped = Instant::now();
+            progress.stop.store(true, Ordering::Relaxed);
+            let tree = worker.join().unwrap().unwrap();
+            let latency = stopped.elapsed();
+            println!("{method:?}: stopped in {latency:?}, requested after {listed}/{FILES} files");
+            assert!(
+                listed > 0 && listed < FILES,
+                "{method:?}: Stop must arrive during listing"
+            );
+            assert!(latency < Duration::from_secs(1), "{method:?}: {latency:?}");
+            assert!(
+                tree.root().files > 0,
+                "{method:?}: keep files already listed"
+            );
+            assert_eq!(
+                u64::from(tree.root().files),
+                progress.files.load(Ordering::Relaxed)
+            );
+            let preview = partial(root.0.to_str().unwrap(), &progress.finished.lock().unwrap());
+            assert_eq!(preview.root().files, tree.root().files);
+            assert!(u64::from(tree.root().files) < FILES, "{method:?}");
+            assert_eq!(tree.error_count, 0, "{method:?}");
+        });
+    }
+}
+
+#[test]
+fn deep_scan_under_a_256_descriptor_limit() {
+    const CHILD: &str = "HOARDMAP_TEST_LOW_NOFILE";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "deep_scan_under_a_256_descriptor_limit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    const DEPTH: u32 = 300;
+    const BRANCHES: u32 = 4;
+    let root = Scratch(std::env::temp_dir().join(format!("hoardmap-deep-{}", std::process::id())));
+    fs::create_dir(&root.0).unwrap();
+    for branch in 0..BRANCHES {
+        let mut dir = root.0.join(branch.to_string());
+        fs::create_dir(&dir).unwrap();
+        for _ in 0..DEPTH {
+            dir.push("d");
+            fs::create_dir(&dir).unwrap();
+        }
+        fs::write(dir.join("file"), b"data").unwrap();
+    }
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: the child changes only its own soft limit, retaining the hard limit.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()), 0);
+        let mut limit = limit.assume_init();
+        limit.rlim_cur = 256.min(limit.rlim_max);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+    }
+    for method in [
+        Method::Portable,
+        #[cfg(target_os = "macos")]
+        Method::Bulk,
+    ] {
+        for threads in [1, 64] {
+            let tree = scan_with_threads(&root.0, &Progress::default(), method, threads).unwrap();
+            assert_eq!(
+                tree.error_count, 0,
+                "{method:?}, {threads} threads: {:?}",
+                tree.errors
+            );
+            assert_eq!(
+                (tree.root().dirs, tree.root().files, tree.root().size),
+                (BRANCHES * (DEPTH + 1), BRANCHES, u64::from(BRANCHES) * 4)
+            );
+        }
+    }
 }

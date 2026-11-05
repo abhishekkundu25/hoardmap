@@ -11,7 +11,7 @@ use hoardmap::cli::{self, USAGE};
 const BUNDLE_ID: &str = "dev.hoardmap.app";
 
 fn main() -> ExitCode {
-    let path = match cli::parse(std::env::args().skip(1)) {
+    let path = match cli::parse(std::env::args_os().skip(1)) {
         Ok(path) => path,
         Err(cli::Error::Help) => {
             print!("{USAGE}");

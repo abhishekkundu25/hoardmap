@@ -20,20 +20,22 @@ pub const MAX_FOLDERS: usize = 500;
 /// How a rule recognises a folder, from names already in the tree.
 #[derive(Debug)]
 pub enum Matcher {
-    /// A folder called `name` that contains an entry called `child`.
+    /// A folder called `name` that contains a `child` of the given kind.
     ChildSentinel {
         name: &'static str,
         child: &'static str,
+        kind: Kind,
     },
-    /// A folder called `name` whose parent also contains an entry called `sibling`.
+    /// A folder called `name` whose parent contains a `sibling` of the given kind.
     SiblingSentinel {
         name: &'static str,
         sibling: &'static str,
+        kind: Kind,
     },
     /// A folder whose path ends in these names.
     PathSuffix(&'static [&'static str]),
-    /// A folder of any name that contains an entry called `child`.
-    AnyWithChild { child: &'static str },
+    /// A folder of any name that contains a `child` of the given kind.
+    AnyWithChild { child: &'static str, kind: Kind },
 }
 
 /// One kind of rebuildable folder.
@@ -58,9 +60,9 @@ pub struct Rule {
 
 const CHECKED: &str = "2026-10-30";
 
-/// The rules in match order: where two rules match one folder, the earlier one takes
-/// it. Rules for a named folder come before rules for a generic name (`build`, `dist`,
-/// `out`), and the cache tag rule, which matches any name, comes last.
+/// Tool-specific sentinels take precedence over package.json for generic output
+/// folders (`build`, `dist`, `out`), and named rules take precedence over a cache tag.
+/// Otherwise the first matching rule takes the folder.
 pub const RULES: &[Rule] = &[
     // Project folders, recognised by a file the tool keeps beside or inside them.
     Rule {
@@ -74,6 +76,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "node_modules",
             sibling: "package.json",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -87,6 +90,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::ChildSentinel {
             name: "target",
             child: "CACHEDIR.TAG",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -101,10 +105,12 @@ pub const RULES: &[Rule] = &[
             Matcher::ChildSentinel {
                 name: ".venv",
                 child: "pyvenv.cfg",
+                kind: Kind::File,
             },
             Matcher::ChildSentinel {
                 name: "venv",
                 child: "pyvenv.cfg",
+                kind: Kind::File,
             },
         ],
     },
@@ -119,6 +125,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: ".build",
             sibling: "Package.swift",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -133,18 +140,22 @@ pub const RULES: &[Rule] = &[
             Matcher::SiblingSentinel {
                 name: ".gradle",
                 sibling: "settings.gradle",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: ".gradle",
                 sibling: "settings.gradle.kts",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: ".gradle",
                 sibling: "build.gradle",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: ".gradle",
                 sibling: "build.gradle.kts",
+                kind: Kind::File,
             },
         ],
     },
@@ -155,15 +166,17 @@ pub const RULES: &[Rule] = &[
         why: "Gradle writes build output and the transient files it uses for incremental builds here; the next build writes them again.",
         source: "https://docs.gradle.org/current/userguide/directory_layout.html",
         checked: CHECKED,
-        caution: None,
+        caution: Some(GENERIC_CAUTION),
         matchers: &[
             Matcher::SiblingSentinel {
                 name: "build",
                 sibling: "build.gradle",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "build",
                 sibling: "build.gradle.kts",
+                kind: Kind::File,
             },
         ],
     },
@@ -178,6 +191,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: ".next",
             sibling: "package.json",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -191,6 +205,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: ".turbo",
             sibling: "package.json",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -204,6 +219,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: ".parcel-cache",
             sibling: "package.json",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -217,6 +233,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: ".dart_tool",
             sibling: "pubspec.yaml",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -240,6 +257,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::ChildSentinel {
             name: ".mypy_cache",
             child: "CACHEDIR.TAG",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -253,6 +271,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::ChildSentinel {
             name: ".pytest_cache",
             child: "CACHEDIR.TAG",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -266,6 +285,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::ChildSentinel {
             name: ".ruff_cache",
             child: "CACHEDIR.TAG",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -279,6 +299,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::ChildSentinel {
             name: ".nox",
             child: "CACHEDIR.TAG",
+            kind: Kind::File,
         }],
     },
     // Caches and downloads at fixed paths under the home folder.
@@ -656,7 +677,9 @@ pub const RULES: &[Rule] = &[
         why: "ollama pull downloads a model again.",
         source: "https://docs.ollama.com/faq",
         checked: CHECKED,
-        caution: Some(MODELS_CAUTION),
+        caution: Some(
+            "Models you made with ollama create do not download again, and models you downloaded are large to fetch again and may be withdrawn upstream.",
+        ),
         matchers: &[Matcher::PathSuffix(&[".ollama", "models"])],
     },
     Rule {
@@ -704,6 +727,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "pkgs",
             sibling: "conda-meta",
+            kind: Kind::Dir,
         }],
     },
     Rule {
@@ -785,6 +809,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "Pods",
             sibling: "Podfile.lock",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -798,6 +823,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "vendor",
             sibling: "composer.json",
+            kind: Kind::File,
         }],
     },
     // Generic names, only beside the project file that explains them.
@@ -812,6 +838,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "build",
             sibling: "pubspec.yaml",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -826,14 +853,17 @@ pub const RULES: &[Rule] = &[
             Matcher::SiblingSentinel {
                 name: "out",
                 sibling: "next.config.js",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "out",
                 sibling: "next.config.mjs",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "out",
                 sibling: "next.config.ts",
+                kind: Kind::File,
             },
         ],
     },
@@ -849,18 +879,22 @@ pub const RULES: &[Rule] = &[
             Matcher::SiblingSentinel {
                 name: "dist",
                 sibling: "vite.config.js",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "dist",
                 sibling: "vite.config.ts",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "dist",
                 sibling: "vite.config.mjs",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "dist",
                 sibling: "package.json",
+                kind: Kind::File,
             },
         ],
     },
@@ -875,6 +909,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "build",
             sibling: "package.json",
+            kind: Kind::File,
         }],
     },
     Rule {
@@ -891,10 +926,12 @@ pub const RULES: &[Rule] = &[
             Matcher::SiblingSentinel {
                 name: "dist",
                 sibling: "pyproject.toml",
+                kind: Kind::File,
             },
             Matcher::SiblingSentinel {
                 name: "dist",
                 sibling: "setup.py",
+                kind: Kind::File,
             },
         ],
     },
@@ -911,6 +948,7 @@ pub const RULES: &[Rule] = &[
         matchers: &[Matcher::SiblingSentinel {
             name: "build",
             sibling: "CMakeLists.txt",
+            kind: Kind::File,
         }],
     },
     // Any other folder its tool tagged as a cache. Last, so a named rule wins.
@@ -926,6 +964,7 @@ pub const RULES: &[Rule] = &[
         ),
         matchers: &[Matcher::AnyWithChild {
             child: "CACHEDIR.TAG",
+            kind: Kind::File,
         }],
     },
 ];
@@ -956,22 +995,40 @@ pub struct Folder {
 }
 
 impl Matcher {
+    /// Lower ranks carry stronger evidence: a tool's project file, then a generic
+    /// output beside package.json, then the cache tag that accepts any folder name.
+    fn priority(&self) -> u8 {
+        match self {
+            Matcher::SiblingSentinel {
+                name: "build" | "dist" | "out",
+                sibling: "package.json",
+                ..
+            } => 1,
+            Matcher::AnyWithChild { .. } => 2,
+            _ => 0,
+        }
+    }
+
     /// Whether the directory `id`, whose path ends in `path`, matches.
     fn matches(&self, tree: &Tree, id: NodeId, path: &[&str]) -> bool {
         let node = &tree.nodes[id as usize];
-        let has_child = |dir: NodeId, child: &str| {
-            tree.nodes[dir as usize]
-                .children
-                .iter()
-                .any(|&c| tree.nodes[c as usize].name == child)
+        let has_child = |dir: NodeId, child: &str, kind: Kind| {
+            tree.nodes[dir as usize].children.iter().any(|&c| {
+                let node = &tree.nodes[c as usize];
+                node.name == child && node.kind == kind
+            })
         };
         match *self {
-            Matcher::ChildSentinel { name, child } => node.name == name && has_child(id, child),
-            Matcher::SiblingSentinel { name, sibling } => {
-                node.name == name && node.parent.is_some_and(|p| has_child(p, sibling))
+            Matcher::ChildSentinel { name, child, kind } => {
+                node.name == name && has_child(id, child, kind)
             }
+            Matcher::SiblingSentinel {
+                name,
+                sibling,
+                kind,
+            } => node.name == name && node.parent.is_some_and(|p| has_child(p, sibling, kind)),
             Matcher::PathSuffix(suffix) => path.ends_with(suffix),
-            Matcher::AnyWithChild { child } => has_child(id, child),
+            Matcher::AnyWithChild { child, kind } => has_child(id, child, kind),
         }
     }
 }
@@ -1014,9 +1071,20 @@ pub fn groups(tree: &Tree, root: NodeId, mode: Mode) -> Vec<Group> {
             path.truncate(base + depth - 1);
             path.push(&node.name);
         }
-        let rule = RULES
-            .iter()
-            .position(|r| r.matchers.iter().any(|m| m.matches(tree, id, &path)));
+        let mut rule = None;
+        let mut priority = u8::MAX;
+        'rules: for (r, candidate) in RULES.iter().enumerate() {
+            for matcher in candidate.matchers {
+                let rank = matcher.priority();
+                if rank < priority && matcher.matches(tree, id, &path) {
+                    rule = Some(r);
+                    priority = rank;
+                    if rank == 0 {
+                        break 'rules;
+                    }
+                }
+            }
+        }
         match rule {
             Some(r) => found[r].push(Folder {
                 id,
@@ -1110,6 +1178,7 @@ mod tests {
             error_count: 0,
             clone_aware: false,
             clone_counted_once: 0,
+            raw_names: Default::default(),
         }
     }
 
@@ -1193,7 +1262,8 @@ mod tests {
         assert!(matches!(
             last.matchers,
             [Matcher::AnyWithChild {
-                child: "CACHEDIR.TAG"
+                child: "CACHEDIR.TAG",
+                kind: Kind::File,
             }]
         ));
         for rule in named {
@@ -1286,6 +1356,90 @@ mod tests {
                 ("python_bytecode", 2),
             ]
         );
+    }
+
+    #[test]
+    fn every_generic_output_pair_uses_the_most_specific_sentinel() {
+        let outputs: Vec<_> = RULES
+            .iter()
+            .flat_map(|rule| {
+                rule.matchers
+                    .iter()
+                    .filter_map(move |matcher| match matcher {
+                        Matcher::SiblingSentinel { name, sibling, .. }
+                            if ["build", "dist", "out"].contains(name) =>
+                        {
+                            Some((rule.key, *name, *sibling))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect();
+        for (i, &(left, name, sentinel)) in outputs.iter().enumerate() {
+            let output = format!("project/{name}/output");
+            let marker = format!("project/{sentinel}");
+            let tree = build(&[(&marker, 1), (&output, 10)]);
+            let found = groups(&tree, 0, Mode::Logical);
+            assert_eq!(found.len(), 1, "{name} beside {sentinel}");
+            assert_eq!(found[0].rule.key, left, "{name} beside {sentinel}");
+            assert!(found[0].rule.caution.is_some(), "{left}");
+            for &(right, other_name, other_sentinel) in &outputs[i + 1..] {
+                if name != other_name || left == right {
+                    continue;
+                }
+                let expected = match (left, right) {
+                    ("gradle_build", "flutter_build" | "js_build" | "cmake_build") => left,
+                    ("flutter_build", "js_build" | "cmake_build") => left,
+                    ("js_build", "cmake_build") => right,
+                    ("js_dist", "python_dist") if sentinel == "package.json" => right,
+                    ("js_dist", "python_dist") => left,
+                    pair => panic!("unreviewed output overlap: {pair:?}"),
+                };
+                let other_marker = format!("project/{other_sentinel}");
+                let tree = build(&[(&marker, 1), (&other_marker, 1), (&output, 10)]);
+                let found = groups(&tree, 0, Mode::Logical);
+                assert_eq!(found.len(), 1, "{name}: {sentinel}, {other_sentinel}");
+                assert_eq!(
+                    found[0].rule.key, expected,
+                    "{name}: {sentinel}, {other_sentinel}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_sentinel_requires_its_declared_node_kind() {
+        for rule in RULES {
+            for matcher in rule.matchers {
+                let (folder, sentinel, expected) = match matcher {
+                    Matcher::ChildSentinel { name, child, kind } => {
+                        (name.to_string(), format!("{name}/{child}"), *kind)
+                    }
+                    Matcher::SiblingSentinel {
+                        name,
+                        sibling,
+                        kind,
+                    } => (name.to_string(), sibling.to_string(), *kind),
+                    Matcher::AnyWithChild { child, kind } => {
+                        ("data".to_string(), format!("data/{child}"), *kind)
+                    }
+                    Matcher::PathSuffix(_) => continue,
+                };
+                let directory = format!("{folder}/");
+                let mut tree = build(&[(&directory, 0), (&sentinel, 1)]);
+                let folder_id = id(&tree, &folder);
+                let sentinel_id = id(&tree, &sentinel);
+                for kind in [Kind::File, Kind::Dir, Kind::Symlink, Kind::Other] {
+                    tree.nodes[sentinel_id as usize].kind = kind;
+                    assert_eq!(
+                        matcher.matches(&tree, folder_id, &path_names(&tree, folder_id)),
+                        kind == expected,
+                        "{}: {sentinel} as {kind:?}",
+                        rule.key
+                    );
+                }
+            }
+        }
     }
 
     #[test]

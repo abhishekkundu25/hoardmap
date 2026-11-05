@@ -237,7 +237,9 @@ const el = {
   pane: $("treemap-pane"),
   canvas: $("canvas"),
   tooltip: $("tooltip"),
+  extTab: $("tab-extensions"),
   extRows: $("ext-rows"),
+  largestTab: $("tab-largest"),
   largestRows: $("largest-rows"),
   rebuildTab: $("tab-rebuildable"),
   rebuildRows: $("rebuild-rows"),
@@ -289,7 +291,8 @@ function fetchNode(id) {
       }
       return node;
     })
-    .finally(() => pending.delete(id));
+    // A live refresh may have replaced this entry with a newer request for the id.
+    .finally(() => pending.get(id) === promise && pending.delete(id));
   pending.set(id, promise);
   return promise;
 }
@@ -570,14 +573,22 @@ function rowOf(id) {
   return el.rows.querySelector(`tr[data-id="${id}"]`);
 }
 
+// Counts the user's opens and closes, so a reopen() still running gives way to them.
+let toggles = 0;
+
 async function expand(id) {
   const node = nodes.get(id);
   if (!node || node.kind !== "dir" || !node.has_children) return;
+  toggles += 1;
   expanded.add(id);
   if (!Array.isArray(node.children)) {
+    const started = generation;
     try {
       await fetchNode(id);
     } catch (e) {
+      // A replaced tree owns `expanded` now: a live refresh fetches this folder again,
+      // a new scan has cleared it.
+      if (started !== generation) return;
       expanded.delete(id);
       showMessage(e.message, true);
       return;
@@ -588,6 +599,7 @@ async function expand(id) {
 
 function collapse(id) {
   if (!expanded.has(id)) return;
+  toggles += 1;
   expanded.delete(id);
   renderList();
 }
@@ -597,7 +609,15 @@ function toggle(id) {
   else expand(id);
 }
 
+// Bumped by every selection and every reveal(), and when the tree is replaced, so a
+// reveal() that finishes after a newer selection leaves that selection alone.
+let selectRequest = 0;
+
 function select(id, { scroll = false } = {}) {
+  selectRequest += 1;
+  // A folder picked in the Rebuildable tab stays its current row until something else
+  // is selected.
+  if (rebuildView.cursorId !== id) rebuildView.cursorId = null;
   if (store.selection !== id) {
     const previous = store.selection !== null ? rowOf(store.selection) : null;
     if (previous) previous.classList.remove("selected");
@@ -615,6 +635,8 @@ function select(id, { scroll = false } = {}) {
 
 // Expands every ancestor of `id` and scrolls its row into view.
 async function reveal(id) {
+  const request = ++selectRequest;
+  const started = generation;
   try {
     const node = await fetchNode(id);
     const chain = [];
@@ -624,13 +646,17 @@ async function reveal(id) {
       chain.push(parent);
       parent = ancestor.parent;
     }
+    if (request !== selectRequest) return;
     for (const ancestor of chain) expanded.add(ancestor);
     unhide(id);
     for (const ancestor of chain) unhide(ancestor);
     renderList();
     select(id, { scroll: true });
   } catch (e) {
-    showMessage(e.message, true);
+    if (request !== selectRequest) return;
+    // A live refresh replaced the preview under the fetches; its ids still hold.
+    if (started !== generation) reveal(id);
+    else showMessage(e.message, true);
   }
 }
 
@@ -666,7 +692,8 @@ el.rows.addEventListener("dblclick", (event) => {
 
 el.list.addEventListener("keydown", (event) => {
   if (store.loadedPath === null) return;
-  const rows = flatten(nodes, expanded, 0, sortedChildren, shown).filter((r) => !r.more);
+  const all = flatten(nodes, expanded, 0, sortedChildren, shown);
+  const rows = all.filter((r) => !r.more);
   if (rows.length === 0) return;
   const index = rows.findIndex((r) => r.id === store.selection);
   const move = (to) => {
@@ -674,9 +701,17 @@ el.list.addEventListener("keydown", (event) => {
     select(target.id, { scroll: true });
   };
   switch (event.key) {
-    case "ArrowDown":
-      move(index < 0 ? 0 : index + 1);
+    case "ArrowDown": {
+      // Down from the row above a "more" row shows more and moves to the first of them.
+      const next = index < 0 ? null : all[all.indexOf(rows[index]) + 1];
+      if (next && next.more) {
+        showMore(next.more.parent);
+        select(next.more.children[0].id, { scroll: true });
+      } else {
+        move(index < 0 ? 0 : index + 1);
+      }
       break;
+    }
     case "ArrowUp":
       move(index < 0 ? 0 : index - 1);
       break;
@@ -724,13 +759,13 @@ function paneSize() {
 }
 
 async function fetchTreemap() {
+  const request = ++layoutRequest;
   if (store.loadedPath === null) {
     store.layout = null;
     drawTreemap();
     return;
   }
   const { w, h } = paneSize();
-  const request = ++layoutRequest;
   try {
     const layout = await getJSON(`/api/${store.view}?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}`);
     if (request !== layoutRequest) return;
@@ -983,11 +1018,14 @@ async function setRoot(id) {
   store.highlightExt = null;
   store.highlightGroup = null;
   store.highlightIds = null;
+  const started = generation;
   try {
     await fetchNode(id);
   } catch (e) {
-    showMessage(e.message, true);
+    if (started === generation) showMessage(e.message, true);
   }
+  // A newer zoom or tree has drawn its own view.
+  if (store.root !== id || started !== generation) return;
   renderCaption();
   renderControls();
   fetchTreemap();
@@ -1070,6 +1108,7 @@ function renderExtensions(data) {
     const tr = document.createElement("tr");
     tr.dataset.ext = item.ext;
     if (item.ext === store.highlightExt) tr.classList.add("highlight");
+    if (item.ext === extCursor) tr.classList.add("selected");
     tr.title = `${formatCount(bytes)} bytes`;
 
     const ext = document.createElement("td");
@@ -1147,11 +1186,64 @@ function markHighlights() {
   drawTreemap();
 }
 
+// The row that Up and Down move from, and Enter or Space highlights, by its extension.
+let extCursor = null;
+
+// Up, Down, Home and End pick a row of `rows` from the one marked selected; null for
+// any other key.
+function stepRows(key, rows) {
+  if (rows.length === 0) return null;
+  const index = rows.findIndex((r) => r.classList.contains("selected"));
+  switch (key) {
+    case "ArrowDown":
+      return rows[index < 0 ? 0 : Math.min(rows.length - 1, index + 1)];
+    case "ArrowUp":
+      return rows[Math.max(0, index - 1)];
+    case "Home":
+      return rows[0];
+    case "End":
+      return rows[rows.length - 1];
+    default:
+      return null;
+  }
+}
+
+function markRow(rows, tr, { scroll = false } = {}) {
+  for (const row of rows.children) row.classList.toggle("selected", row === tr);
+  if (scroll) tr.scrollIntoView({ block: "nearest" });
+}
+
+function pickExtension(tr, options) {
+  extCursor = tr.dataset.ext;
+  markRow(el.extRows, tr, options);
+}
+
+function toggleExtension(tr) {
+  const ext = tr.dataset.ext;
+  setHighlight(store.highlightExt === ext ? null : ext);
+}
+
 el.extRows.addEventListener("click", (event) => {
   const tr = event.target.closest("tr");
   if (!tr) return;
-  const ext = tr.dataset.ext;
-  setHighlight(store.highlightExt === ext ? null : ext);
+  pickExtension(tr);
+  toggleExtension(tr);
+});
+
+// Up and Down walk the extensions; Enter or Space highlights one or clears it.
+el.extTab.addEventListener("keydown", (event) => {
+  const rows = [...el.extRows.children];
+  const target = stepRows(event.key, rows);
+  if (target) {
+    pickExtension(target, { scroll: true });
+  } else if (event.key === "Enter" || event.key === " ") {
+    const current = rows.find((r) => r.classList.contains("selected"));
+    if (!current) return;
+    toggleExtension(current);
+  } else {
+    return;
+  }
+  event.preventDefault();
 });
 
 function renderLargest(data) {
@@ -1175,11 +1267,30 @@ function renderLargest(data) {
   }
 }
 
+function pickLargest(tr, options) {
+  markRow(el.largestRows, tr, options);
+  reveal(Number(tr.dataset.id));
+}
+
 el.largestRows.addEventListener("click", (event) => {
   const tr = event.target.closest("tr");
-  if (!tr) return;
-  for (const row of el.largestRows.children) row.classList.toggle("selected", row === tr);
-  reveal(Number(tr.dataset.id));
+  if (tr) pickLargest(tr);
+});
+
+// Up and Down walk the files, selecting each in the list; Enter opens it in Finder.
+el.largestTab.addEventListener("keydown", (event) => {
+  const rows = [...el.largestRows.children];
+  const target = stepRows(event.key, rows);
+  if (target) {
+    pickLargest(target, { scroll: true });
+  } else if (event.key === "Enter") {
+    const current = rows.find((r) => r.classList.contains("selected"));
+    if (!current) return;
+    openInFinder(Number(current.dataset.id));
+  } else {
+    return;
+  }
+  event.preventDefault();
 });
 
 el.largestRows.addEventListener("dblclick", (event) => {
@@ -1243,10 +1354,33 @@ function cell(className, text) {
   return td;
 }
 
+// How many folders an open group lists before its "Show all" row.
+const GROUP_SHOWN = 50;
+
+// What the viewer opened in the tab, for the root at `root`: the open groups and how
+// many folders each lists, and the row Up and Down move from (a group by key, or a
+// folder by id; with neither, the folder selected elsewhere). Kept across live
+// refreshes and re-renders; another root starts with every group closed.
+const rebuildView = { root: null, open: new Map(), cursorGroup: null, cursorId: null };
+
 function renderRebuildable() {
-  el.rebuildRows.textContent = "";
   const rebuild = store.rebuild;
+  if (rebuild && rebuild.root.path !== rebuildView.root) {
+    rebuildView.root = rebuild.root.path;
+    rebuildView.open.clear();
+    rebuildView.cursorGroup = null;
+    rebuildView.cursorId = null;
+  }
+  // The rows are rebuilt, so a focused button goes with them: focus its new self, or
+  // the table when it is gone.
+  const active = document.activeElement;
+  const focused = el.rebuildRows.contains(active) ? active.dataset.focus : undefined;
+  el.rebuildRows.textContent = "";
   if (rebuild) el.rebuildRows.appendChild(rebuildRows(rebuild));
+  if (focused !== undefined) {
+    const again = el.rebuildRows.querySelector(`[data-focus="${CSS.escape(focused)}"]`);
+    (again || el.rebuildTab).focus({ preventScroll: true });
+  }
   // The highlighted group's folders change as a scan finds more, or it is gone.
   if (store.highlightGroup !== null) setGroupHighlight(store.highlightGroup);
 }
@@ -1262,59 +1396,42 @@ function rebuildRows({ data, root }) {
     fragment.appendChild(tr);
   }
   for (const group of data.groups) {
-    const tr = document.createElement("tr");
-    tr.className = "group";
-    tr.dataset.group = group.key;
-    if (group.key === store.highlightGroup) tr.classList.add("highlight");
-    tr.title = `${formatCount(group.bytes)} bytes in ${formatCount(group.count)} ${group.count === 1 ? "folder" : "folders"}`;
-    tr.append(
-      cell("name", group.label),
-      cell("owner muted", group.owner),
-      cell("num", formatBytes(group.bytes)),
-      percentCell(group.bytes, whole),
-      cell("num", formatCount(group.count)),
-    );
+    const limit = rebuildView.open.get(group.key);
+    const open = limit !== undefined;
+    fragment.appendChild(groupRow(group, whole, open));
+
+    // What in these folders does not come back on its own, in the warning colour, shown
+    // open or closed.
+    if (group.caution) fragment.appendChild(noteRow(group, "name warn", `Caution: ${group.caution}`));
+    if (!open) continue;
 
     // The source opens nowhere: the app window never navigates away from the page,
     // so the address is plain text to copy.
-    const why = document.createElement("tr");
-    why.className = "why";
-    why.dataset.group = group.key;
-    const text = cell("name muted", `${group.why} Docs: `);
+    const why = noteRow(group, "name muted", `${group.why} Docs: `);
     const source = document.createElement("span");
     source.className = "source";
     source.textContent = group.source;
-    text.appendChild(source);
-    text.colSpan = 5;
+    why.firstChild.appendChild(source);
     why.title = `${group.why}\nDocs: ${group.source}`;
-    why.appendChild(text);
-    fragment.append(tr, why);
+    fragment.appendChild(why);
 
-    // What in these folders does not come back on its own, in the warning colour.
-    if (group.caution) {
-      const caution = document.createElement("tr");
-      caution.className = "why";
-      caution.dataset.group = group.key;
-      const td = cell("name warn", `Caution: ${group.caution}`);
-      td.colSpan = 5;
-      caution.title = `Caution: ${group.caution}`;
-      caution.appendChild(td);
-      fragment.appendChild(caution);
+    for (const folder of group.folders.slice(0, limit)) {
+      fragment.appendChild(folderRow(folder, group, root, whole));
     }
-
-    for (const folder of group.folders) {
-      const row = document.createElement("tr");
-      row.className = "folder";
-      row.dataset.id = folder.id;
-      if (folder.id === store.selection) row.classList.add("selected");
-      row.title = `${folder.path}\n${formatCount(folder.bytes)} bytes`;
-      const path = cell("name", "");
-      path.colSpan = 2;
-      const inner = document.createElement("span");
-      inner.textContent = relativePath(folder.path, root.path);
-      path.appendChild(inner);
-      row.append(path, cell("num", formatBytes(folder.bytes)), percentCell(folder.bytes, whole), cell("num", ""));
-      fragment.appendChild(row);
+    if (group.folders.length > limit) {
+      const all = document.createElement("tr");
+      all.className = "rest";
+      const td = cell("name", "");
+      td.colSpan = 5;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "show-all";
+      button.dataset.all = group.key;
+      button.dataset.focus = `all:${group.key}`;
+      button.textContent = `Show all ${formatCount(group.folders.length)}`;
+      td.appendChild(button);
+      all.appendChild(td);
+      fragment.appendChild(all);
     }
     if (group.more > 0) {
       const more = document.createElement("tr");
@@ -1328,14 +1445,99 @@ function rebuildRows({ data, root }) {
   return fragment;
 }
 
+// A group's row: the button that opens and closes it, then its figures. A click
+// elsewhere on the row highlights the group's folders in the map.
+function groupRow(group, whole, open) {
+  const tr = document.createElement("tr");
+  tr.className = "group";
+  tr.dataset.group = group.key;
+  if (group.key === store.highlightGroup) tr.classList.add("highlight");
+  if (group.key === rebuildView.cursorGroup) tr.classList.add("selected");
+  tr.title = `${formatCount(group.bytes)} bytes in ${formatCount(group.count)} ${group.count === 1 ? "folder" : "folders"}`;
+  const name = cell("name", "");
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "disclosure";
+  toggle.dataset.toggle = group.key;
+  toggle.dataset.focus = `open:${group.key}`;
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-label", `${group.label} folders`);
+  toggle.title = open ? "Hide the folders" : "Show why it comes back, and the folders";
+  toggle.textContent = open ? "▾" : "▸";
+  const label = document.createElement("span");
+  label.textContent = group.label;
+  name.append(toggle, label);
+  tr.append(
+    name,
+    cell("owner muted", group.owner),
+    cell("num", formatBytes(group.bytes)),
+    percentCell(group.bytes, whole),
+    cell("num", formatCount(group.count)),
+  );
+  return tr;
+}
+
+// A line under a group's row, as wide as the table; a click on it counts as one on
+// the group.
+function noteRow(group, className, text) {
+  const tr = document.createElement("tr");
+  tr.className = "why";
+  tr.dataset.group = group.key;
+  tr.title = text;
+  const td = cell(className, text);
+  td.colSpan = 5;
+  tr.appendChild(td);
+  return tr;
+}
+
+function folderRow(folder, group, root, whole) {
+  const row = document.createElement("tr");
+  row.className = "folder";
+  row.dataset.id = folder.id;
+  row.dataset.in = group.key;
+  const current = rebuildView.cursorGroup === null && folder.id === (rebuildView.cursorId ?? store.selection);
+  if (current) row.classList.add("selected");
+  row.title = `${folder.path}\n${formatCount(folder.bytes)} bytes`;
+  const path = cell("name", "");
+  path.colSpan = 2;
+  const inner = document.createElement("span");
+  inner.textContent = relativePath(folder.path, root.path);
+  path.appendChild(inner);
+  row.append(path, cell("num", formatBytes(folder.bytes)), percentCell(folder.bytes, whole), cell("num", ""));
+  return row;
+}
+
+// Opens or closes a group and makes its row the current one. Closing it goes back to
+// GROUP_SHOWN folders for the next opening.
+function setGroupOpen(key, open) {
+  rebuildView.cursorGroup = key;
+  rebuildView.cursorId = null;
+  if (open) rebuildView.open.set(key, rebuildView.open.get(key) ?? GROUP_SHOWN);
+  else rebuildView.open.delete(key);
+  renderRebuildable();
+}
+
+function showAllFolders(key) {
+  rebuildView.open.set(key, Infinity);
+  renderRebuildable();
+}
+
 // Marks `tr` as the table's current row; a folder row also selects its folder.
 function pickRebuildRow(tr, { scroll = false } = {}) {
-  for (const row of el.rebuildRows.children) row.classList.toggle("selected", row === tr);
-  if (scroll) tr.scrollIntoView({ block: "nearest" });
-  if (tr.dataset.id !== undefined) reveal(Number(tr.dataset.id));
+  const isGroup = tr.classList.contains("group");
+  rebuildView.cursorGroup = isGroup ? tr.dataset.group : null;
+  rebuildView.cursorId = isGroup ? null : Number(tr.dataset.id);
+  markRow(el.rebuildRows, tr, { scroll });
+  if (!isGroup) reveal(Number(tr.dataset.id));
 }
 
 el.rebuildRows.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (button) {
+    if (button.dataset.all !== undefined) showAllFolders(button.dataset.all);
+    else setGroupOpen(button.dataset.toggle, !rebuildView.open.has(button.dataset.toggle));
+    return;
+  }
   // Selecting the docs address to copy it is not a click on the group.
   if (!window.getSelection().isCollapsed) return;
   const tr = event.target.closest("tr");
@@ -1355,33 +1557,66 @@ el.rebuildRows.addEventListener("dblclick", (event) => {
   if (tr) openInFinder(Number(tr.dataset.id));
 });
 
-// Up and Down walk the group and folder rows; Enter highlights a group or opens a folder
-// in Finder.
+// Tabbing onto a group's button makes its row the one the arrows move from.
+el.rebuildRows.addEventListener("focusin", (event) => {
+  const tr = event.target.closest("tr.group");
+  if (tr && !tr.classList.contains("selected")) pickRebuildRow(tr);
+});
+
+// Like the directory list: Up and Down walk the group and folder rows, and Down past
+// the last folder listed shows the rest; Right opens a group or steps into it, Left
+// closes it or steps out to it; Space opens or closes a group; Enter highlights a
+// group or opens a folder in Finder. A focused button takes Enter and Space itself.
 el.rebuildTab.addEventListener("keydown", (event) => {
-  const rows = [...el.rebuildRows.querySelectorAll("tr.group, tr.folder[data-id]")];
-  if (rows.length === 0) return;
+  const onButton = event.target.closest("button") !== null;
+  if (onButton && (event.key === "Enter" || event.key === " ")) return;
+  const rowsNow = () => [...el.rebuildRows.querySelectorAll("tr.group, tr.folder")];
+  const rows = rowsNow();
   const index = rows.findIndex((r) => r.classList.contains("selected"));
-  const move = (to) => pickRebuildRow(rows[Math.max(0, Math.min(rows.length - 1, to))], { scroll: true });
+  const row = index < 0 ? null : rows[index];
+  const isGroup = row !== null && row.classList.contains("group");
+  // Moving the cursor off a focused button takes the focus back to the table, so Enter
+  // acts on the row the cursor is on.
+  const pick = (tr) => {
+    pickRebuildRow(tr, { scroll: true });
+    if (onButton) el.rebuildTab.focus({ preventScroll: true });
+  };
+  const next = row && row.nextElementSibling;
   switch (event.key) {
     case "ArrowDown":
-      move(index < 0 ? 0 : index + 1);
-      break;
+      if (row && !isGroup && next && next.querySelector("button.show-all")) {
+        showAllFolders(row.dataset.in);
+        pick(rowsNow()[index + 1]);
+        break;
+      }
+    // falls through
     case "ArrowUp":
-      move(index < 0 ? 0 : index - 1);
-      break;
     case "Home":
-      move(0);
-      break;
-    case "End":
-      move(rows.length - 1);
-      break;
-    case "Enter": {
-      if (index < 0) return;
-      const row = rows[index];
-      if (row.dataset.id !== undefined) openInFinder(Number(row.dataset.id));
-      else setGroupHighlight(store.highlightGroup === row.dataset.group ? null : row.dataset.group);
+    case "End": {
+      const target = stepRows(event.key, rows);
+      if (!target) return;
+      pick(target);
       break;
     }
+    case "ArrowRight":
+      if (!isGroup) return;
+      if (!rebuildView.open.has(row.dataset.group)) setGroupOpen(row.dataset.group, true);
+      else if (rows[index + 1] && rows[index + 1].dataset.in === row.dataset.group) pick(rows[index + 1]);
+      break;
+    case "ArrowLeft":
+      if (isGroup && rebuildView.open.has(row.dataset.group)) setGroupOpen(row.dataset.group, false);
+      else if (row && !isGroup) pick(rows.find((r) => r.classList.contains("group") && r.dataset.group === row.dataset.in));
+      else return;
+      break;
+    case " ":
+      if (!isGroup) return;
+      setGroupOpen(row.dataset.group, !rebuildView.open.has(row.dataset.group));
+      break;
+    case "Enter":
+      if (!row) return;
+      if (isGroup) setGroupHighlight(store.highlightGroup === row.dataset.group ? null : row.dataset.group);
+      else openInFinder(Number(row.dataset.id));
+      break;
     default:
       return;
   }
@@ -1404,7 +1639,7 @@ for (const tab of tabs) {
 el.scanForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (store.status && store.status.state === "scanning") stopScan();
-  else startScan(el.path.value.trim());
+  else startScan(el.path.value.trimStart());
 });
 
 async function stopScan() {
@@ -1467,16 +1702,19 @@ el.places.addEventListener("change", async () => {
 });
 
 el.rescan.addEventListener("click", () => {
-  if (store.status && store.status.path) startScan(store.status.path);
+  if (store.status && store.status.path) startScan(null);
 });
 
+// The path goes as typed, less leading white space: a folder name may end in a space.
+// A text field drops the line breaks of a pasted path on its own.
+// `null` rescans the server's own folder, whose real name may not survive as text.
 async function startScan(path) {
-  if (!path) {
+  if (path !== null && !path.trim()) {
     showMessage("Type a folder path to scan.", true);
     return;
   }
   try {
-    await postJSON("/api/scan", { path });
+    await postJSON("/api/scan", path === null ? {} : { path });
   } catch (e) {
     showMessage(e.message, true);
   }
@@ -1497,11 +1735,32 @@ function forgetTree() {
   store.rebuild = null;
   store.layout = null;
   store.loadedPath = null;
+  // Folder ids belong to the old tree; a group key holds in the new one.
+  rebuildView.cursorId = null;
+  // Answers still on their way are for the old tree.
+  layoutRequest += 1;
+  bottomRequest += 1;
+  rebuildRequest += 1;
+  selectRequest += 1;
   hideTooltip();
 }
 
-// Loads the new tree once a scan has finished.
+// Opens the folders below `node` whose paths are in `paths`, as the list had them. It
+// stops once the user opens or closes a folder.
+async function reopen(node, paths, toggled = toggles) {
+  for (const child of node.children) {
+    if (!paths.has(joinPath(node.path, child.name))) continue;
+    const loaded = await fetchNode(child.id);
+    if (toggled !== toggles) return;
+    expanded.add(child.id);
+    await reopen(loaded, paths, toggled);
+  }
+}
+
+// Loads the new tree once a scan has finished. The finished tree has new ids, so the
+// folders opened in its preview are found again by path.
 async function loadTree() {
+  const opened = new Set([...expanded].map((id) => nodes.get(id)?.path));
   forgetTree();
   const started = generation;
   store.loadedPath = store.status.path;
@@ -1523,6 +1782,7 @@ async function loadTree() {
   renderHint();
   fetchTreemap();
   loadBottom();
+  reopen(nodes.get(0), opened).then(renderList, () => {});
 }
 
 // While a scan runs, reloads its preview tree at most every LIVE_MS, keeping the
@@ -1545,10 +1805,17 @@ async function refreshLive() {
     // A preview keeps each entry's id from one rebuild to the next, so the view keeps
     // its ids and only fetches the figures again.
     generation += 1;
+    const started = generation;
     nodes.clear();
     pending.clear();
     const keep = new Set([0, ...expanded, store.root, store.selection].filter((id) => id !== null));
-    await Promise.all([...keep].map((id) => fetchNode(id).catch(() => expanded.delete(id))));
+    // A folder the preview no longer has closes; a fetch overtaken by a newer tree
+    // says nothing about the folders open now.
+    const gone = (id) => {
+      if (started === generation) expanded.delete(id);
+    };
+    await Promise.all([...keep].map((id) => fetchNode(id).catch(() => gone(id))));
+    if (started !== generation) return;
     renderList();
     renderCaption();
     renderControls();
@@ -1698,8 +1965,10 @@ async function showAccess() {
 async function accessAction(url) {
   try {
     await postJSON(url, {});
+    return true;
   } catch (e) {
     showMessage(e.message, true);
+    return false;
   }
 }
 
@@ -1712,14 +1981,19 @@ $("access-close").addEventListener("click", () => el.access.close());
 $("access-done").addEventListener("click", () => el.access.close());
 $("access-settings").addEventListener("click", () => accessAction("/api/access/settings"));
 $("access-reveal").addEventListener("click", () => accessAction("/api/access/reveal"));
-$("access-relaunch").addEventListener("click", () => {
-  $("access-relaunch").textContent = "Relaunching";
-  $("access-relaunch").disabled = true;
-  accessAction("/api/relaunch");
+$("access-relaunch").addEventListener("click", async () => {
+  const button = $("access-relaunch");
+  const label = button.textContent;
+  button.textContent = "Relaunching";
+  button.disabled = true;
+  // On success the app quits; a failure leaves it running, so the button comes back.
+  if (await accessAction("/api/relaunch")) return;
+  button.textContent = label;
+  button.disabled = false;
 });
 $("access-rescan").addEventListener("click", () => {
   el.access.close();
-  if (store.status && store.status.path) startScan(store.status.path);
+  if (store.status && store.status.path) startScan(null);
 });
 $("access-skip").addEventListener("change", (event) => storeFlag("skipAccess", event.target.checked));
 el.access.addEventListener("close", () => {
@@ -1731,7 +2005,7 @@ el.access.addEventListener("close", () => {
 // The native app waits with its first scan until the start screen is gone.
 function scanIfIdle() {
   const s = store.status;
-  if (s && s.state === "idle" && s.path && !el.access.open) startScan(s.path);
+  if (s && s.state === "idle" && s.path && !el.access.open) startScan(null);
 }
 el.access.addEventListener("click", (event) => {
   if (event.target === el.access) el.access.close();

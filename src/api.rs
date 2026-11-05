@@ -369,15 +369,20 @@ fn rebuildable(app: &App, query: &Query) -> Response {
 }
 
 fn scan(app: &Arc<App>, body: &Value) -> Response {
-    let Some(path) = body["path"].as_str().filter(|p| !p.is_empty()) else {
-        return error(400, "path must be a non-empty string");
+    let path = match body.get("path") {
+        None => None,
+        Some(value) => {
+            let Some(path) = value.as_str().filter(|p| !p.is_empty()) else {
+                return error(400, "path must be a non-empty string");
+            };
+            // "/Users/me/" and "/Users/me" are one folder.
+            Some(PathBuf::from(match path.trim_end_matches('/') {
+                "" => "/",
+                trimmed => trimmed,
+            }))
+        }
     };
-    // "/Users/me/" and "/Users/me" are one folder; the tree names its root without the slash.
-    let path = match path.trim_end_matches('/') {
-        "" => "/",
-        trimmed => trimmed,
-    };
-    match app.start_scan(PathBuf::from(path)) {
+    match app.start_scan(path) {
         Ok(()) => Response::json(202, &app.status()),
         Err(e) if e == SCAN_RUNNING => error(409, &e),
         Err(e) => error(400, &e),

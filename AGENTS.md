@@ -11,7 +11,7 @@ deletes, moves or renames anything; do not add such an action.
 - `src/tree.rs`: the arena tree every module reads. Root at index 0, children
   largest first, directory figures are subtree totals.
 - `src/scan.rs`: file system to tree, in parallel, with progress atomics. On macOS it
-  lists folders with `getattrlistbulk`; the portable `read_dir` plus `lstat` path is
+  lists folders with `getattrlistbulk`; the portable `readdir` plus `fstatat` path is
   the fallback everywhere and `HOARDMAP_SCANNER=portable` forces it. Both must build
   the same tree on clone-free folders (`tests/scan.rs` checks); only the bulk listing
   sees APFS clones, so with clones its Physical is lower. The walk runs in its own pool of

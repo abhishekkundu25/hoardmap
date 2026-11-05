@@ -2,6 +2,8 @@
 //! every directory's children are sorted by logical size, largest first. Sizes and
 //! counts on a directory are subtree totals.
 
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -66,6 +68,9 @@ pub struct ScanError {
 #[derive(Debug)]
 pub struct Tree {
     pub nodes: Vec<Node>,
+    /// Names whose original bytes differ from `Node::name`, including the root path.
+    /// Empty on UTF-8 trees, with no per-node storage or allocation.
+    pub raw_names: HashMap<NodeId, Box<OsStr>>,
     /// The first [`MAX_ERRORS`] unreadable paths.
     pub errors: Vec<ScanError>,
     /// All unreadable paths, including those not kept in `errors`.
@@ -94,7 +99,11 @@ impl Tree {
         let mut cur = Some(id);
         while let Some(i) = cur {
             let node = &self.nodes[i as usize];
-            names.push(node.name.as_str());
+            names.push(
+                self.raw_names
+                    .get(&i)
+                    .map_or_else(|| OsStr::new(&node.name), |name| name.as_ref()),
+            );
             cur = node.parent;
         }
         names.iter().rev().collect()
@@ -175,6 +184,7 @@ mod tests {
                     shared: Shared::None,
                 },
             ],
+            raw_names: HashMap::new(),
             errors: vec![],
             error_count: 0,
             clone_aware: false,

@@ -15,7 +15,18 @@ volume=Hoardmap
 rm -rf "$dist"
 mkdir -p "$dist"
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+attached=false
+cleanup() {
+  local status=$?
+  if [ "$attached" = true ] && [ -d "/Volumes/$volume" ]; then
+    hdiutil detach -quiet "/Volumes/$volume" || hdiutil detach -quiet -force "/Volumes/$volume" || true
+  fi
+  rm -rf "$work"
+  return "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ -d "/Volumes/$volume" ]; then
   echo "eject /Volumes/$volume first" >&2
@@ -34,6 +45,8 @@ ln -s /Applications "$stage/Applications"
 cp assets/dmg-background.tiff "$stage/.background/background.tiff"
 hdiutil create -quiet -volname "$volume" -srcfolder "$stage" -fs HFS+ -format UDRW \
   -size 64m "$work/rw.dmg"
+# An interrupted attach can mount the image before the command returns.
+attached=true
 device=$(hdiutil attach -readwrite -noverify -noautoopen "$work/rw.dmg" | awk '/Apple_HFS/ {print $1}')
 osascript <<APPLESCRIPT
 tell application "Finder"
@@ -64,6 +77,7 @@ xattr -wx com.apple.FinderInfo \
   "0000000000000000040000000000000000000000000000000000000000000000" "/Volumes/$volume"
 sync
 hdiutil detach -quiet "$device"
+attached=false
 hdiutil convert -quiet "$work/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$dist/Hoardmap.dmg"
 
 (cd "$dist" && shasum -a 256 -- * >SHA256SUMS)

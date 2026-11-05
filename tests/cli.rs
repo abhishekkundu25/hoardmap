@@ -4,7 +4,9 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -106,4 +108,55 @@ fn a_missing_app_says_how_to_install_it() {
         "{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn a_non_utf8_argument_does_not_panic() {
+    let fx = fixture();
+    let stub = OpenStub::new();
+    for (arg, exit) in [
+        (
+            fx.root
+                .join(OsStr::from_bytes(b"missing-\xff"))
+                .into_os_string(),
+            1,
+        ),
+        (OsStr::from_bytes(b"--bad-\xff").to_owned(), 2),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_hoardmap"))
+            .arg(arg)
+            .env("PATH", stub.path_env())
+            .env_remove("HOARDMAP_TEST_SERVER")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{}", stderr(&output));
+        assert!(!stderr(&output).contains("panicked"), "{}", stderr(&output));
+    }
+    assert_eq!(stub.open_args(), None);
+}
+
+#[test]
+fn a_non_utf8_folder_reaches_open_without_loss() {
+    let fx = fixture();
+    let folder = fx.root.join(OsStr::from_bytes(b"folder-\xff"));
+    match fs::create_dir(&folder) {
+        Ok(()) => {}
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::EILSEQ)) => {
+            println!("# skipped: this file system rejects non-UTF-8 folder names: {error}");
+            return;
+        }
+        Err(error) => panic!("create non-UTF-8 folder: {error}"),
+    }
+    let stub = OpenStub::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_hoardmap"))
+        .arg(&folder)
+        .env("PATH", stub.path_env())
+        .env_remove("HOARDMAP_TEST_SERVER")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let mut expected = b"-b\ndev.hoardmap.app\n".to_vec();
+    expected.extend_from_slice(folder.canonicalize().unwrap().as_os_str().as_bytes());
+    expected.push(b'\n');
+    assert_eq!(fs::read(&stub.marker).unwrap(), expected);
 }

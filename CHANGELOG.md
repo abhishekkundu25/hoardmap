@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The Rebuildable tab opens with every group collapsed to one line, so a home-folder scan fits on a screen. Cautions stay visible; open a group with its arrow (or the Right key) to see why it comes back, its documentation and its largest 50 folders, then Show all. Open groups stay open while a scan refreshes the tab.
+- Gradle `build` folders carry the caution that `build` is a common name. A `build` folder beside both `CMakeLists.txt` and `package.json` is grouped as CMake output, with CMake's caution. A folder named like a marker file (`CACHEDIR.TAG`, `package.json`) no longer counts as one. The Ollama caution says models made with `ollama create` do not download again.
+- Drives with a folder whose name ends in `.previous` or `.inprogress` are no longer hidden from the Disks menu; only Time Machine's own markers hide a drive.
+- The scan reads exactly the folder it listed: a folder swapped for a symlink while the scan runs is skipped and listed as unreadable, never followed onto another disk. Folder names that are not UTF-8 are read and opened correctly. Stop takes effect inside a folder with millions of files.
+- Keyboard: every child of a large folder, the extension rows, the Largest files rows and the Rebuildable groups can be reached and used without a mouse.
+- Fixed: an older answer could redraw the previous scan's treemap, move the selection back, or close folders you had opened. A path ending in a space is scanned as typed, and spaces before a pasted path are dropped. Opening two folders quickly from Finder now shows the last one. Relaunch after granting Full Disk Access no longer closes the app when it cannot start the new copy.
+- Hoardmap's local server limits each request's size before reading it, closes connections that send nothing, and caps how many it holds, so no other program on the Mac can make it use unbounded memory or tie it up. The `hoardmap` command accepts folder names that are not UTF-8.
+
 ## 0.5.0 — 2026-11-06
 
 - Physical size counts APFS clones once. Files duplicated in Finder or installed by pnpm, uv or bun share their data, and Hoardmap used to count every copy in full, as `du` does, so folders could add up to more than the disk. Clones that still share all their data are counted once and marked in the list; a clone that has partly changed is counted in full, as before. This corrects the 0.1.0 note that Physical already showed what clones cost.

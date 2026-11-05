@@ -127,7 +127,7 @@ renames anything. Closing the window quits the app.
 
 ## Implementation decisions
 
-- One Rust crate with a library and a binary. Dependencies: `tiny_http` (HTTP),
+- One Rust crate with a library and a binary. Dependencies: `std::net` for HTTP,
   `serde` and `serde_json` (JSON), `rayon` (parallel scan). No async runtime, no
   frontend framework, no build step: the page is three static files embedded in the
   binary with `include_str!`.
@@ -166,9 +166,18 @@ renames anything. Closing the window quits the app.
   collapsed dirs: id, x, y, w, h, kind, ext, colour) and `dirs` (every laid-out
   directory's bounds: id, x, y, w, h) so the page can outline a selection. Sizes use
   the requested mode, logical or physical.
-- **HTTP**: `tiny_http` bound to `127.0.0.1:PORT` (PORT from `--port`, else 0 and the
-  OS picks). The first stdout line is `Listening on http://127.0.0.1:PORT/?token=TOKEN`. Each
-  request is handled on its own thread. GET `/`, `/app.js`, `/style.css` serve the
+- **HTTP**: a `std::net` listener on `127.0.0.1`, port 48273 for the app (any free
+  port when that one is taken). The debug test server (`HOARDMAP_TEST_SERVER=1`)
+  prints `Listening on http://127.0.0.1:PORT/?token=TOKEN` as its first line. Each
+  connection is handled on its own thread, 64 at once. Past that, 8 more are kept for
+  the page: each must send a whole request carrying the launch token (cookie or
+  `?token=`) within 50 ms, and any other connection past the limit is closed with no
+  answer. A whole request (line, headers and body) must arrive within 2 s of the
+  connection being accepted; the head is read only up to 16 KiB (431 past it, 400 when
+  cut short) and the body up to 64 KiB. A connection that sends nothing in those 2 s is
+  closed with no answer. After an error answered before the body was read, what the
+  client still sends is read and dropped for at most 1 s, so it sees the status. An
+  open event stream has no timeout. GET `/`, `/app.js`, `/style.css` serve the
   embedded files with the right content types and `Cache-Control: no-store`.
 - **Events**: GET `/api/events` is a Server-Sent Events stream. (Until 0.4 its open
   connections counted browser tabs and the process exited `--linger` seconds after the
@@ -207,15 +216,17 @@ renames anything. Closing the window quits the app.
     down within 1.5 s, the preview becomes its result and the done status says
     `preview: true`.
   - `GET /api/events` → SSE as above.
-  - `POST /api/scan {"path"}` → 202 and starts a scan; 409 while one runs; 400 for a
-    path that is not a directory.
+  - `POST /api/scan {"path"}` or `{}` → 202 and starts a scan; `{}` uses the server's current or last folder, or its start folder while idle, preserving raw path bytes; 400 when no folder is available or for a path that is not a
+    directory (checked first); 409 while a scan runs.
   - `POST /api/scan/stop {}` → 202 and ends the running scan with what it has read
     (`stopped: true` in the done status); 409 when none runs. A scan stuck on a drive
     that stopped answering is replaced by its preview after 1.5 s. A scanned folder
     that disappears, such as an unplugged drive, ends the scan as `failed`.
   - `GET /api/volumes` → `{volumes: [{name, path, total, free, kind}], home, chooser}`:
     the startup disk first, then the drives under `/Volumes`; `kind` is `startup`,
-    `drive` or `network`. System, hidden and Time Machine backup volumes are left out.
+    `drive` or `network`. System, hidden and Time Machine backup volumes (a
+    `Backups.backupdb` folder or an APFS `backup_manifest.plist` at the root) are left
+    out.
   - `POST /api/choose {}` → 200 `{path}` from the macOS folder picker, or 204 when
     cancelled.
   - `GET /api/node/{id}` → the node with `path` and `children`, each child with `id,
@@ -244,8 +255,16 @@ renames anything. Closing the window quits the app.
   and on selection change; hit testing is a linear scan of the rects. Selection is one
   node id shared by all views. Colours come from the server. System theme via
   `prefers-color-scheme`.
-- **Paths in JSON** are strings; a non-UTF-8 name is shown lossily and `open` uses the
-  tree's `PathBuf`, so the real path is still opened.
+- **Paths in JSON** are strings; a non-UTF-8 name is shown lossily, while the tree keeps
+  its raw bytes, so the scan reads it and `open` opens the real path. The folder picker
+  and the path field pass a folder as text, so a folder whose own name is not valid
+  UTF-8 cannot be chosen or typed; once scanned, as from the command, Rescan scans it
+  again.
+- **Rebuildable tab**: groups start collapsed: one row (disclosure button, name, owner,
+  size, percent, count) and the caution line when there is one. An open group shows the
+  why line and docs address, the largest 50 folders, then Show all up to the 500 the API
+  returns. Open groups and Show all are kept per root across refreshes. The group row
+  click highlights in the treemap; the disclosure button opens and closes.
 
 ## Testing decisions
 

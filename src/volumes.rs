@@ -99,17 +99,13 @@ fn startup_name() -> String {
         .unwrap_or_else(|| "Startup disk".into())
 }
 
-/// A Time Machine backup disk: millions of hard links whose sizes mean little.
-#[cfg(target_os = "macos")]
-fn is_backup(root: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return false;
-    };
-    entries.flatten().any(|e| {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        name == "Backups.backupdb" || name.ends_with(".previous") || name.ends_with(".inprogress")
-    })
+/// A Time Machine backup disk, whose hard links or snapshots skew scan totals.
+pub fn is_backup(root: &Path) -> bool {
+    // tmutil(8), BACKUP STRUCTURE: HFS+ has Backups.backupdb at the volume root.
+    // APFS has a backup_manifest.plist file at its root, as observed in:
+    // https://eclecticlight.co/2021/03/22/time-machine-to-apfs-backup-structure-and-access/
+    std::fs::symlink_metadata(root.join("Backups.backupdb")).is_ok_and(|m| m.is_dir())
+        || std::fs::symlink_metadata(root.join("backup_manifest.plist")).is_ok_and(|m| m.is_file())
 }
 
 /// Shows the macOS folder picker and returns the chosen folder; `None` when it was

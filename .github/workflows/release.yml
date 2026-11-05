@@ -13,7 +13,7 @@ jobs:
   release:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -50,11 +50,16 @@ jobs:
     uses: ./.github/workflows/pages.yml
 
   # Writes packaging/homebrew/hoardmap.rb and its README into abhishekkundu25/homebrew-tap
-  # for the new release. TAP_DEPLOY_KEY is the private half of a deploy key with write
+  # for the newest stable release, which is not always this run's tag: GitHub cancels a
+  # pending job in the concurrency group when a newer one queues, so a run that finishes
+  # out of order must still leave the newest version in the tap. TAP_DEPLOY_KEY is the private half of a deploy key with write
   # access to that repo only.
   tap:
     needs: release
     runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
     permissions:
       contents: read
     env:
@@ -67,13 +72,22 @@ jobs:
             echo "::warning::TAP_DEPLOY_KEY is not set; the Homebrew tap was not updated"
             exit 0
           fi
-          version=${GITHUB_REF_NAME#v}
-          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
+          # Stable versions only: no "-" before any "+build" part.
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 \
+            --json tagName --jq '.[].tagName' \
+            | awk '{ v = $0; sub(/\+.*/, "", v) } v ~ /^v/ && v !~ /-/' | sort -V | tail -1)
+          if [ -z "$tag" ]; then
+            echo "::notice::No stable release yet; the tap only publishes stable versions"
+            exit 0
+          fi
+          version=${tag#v}
+          release=${version%%+*}
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
           app=$(awk '$2 == "Hoardmap.zip" { print $1 }' SHA256SUMS)
           test -n "$app"
-          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/hoardmap.rb?ref=$GITHUB_REF_NAME" \
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/hoardmap.rb?ref=$tag" \
             -H "Accept: application/vnd.github.raw" >cask.rb
-          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/README.md?ref=$GITHUB_REF_NAME" \
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/README.md?ref=$tag" \
             -H "Accept: application/vnd.github.raw" >README.tap.md
 
           mkdir -p ~/.ssh
@@ -81,6 +95,16 @@ jobs:
           chmod 600 ~/.ssh/tap
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
           git clone --depth 1 git@github.com:abhishekkundu25/homebrew-tap.git tap
+          if [ -f tap/Casks/hoardmap.rb ]; then
+            current=$(sed -n 's/^  version "\(.*\)"/\1/p' tap/Casks/hoardmap.rb)
+            test -n "$current"
+            current_release=${current%%[-+]*}
+            oldest=$(printf '%s\n' "$current_release" "$release" | sort -V | head -1)
+            if [ "$oldest" != "$current_release" ]; then
+              echo "::notice::Skipping Hoardmap $version; the tap already has $current"
+              exit 0
+            fi
+          fi
           # The template's two comment lines are for this repo, not the tap.
           sed -e '1,2d' -e "s/\"VERSION\"/\"$version\"/" -e "s/\"SHA256\"/\"$app\"/" cask.rb >tap/Casks/hoardmap.rb
           cp README.tap.md tap/README.md

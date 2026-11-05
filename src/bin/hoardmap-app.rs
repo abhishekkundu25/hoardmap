@@ -2,6 +2,7 @@
 //! the Dock icon or the `hoardmap` command. Closing the window quits the app.
 
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Sender};
 
 use hoardmap::access::log_launch;
 use hoardmap::server::{self, Config};
@@ -17,6 +18,7 @@ use wry::{PageLoadEvent, WebViewBuilder};
 const PREFERRED_PORT: u16 = 48273;
 
 fn main() {
+    hoardmap::access::wait_for_relaunch();
     // Each step of a launch goes to ~/Library/Logs/Hoardmap/launch.log, so a launch that
     // never shows a window says where it stopped. If "start" is missing, macOS never ran
     // the app at all.
@@ -42,6 +44,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let app = served.app.clone();
+    let opened_folder = folder_opener(move |path| {
+        if let Err(error) = app.open_folder(path) {
+            log_launch(&format!("open folder: {error}"));
+        }
+    });
     let origin = format!("http://127.0.0.1:{}", served.port);
     log_launch(&format!("server on {origin}"));
 
@@ -82,12 +90,7 @@ fn main() {
         if let Event::Opened { urls } = &event {
             for path in urls.iter().filter_map(|url| url.to_file_path().ok()) {
                 log_launch("folder opened");
-                let app = served.app.clone();
-                std::thread::spawn(move || {
-                    if let Err(error) = app.open_folder(path) {
-                        log_launch(&format!("open folder: {error}"));
-                    }
-                });
+                let _ = opened_folder.send(path);
             }
         }
         if let Event::WindowEvent {
@@ -98,6 +101,14 @@ fn main() {
             *control_flow = ControlFlow::Exit;
         }
     });
+}
+
+/// One thread opens the folders in the order they were sent, off the event loop since
+/// checking a folder may block. A thread per folder would let a slow one finish last.
+fn folder_opener(open_folder: impl FnMut(PathBuf) + Send + 'static) -> Sender<PathBuf> {
+    let (sender, folders) = mpsc::channel();
+    std::thread::spawn(move || folders.into_iter().for_each(open_folder));
+    sender
 }
 
 /// The standard app, Edit and Window menus; Edit is what makes copy and paste work in
@@ -148,4 +159,35 @@ fn menu_bar() -> Menu {
     )
     .expect("window menu");
     Menu::with_items(&[&app, &edit, &window]).expect("menu bar")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::Duration;
+
+    // The event loop's part, sending each opened folder, needs a window and is not tested.
+    #[test]
+    fn a_slow_folder_open_cannot_overtake_a_later_one() {
+        let (entered, started) = mpsc::channel();
+        let (resume, blocked) = mpsc::channel();
+        let (opened, done) = mpsc::channel();
+        let sender = folder_opener(move |path| {
+            if path == Path::new("A") {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            }
+            opened.send(path).unwrap();
+        });
+        sender.send(PathBuf::from("A")).unwrap();
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        sender.send(PathBuf::from("B")).unwrap();
+        drop(sender);
+        resume.send(()).unwrap();
+        assert_eq!(
+            done.iter().collect::<Vec<_>>(),
+            [PathBuf::from("A"), PathBuf::from("B")]
+        );
+    }
 }

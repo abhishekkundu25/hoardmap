@@ -49,36 +49,38 @@ impl Projects {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let write = |rel: &str, len: u64| {
-            let path = root.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            File::create(path)
-                .unwrap()
-                .write_all(&vec![b'x'; len as usize])
-                .unwrap();
-        };
-        write("proj/package.json", 30);
-        write("proj/node_modules/a/node_modules/b/big", NODE_MODULES);
-        write("rust/target/CACHEDIR.TAG", 177);
-        write("rust/target/debug/app", 300_003);
-        write("py/.venv/pyvenv.cfg", 41);
-        write("py/.venv/lib/site.py", 50_005);
-        write(
+        let projects = Projects { root };
+        projects.write("proj/package.json", 30);
+        projects.write("proj/node_modules/a/node_modules/b/big", NODE_MODULES);
+        projects.write("rust/target/CACHEDIR.TAG", 177);
+        projects.write("rust/target/debug/app", 300_003);
+        projects.write("py/.venv/pyvenv.cfg", 41);
+        projects.write("py/.venv/lib/site.py", 50_005);
+        projects.write(
             "Library/Developer/Xcode/DerivedData/App-x/Build/obj",
             DERIVED_DATA,
         );
-        write(
+        projects.write(
             "Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw",
             DOCKER,
         );
-        write("tool/data/CACHEDIR.TAG", 43);
-        write("tool/data/blob", 20_013);
-        write("web/package.json", 30);
-        write("web/.next/cache/x", NEXT_BUILD);
-        write("loose/dist/app.js", 6_007);
-        write("work/target/real.dat", 400_009);
-        write("bare/node_modules/c", 5_003);
-        Projects { root }
+        projects.write("tool/data/CACHEDIR.TAG", 43);
+        projects.write("tool/data/blob", 20_013);
+        projects.write("web/package.json", 30);
+        projects.write("web/.next/cache/x", NEXT_BUILD);
+        projects.write("loose/dist/app.js", 6_007);
+        projects.write("work/target/real.dat", 400_009);
+        projects.write("bare/node_modules/c", 5_003);
+        projects
+    }
+
+    fn write(&self, rel: &str, len: u64) {
+        let path = self.root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        File::create(path)
+            .unwrap()
+            .write_all(&vec![b'x'; len as usize])
+            .unwrap();
     }
 
     fn path(&self, rel: &str) -> String {
@@ -233,6 +235,141 @@ fn groups_each_kind_and_skips_the_decoys() {
 }
 
 #[test]
+fn output_rules_keep_the_specific_owner_and_cautions_in_json() {
+    let projects = Projects::new();
+    let cases: &[(&str, &[&str], &str, &str)] = &[
+        (
+            "groovy",
+            &["build.gradle", "package.json"],
+            "build",
+            "gradle_build",
+        ),
+        (
+            "kotlin",
+            &["build.gradle.kts", "package.json"],
+            "build",
+            "gradle_build",
+        ),
+        (
+            "cpp",
+            &["CMakeLists.txt", "package.json"],
+            "build",
+            "cmake_build",
+        ),
+        (
+            "flutter",
+            &["pubspec.yaml", "package.json"],
+            "build",
+            "flutter_build",
+        ),
+        (
+            "python",
+            &["pyproject.toml", "package.json"],
+            "dist",
+            "python_dist",
+        ),
+        (
+            "legacy",
+            &["setup.py", "package.json"],
+            "dist",
+            "python_dist",
+        ),
+        (
+            "vite",
+            &["vite.config.ts", "pyproject.toml", "package.json"],
+            "dist",
+            "js_dist",
+        ),
+        (
+            "next",
+            &["next.config.mjs", "package.json"],
+            "out",
+            "next_export",
+        ),
+        ("models", &[], ".ollama/models", "ollama_models"),
+    ];
+    for &(project, markers, output, _) in cases {
+        for marker in markers {
+            projects.write(&format!("{project}/{marker}"), 1);
+        }
+        projects.write(&format!("{project}/{output}/artifact"), 100);
+    }
+    let server = start_done(&projects);
+    let json = rebuildable(&server, "");
+    for &(project, _, output, expected) in cases {
+        let path = projects.path(&format!("{project}/{output}"));
+        let found: Vec<_> = json["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|group| {
+                group["folders"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f["path"] == path)
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{path}: {json}");
+        let group = found[0];
+        assert_eq!(group["key"], expected, "{path}");
+        let caution = group["caution"].as_str().expect("output caution");
+        match expected {
+            "gradle_build" => assert_eq!(
+                caution,
+                "The name is common, so a folder you made yourself beside the same project file looks the same to hoardmap."
+            ),
+            "cmake_build" => assert!(caution.contains("CMakeCache.txt"), "{caution}"),
+            "ollama_models" => assert_eq!(
+                caution,
+                "Models you made with ollama create do not download again, and models you downloaded are large to fetch again and may be withdrawn upstream."
+            ),
+            _ => assert!(!caution.is_empty(), "{group}"),
+        }
+    }
+}
+
+#[test]
+fn sentinel_directories_and_symlinks_do_not_identify_rebuildable_folders() {
+    let projects = Projects::new();
+    for path in [
+        "tag-decoy/data/CACHEDIR.TAG/entry",
+        "cargo-decoy/target/CACHEDIR.TAG/entry",
+        "venv-decoy/.venv/pyvenv.cfg/entry",
+        "sibling-decoy/package.json/entry",
+        "sibling-decoy/build/artifact",
+        "gradle-decoy/build.gradle/entry",
+        "gradle-decoy/build/artifact",
+        "cmake-decoy/CMakeLists.txt/entry",
+        "cmake-decoy/build/artifact",
+        "conda-decoy/conda-meta",
+        "conda-decoy/pkgs/artifact",
+    ] {
+        projects.write(path, 1);
+    }
+    projects.write("marker", 1);
+    fs::create_dir_all(projects.root.join("link-decoy/data")).unwrap();
+    std::os::unix::fs::symlink(
+        projects.root.join("marker"),
+        projects.root.join("link-decoy/data/CACHEDIR.TAG"),
+    )
+    .unwrap();
+    projects.write("conda/conda-meta/history", 1);
+    projects.write("conda/pkgs/artifact", 1);
+    let server = start_done(&projects);
+    let json = rebuildable(&server, "");
+    assert!(!json.to_string().contains("-decoy"), "{json}");
+    let conda = json["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["key"] == "conda_pkgs")
+        .expect("a real conda-meta directory still matches");
+    assert_eq!(conda["count"], 1);
+    assert_eq!(conda["folders"][0]["path"], projects.path("conda/pkgs"));
+}
+
+#[test]
 fn root_narrows_and_mode_changes_the_bytes() {
     let projects = Projects::new();
     let server = start_done(&projects);
@@ -299,7 +436,8 @@ fn conflict_without_a_tree() {
     assert_eq!(json["error"], "no tree loaded");
 }
 
-/// Times `groups` on a real home folder. Run by hand, in release:
+/// Times `groups` on a real home folder, or a fixture at HOARDMAP_TIMING_ROOT.
+/// Run by hand, in release:
 /// `cargo test --release --test rebuildable -- --ignored --nocapture`. The budget is
 /// 50 ms for about a million entries.
 #[test]
@@ -308,8 +446,12 @@ fn groups_on_the_home_folder() {
     use hoardmap::scan::{Progress, scan};
     use hoardmap::treemap::Mode;
     use std::time::Instant;
-    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
-    let tree = scan(&home, &Progress::default()).expect("scan");
+    let root = PathBuf::from(
+        std::env::var_os("HOARDMAP_TIMING_ROOT")
+            .or_else(|| std::env::var_os("HOME"))
+            .expect("HOARDMAP_TIMING_ROOT or HOME"),
+    );
+    let tree = scan(&root, &Progress::default()).expect("scan");
     let start = Instant::now();
     let groups = hoardmap::rebuildable::groups(&tree, 0, Mode::Physical);
     let took = start.elapsed();

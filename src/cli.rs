@@ -1,5 +1,6 @@
 //! Command-line options. The `hoardmap` command only hands a folder to the Mac app.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
@@ -21,17 +22,23 @@ pub enum Error {
 /// Parses the arguments after the program name: at most one folder.
 pub fn parse<I>(args: I) -> Result<Option<PathBuf>, Error>
 where
-    I: IntoIterator<Item = String>,
+    I: IntoIterator<Item = OsString>,
 {
     let mut path = None;
     for arg in args {
-        match arg.as_str() {
-            "-h" | "--help" => return Err(Error::Help),
-            _ if arg.starts_with('-') => {
-                return Err(Error::Usage(format!("unknown option: {arg}")));
+        match arg.to_str() {
+            Some("-h" | "--help") => return Err(Error::Help),
+            _ if arg.as_encoded_bytes().starts_with(b"-") => {
+                return Err(Error::Usage(format!(
+                    "unknown option: {}",
+                    arg.to_string_lossy()
+                )));
             }
             _ if path.is_some() => {
-                return Err(Error::Usage(format!("unexpected argument: {arg}")));
+                return Err(Error::Usage(format!(
+                    "unexpected argument: {}",
+                    arg.to_string_lossy()
+                )));
             }
             _ => path = Some(PathBuf::from(arg)),
         }
@@ -44,7 +51,7 @@ mod tests {
     use super::*;
 
     fn parse_strs(args: &[&str]) -> Result<Option<PathBuf>, Error> {
-        parse(args.iter().map(|s| s.to_string()))
+        parse(args.iter().map(OsString::from))
     }
 
     #[test]
@@ -73,5 +80,22 @@ mod tests {
     #[test]
     fn a_second_folder_is_refused() {
         assert!(matches!(parse_strs(&["/a", "/b"]), Err(Error::Usage(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_paths_are_preserved_and_non_utf8_options_are_usage_errors() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = OsString::from_vec(b"/tmp/folder-\xff".to_vec());
+        assert_eq!(parse([path.clone()]), Ok(Some(PathBuf::from(&path))));
+        assert!(matches!(
+            parse([OsString::from_vec(b"--bad-\xff".to_vec())]),
+            Err(Error::Usage(_))
+        ));
+        assert!(matches!(
+            parse([OsString::from("first"), path]),
+            Err(Error::Usage(_))
+        ));
     }
 }

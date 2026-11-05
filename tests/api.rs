@@ -3,13 +3,14 @@
 
 mod common;
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use common::{Fixture, OpenStub, Server, assert_idle, fixture, header};
+use hoardmap::server::{MAX_CONNECTIONS, READ_TIMEOUT};
 use serde_json::Value;
 
 const JSON: Option<&str> = Some("application/json");
@@ -630,6 +631,19 @@ fn source_never_deletes_moves_or_renames() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "rs") {
             let text = std::fs::read_to_string(&path).unwrap();
+            // Unit tests at the end of a file may clean up their own temp fixtures; the
+            // app code above them may not, so the test module must be the last item.
+            let (text, tests) = text
+                .split_once("#[cfg(test)]\nmod tests")
+                .unwrap_or((&text, ""));
+            assert!(
+                tests
+                    .lines()
+                    .skip(1)
+                    .all(|l| l.is_empty() || l == "}" || l.starts_with([' ', '/'])),
+                "{}: code after the test module",
+                path.display()
+            );
             for needle in [
                 "remove_",
                 "rename(",
@@ -823,7 +837,7 @@ fn a_folder_from_finder_waits_for_the_start_screen_or_replaces_the_scan() {
     assert_eq!(status()["path"], lossy(&second.root));
 
     // After a scan: it replaces it.
-    app.start_scan(first.root.clone()).unwrap();
+    app.start_scan(Some(first.root.clone())).unwrap();
     app.open_folder(second.root.clone()).unwrap();
     let end = Instant::now() + Duration::from_secs(10);
     while !(status()["state"] == "done" && status()["path"] == lossy(&second.root)) {
@@ -835,4 +849,288 @@ fn a_folder_from_finder_waits_for_the_start_screen_or_replaces_the_scan() {
         thread::sleep(Duration::from_millis(20));
     }
     assert!(app.open_folder(second.root.join("a/big.bin")).is_err());
+}
+
+#[test]
+fn megabyte_request_lines_and_headers_are_refused_without_unbounded_memory() {
+    fn resident_bytes(server: &Server) -> u64 {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &server.pid().to_string()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap()
+            * 1024
+    }
+
+    let fx = fixture();
+    let server = start_done(&fx);
+    let before = resident_bytes(&server);
+    for prefix in ["GET /", "GET / HTTP/1.1\r\nX-Huge: "] {
+        for ending in ["", "\r\n\r\n"] {
+            let request = format!("{prefix}{}{ending}", "x".repeat(1024 * 1024));
+            let mut stream = server.connect();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut response = BufReader::new(stream);
+            let mut status_line = String::new();
+            response.read_line(&mut status_line).unwrap();
+            assert!(
+                status_line.starts_with("HTTP/1.1 431 ")
+                    || status_line.starts_with("HTTP/1.1 400 "),
+                "{status_line:?}"
+            );
+            assert!(resident_bytes(&server).saturating_sub(before) < 4 * 1024 * 1024);
+            response.get_ref().shutdown(Shutdown::Write).unwrap();
+            response.read_to_end(&mut Vec::new()).unwrap();
+        }
+    }
+    assert_eq!(server.get("/").0, 200);
+}
+
+#[test]
+fn idle_connections_past_the_cap_release_slots_and_the_page_still_answers() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut idle: Vec<_> = (0..MAX_CONNECTIONS + 7).map(|_| server.connect()).collect();
+    // The last reserved slot past the cap: admitted, not refused, so the page is answered.
+    assert_eq!(server.get("/").0, 200);
+    // An idle connection past the cap is closed after the short admission wait, not held
+    // for the read timeout.
+    let mut overflow = idle.pop().unwrap();
+    overflow
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut byte = [0];
+    assert!(matches!(overflow.read(&mut byte), Ok(0)));
+
+    let deadline = Instant::now() + READ_TIMEOUT + Duration::from_secs(3);
+    loop {
+        let mut page = server.connect();
+        page.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let sent = write!(
+            page,
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}\r\n",
+            server.port,
+            server.cookie()
+        );
+        let mut response = Vec::new();
+        if sent.is_ok() && page.read_to_end(&mut response).is_ok() && !response.is_empty() {
+            assert_eq!(common::parse_response(&response).0, 200);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "idle connections kept every slot"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(idle);
+    assert_eq!(server.get("/app.js").0, 200);
+}
+
+#[test]
+fn a_connection_that_sends_nothing_is_closed_silently_after_the_read_timeout() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut stream = server.connect();
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT + Duration::from_secs(2)))
+        .unwrap();
+    let started = Instant::now();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    assert!(
+        response.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    assert!(started.elapsed() >= READ_TIMEOUT / 2);
+    assert!(started.elapsed() < READ_TIMEOUT + Duration::from_secs(2));
+    assert_eq!(server.get("/api/status").0, 200);
+}
+
+#[test]
+fn trickling_a_head_or_body_cannot_extend_the_request_deadline() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let fx = fixture();
+    let server = start_done(&fx);
+    for prefix in [
+        "GET / HTTP/1.1\r\nX: ".to_string(),
+        format!(
+            "POST /api/scan HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Content-Length: 1024\r\n\r\n",
+            server.port,
+            server.cookie()
+        ),
+    ] {
+        let mut stream = server.connect();
+        stream
+            .set_read_timeout(Some(READ_TIMEOUT + Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(prefix.as_bytes()).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let stopped = AtomicBool::new(false);
+        let started = Instant::now();
+        let mut response = Vec::new();
+        let result = thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stopped.load(Ordering::Relaxed) && started.elapsed() < READ_TIMEOUT * 3 {
+                    if writer.write_all(b"x").is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
+            let result = stream.read_to_end(&mut response);
+            stopped.store(true, Ordering::Relaxed);
+            result
+        });
+        result.unwrap();
+        assert_eq!(common::parse_response(&response).0, 400);
+        assert!(started.elapsed() < READ_TIMEOUT + Duration::from_secs(1));
+    }
+}
+
+#[test]
+fn authenticated_requests_answer_while_hostile_clients_keep_reconnecting() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut hostile: Vec<_> = (0..MAX_CONNECTIONS)
+        .map(|_| {
+            let mut stream = server.connect();
+            stream.write_all(b"GET / HTTP/1.1\r\nX: ").unwrap();
+            stream.set_nonblocking(true).unwrap();
+            stream
+        })
+        .collect();
+    let stopped = AtomicBool::new(false);
+    let reconnects = AtomicUsize::new(0);
+    let started = Instant::now();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) && started.elapsed() < READ_TIMEOUT * 4 {
+                for stream in &mut hostile {
+                    let closed = stream.read(&mut [0; 4096]).is_ok_and(|n| n == 0)
+                        || stream.write_all(b"x").is_err();
+                    if closed
+                        && let Ok(next) = TcpStream::connect_timeout(
+                            &([127, 0, 0, 1], server.port).into(),
+                            Duration::from_millis(100),
+                        )
+                    {
+                        next.set_nonblocking(true).unwrap();
+                        *stream = next;
+                        reconnects.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let result = std::panic::catch_unwind(|| {
+            for _ in 0..6 {
+                assert_eq!(server.get("/").0, 200);
+                thread::sleep(Duration::from_millis(500));
+            }
+            let port = server.port;
+            assert_eq!(
+                server
+                    .raw(&format!(
+                        "GET /?token={} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n",
+                        server.token
+                    ))
+                    .0,
+                303
+            );
+        });
+        stopped.store(true, Ordering::Relaxed);
+        if let Err(error) = result {
+            std::panic::resume_unwind(error);
+        }
+    });
+    assert!(reconnects.load(Ordering::Relaxed) > 0);
+}
+
+#[test]
+fn a_scan_without_a_path_rescans_the_last_folder() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    assert_eq!(post_json(&server, "/api/scan", r#"{"path":null}"#).0, 400);
+    std::fs::write(fx.root.join("new-file"), b"new bytes").unwrap();
+    assert_eq!(post_json(&server, "/api/scan", "{}").0, 202);
+    let status = server.wait_for("done", Duration::from_secs(5));
+    assert_eq!(status["path"], lossy(&fx.root));
+    assert_eq!(status["bytes"], fx.total_bytes() + 9);
+}
+
+#[test]
+fn a_stopped_scan_can_be_followed_by_a_scan_of_another_folder() {
+    let (first, second) = (fixture(), fixture());
+    for i in 0..20_000 {
+        std::fs::write(first.root.join("a").join(format!("entry-{i}")), []).unwrap();
+    }
+    let server = start_done(&second);
+    let scan = serde_json::json!({"path": first.root}).to_string();
+    assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
+    assert_eq!(post_json(&server, "/api/scan/stop", "{}").0, 202);
+    let stopped = server.wait_for("done", Duration::from_secs(5));
+    assert_eq!(stopped["stopped"], true);
+    let scan = serde_json::json!({"path": second.root}).to_string();
+    assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
+    let status = server.wait_for("done", Duration::from_secs(5));
+    let total = hoardmap::server::disk(&second.root).unwrap().0;
+    assert_eq!(status["path"], lossy(&second.root));
+    assert_eq!(status["disk"]["total"], total);
+    assert_eq!(status["bytes"], second.total_bytes());
+    // Late completion with different disk totals is covered by the server unit test.
+}
+
+#[test]
+fn event_streams_outlive_the_request_timeout_and_never_go_back_after_done() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let mut stream = open_events_raw(&server);
+    let mut text = String::new();
+    read_until(&mut stream, &mut text, 0, "\n\n");
+    thread::sleep(READ_TIMEOUT + Duration::from_millis(250));
+    let from = text.len();
+    let scan = serde_json::json!({"path": fx.root}).to_string();
+    assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
+    read_until(&mut stream, &mut text, from, "\"state\":\"done\"");
+    let done = from + text[from..].find("\"state\":\"done\"").unwrap();
+    read_until(&mut stream, &mut text, done, "\n\n");
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut tail = Vec::new();
+    let error = stream.read_to_end(&mut tail).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    text.push_str(&String::from_utf8(tail).unwrap());
+    let statuses: Vec<Value> = text[from..]
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect();
+    assert_eq!(statuses.first().unwrap()["state"], "scanning");
+    let done = statuses
+        .iter()
+        .position(|status| status["state"] == "done")
+        .unwrap();
+    assert!(
+        statuses[done..]
+            .iter()
+            .all(|status| status["state"] == "done")
+    );
 }
