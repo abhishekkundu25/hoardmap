@@ -32,7 +32,7 @@ close-out itself after the last landing: `README.md`, `CHANGELOG.md`,
 | 02 | todo |
 | 03 | todo |
 | 04 | todo |
-| 05 | todo |
+| 05 | done: relaunch waits on `open -n` and the new instance waits up to 10 s for the old pid; one worker opens folders in order; release cleanup detaches; tap job serialised with a version guard; checkout@v5. Unverified live: LaunchServices relaunch, DMG detach, tap concurrency. |
 | close-out | todo |
 
 ## Departures from the plan

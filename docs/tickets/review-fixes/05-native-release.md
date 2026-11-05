@@ -8,7 +8,7 @@ actions move to their Node 24 major versions.
 
 **Blocked by:** none.
 
-**Status:** todo
+**Status:** done
 
 ## Acceptance
 
