@@ -632,8 +632,18 @@ fn source_never_deletes_moves_or_renames() {
         if path.extension().is_some_and(|e| e == "rs") {
             let text = std::fs::read_to_string(&path).unwrap();
             // Unit tests at the end of a file may clean up their own temp fixtures; the
-            // app code above them may not.
-            let text = text.split("#[cfg(test)]\nmod tests").next().unwrap();
+            // app code above them may not, so the test module must be the last item.
+            let (text, tests) = text
+                .split_once("#[cfg(test)]\nmod tests")
+                .unwrap_or((&text, ""));
+            assert!(
+                tests
+                    .lines()
+                    .skip(1)
+                    .all(|l| l.is_empty() || l == "}" || l.starts_with([' ', '/'])),
+                "{}: code after the test module",
+                path.display()
+            );
             for needle in [
                 "remove_",
                 "rename(",

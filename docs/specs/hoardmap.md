@@ -127,7 +127,7 @@ renames anything. Closing the window quits the app.
 
 ## Implementation decisions
 
-- One Rust crate with a library and a binary. Dependencies: `tiny_http` (HTTP),
+- One Rust crate with a library and a binary. Dependencies: `std::net` for HTTP,
   `serde` and `serde_json` (JSON), `rayon` (parallel scan). No async runtime, no
   frontend framework, no build step: the page is three static files embedded in the
   binary with `include_str!`.
@@ -166,8 +166,9 @@ renames anything. Closing the window quits the app.
   collapsed dirs: id, x, y, w, h, kind, ext, colour) and `dirs` (every laid-out
   directory's bounds: id, x, y, w, h) so the page can outline a selection. Sizes use
   the requested mode, logical or physical.
-- **HTTP**: `tiny_http` bound to `127.0.0.1:PORT` (PORT from `--port`, else 0 and the
-  OS picks). The first stdout line is `Listening on http://127.0.0.1:PORT/?token=TOKEN`. Each
+- **HTTP**: a `std::net` listener on `127.0.0.1`, port 48273 for the app (any free
+  port when that one is taken). The debug test server (`HOARDMAP_TEST_SERVER=1`)
+  prints `Listening on http://127.0.0.1:PORT/?token=TOKEN` as its first line. Each
   request is handled on its own thread, at most 64 at once (more are closed at once).
   The request line and headers are read only up to 16 KiB (431 past it, 400 when cut
   short) and within 2 s of each read (bodies up to 64 KiB, under the same timeout); an
