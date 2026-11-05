@@ -40,6 +40,7 @@ fn build(spec: Spec) -> Tree {
         error_count: 0,
         clone_aware: false,
         clone_counted_once: 0,
+        raw_names: Default::default(),
     };
     add(&mut tree, None, spec);
     tree
