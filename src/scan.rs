@@ -75,7 +75,9 @@ pub const LIVE_DEPTH: usize = 3;
 #[derive(Clone, Debug)]
 pub struct Finished {
     /// File names from the root down to this entry.
-    pub path: Vec<String>,
+    pub path: Vec<OsString>,
+    /// Only the empty-path root record carries a non-UTF-8 scan root.
+    pub raw_root: Option<Box<OsStr>>,
     pub kind: Kind,
     pub size: u64,
     pub physical: u64,
@@ -287,6 +289,7 @@ struct Ctx<'a> {
     /// Folders below the root that are counted but not read.
     skip: Vec<PathBuf>,
     root: &'a Path,
+    listing_slots: [Mutex<()>; MAX_LISTINGS],
 }
 
 impl Ctx<'_> {
@@ -309,15 +312,13 @@ impl Ctx<'_> {
         let Ok(rel) = dir.strip_prefix(self.root) else {
             return;
         };
-        let parent: Vec<String> = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
+        let parent: Vec<OsString> = rel.components().map(|c| c.as_os_str().to_owned()).collect();
         let entries = done.iter().map(|local| {
             let mut path = parent.clone();
-            path.push(local.name.to_string_lossy().into_owned());
+            path.push(local.name.clone());
             Finished {
                 path,
+                raw_root: None,
                 kind: local.kind,
                 size: local.size,
                 physical: local.physical,
@@ -326,7 +327,20 @@ impl Ctx<'_> {
                 mtime: local.mtime,
             }
         });
-        self.progress.finished.lock().unwrap().extend(entries);
+        let mut finished = self.progress.finished.lock().unwrap();
+        if finished.is_empty() && self.root.to_str().is_none() {
+            finished.push(Finished {
+                path: Vec::new(),
+                raw_root: Some(self.root.as_os_str().into()),
+                kind: Kind::Dir,
+                size: 0,
+                physical: 0,
+                files: 0,
+                dirs: 0,
+                mtime: 0,
+            });
+        }
+        finished.extend(entries);
     }
 }
 
@@ -367,19 +381,35 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
         children: Vec::new(),
         shared: Shared::None,
     }];
+    let mut raw_names = HashMap::new();
+    if let Some(raw) = finished
+        .first()
+        .and_then(|entry| entry.raw_root.as_ref())
+        .filter(|raw| raw.to_string_lossy() == root)
+    {
+        raw_names.insert(ROOT, raw.clone());
+    }
     // Finished nodes keep their reported totals; the others add up their children.
     let mut fixed = vec![false];
-    let mut index: HashMap<(NodeId, &str), NodeId> = HashMap::new();
+    let mut index: HashMap<(NodeId, &OsStr), NodeId> = HashMap::new();
     for entry in finished {
         let mut at = ROOT;
         for (depth, name) in entry.path.iter().enumerate() {
             let last = depth + 1 == entry.path.len();
-            at = match index.get(&(at, name.as_str())) {
+            at = match index.get(&(at, name.as_os_str())) {
                 Some(&id) => id,
                 None => {
                     let id = nodes.len() as NodeId;
+                    let display = match name.clone().into_string() {
+                        Ok(name) => name,
+                        Err(raw) => {
+                            let display = raw.to_string_lossy().into_owned();
+                            raw_names.insert(id, raw.into_boxed_os_str());
+                            display
+                        }
+                    };
                     nodes.push(Node {
-                        name: name.clone(),
+                        name: display,
                         parent: Some(at),
                         kind: Kind::Dir,
                         size: 0,
@@ -392,7 +422,7 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
                     });
                     fixed.push(false);
                     nodes[at as usize].children.push(id);
-                    index.insert((at, name.as_str()), id);
+                    index.insert((at, name.as_os_str()), id);
                     id
                 }
             };
@@ -441,7 +471,7 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
         error_count: 0,
         clone_aware: false,
         clone_counted_once: 0,
-        raw_names: HashMap::new(),
+        raw_names,
     }
 }
 
@@ -574,7 +604,7 @@ fn walk(
 ) -> io::Result<Tree> {
     #[cfg(target_os = "macos")]
     never_download();
-    let directory = open_directory(path, None, None)?;
+    let directory = open_directory(path, None)?;
     let meta = directory.metadata()?;
     let clones = match method {
         Method::Portable => false,
@@ -591,7 +621,9 @@ fn walk(
         error_count: AtomicU64::new(0),
         skip,
         root: path,
+        listing_slots: std::array::from_fn(|_| Mutex::new(())),
     };
+    ctx.finish(path, &[]);
     let entries = list(path, directory, &ctx)?;
     let children = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(pool) => pool.install(|| build(path, entries, &ctx, 0)),
@@ -617,30 +649,23 @@ fn walk(
 const ENTRY_BATCH: usize = 256;
 const DIRECTORY_CHANGED: &str = "Folder changed while scanning; skipped";
 
-struct Listing {
-    entries: Vec<(OsString, Stat)>,
-    directory: File,
-}
+// Each portable listing holds a directory and its iterator's duplicate descriptor.
+const MAX_LISTINGS: usize = 32;
 
-/// Open children relative to the directory we listed, never through a symlink.
+/// Open children without following a symlink, and verify the listed identity.
 /// The root may itself be a symlink, as documented by [`scan`].
-fn open_directory(
-    path: &Path,
-    parent: Option<(&File, &OsStr)>,
-    expected: Option<&Stat>,
-) -> io::Result<File> {
-    let name = parent.map_or(path.as_os_str(), |(_, name)| name);
-    let name = CString::new(name.as_bytes())?;
-    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
-    // SAFETY: name is NUL terminated, and a parent's descriptor stays open for the call.
-    let fd = unsafe {
-        match parent {
-            Some((parent, _)) => {
-                libc::openat(parent.as_raw_fd(), name.as_ptr(), flags | libc::O_NOFOLLOW)
-            }
-            None => libc::open(name.as_ptr(), flags),
-        }
-    };
+fn open_directory(path: &Path, expected: Option<&Stat>) -> io::Result<File> {
+    let name = CString::new(path.as_os_str().as_bytes())?;
+    let flags = libc::O_RDONLY
+        | libc::O_DIRECTORY
+        | libc::O_CLOEXEC
+        | if expected.is_some() {
+            libc::O_NOFOLLOW
+        } else {
+            0
+        };
+    // SAFETY: name is NUL terminated; the fresh descriptor is owned below.
+    let fd = unsafe { libc::open(name.as_ptr(), flags) };
     if fd < 0 {
         let error = io::Error::last_os_error();
         return Err(match error.raw_os_error() {
@@ -665,14 +690,13 @@ fn open_directory(
     Ok(directory)
 }
 
-/// The entries of `dir`. Keep its descriptor until its children have been read.
-fn list(dir: &Path, directory: File, ctx: &Ctx) -> io::Result<Listing> {
-    let entries = match ctx.method {
-        Method::Portable => list_portable(dir, &directory, ctx)?,
+/// The entries of `dir`. Close its descriptor before descending.
+fn list(dir: &Path, directory: File, ctx: &Ctx) -> io::Result<Vec<(OsString, Stat)>> {
+    match ctx.method {
+        Method::Portable => list_portable(dir, &directory, ctx),
         #[cfg(target_os = "macos")]
-        Method::Bulk => bulk::list(dir, &directory, ctx)?,
-    };
-    Ok(Listing { entries, directory })
+        Method::Bulk => bulk::list(dir, &directory, ctx),
+    }
 }
 
 /// `read_dir` has no descriptor interface. Use its POSIX equivalents to enumerate
@@ -769,19 +793,23 @@ fn list_portable(dir: &Path, directory: &File, ctx: &Ctx) -> io::Result<Vec<(OsS
 }
 
 /// `depth` is how far `dir` is below the root, which is 0.
-fn read_children(
-    dir: &Path,
-    parent: &File,
-    name: &OsStr,
-    stat: &Stat,
-    ctx: &Ctx,
-    depth: usize,
-) -> Vec<Local> {
+fn read_children(dir: &Path, stat: &Stat, ctx: &Ctx, depth: usize) -> Vec<Local> {
     if ctx.progress.stop.load(AtomicOrdering::Relaxed) {
         return Vec::new();
     }
-    let entries = open_directory(dir, Some((parent, name)), Some(stat))
-        .and_then(|directory| list(dir, directory, ctx));
+    let entries = {
+        // shortcut: saturated listings wait for slot 0; use a semaphore if contention matters.
+        let _slot = ctx
+            .listing_slots
+            .iter()
+            .find_map(|slot| slot.try_lock().ok())
+            .unwrap_or_else(|| ctx.listing_slots[0].lock().unwrap());
+        if ctx.progress.stop.load(AtomicOrdering::Relaxed) {
+            return Vec::new();
+        }
+        // shortcut: renamed or overlong ancestors may be skipped; retain budgeted fds if needed.
+        open_directory(dir, Some(stat)).and_then(|directory| list(dir, directory, ctx))
+    };
     match entries {
         Ok(entries) => build(dir, entries, ctx, depth),
         Err(e) => {
@@ -793,16 +821,12 @@ fn read_children(
 
 /// Builds `entries`, then reads the subfolders on the same volume in parallel. `depth`
 /// is how far `dir` is below the root, which is 0.
-fn build(dir: &Path, listing: Listing, ctx: &Ctx, depth: usize) -> Vec<Local> {
-    let Listing { entries, directory } = listing;
+fn build(dir: &Path, entries: Vec<(OsString, Stat)>, ctx: &Ctx, depth: usize) -> Vec<Local> {
     // Only entries this shallow go into the running scan's preview.
     let live = depth < LIVE_DEPTH;
     let mut children = Vec::with_capacity(entries.len());
     let mut subdirs = Vec::new();
-    for (index, (name, stat)) in entries.into_iter().enumerate() {
-        if index % ENTRY_BATCH == 0 && ctx.progress.stop.load(AtomicOrdering::Relaxed) {
-            break;
-        }
+    for (name, stat) in entries {
         if stat.kind == Kind::Dir {
             if stat.dev == ctx.root_dev && !stat.mount_point && !stat.dataless {
                 subdirs.push((name, stat));
@@ -822,7 +846,7 @@ fn build(dir: &Path, listing: Listing, ctx: &Ctx, depth: usize) -> Vec<Local> {
             ctx.record(&path, &io::Error::other(NOT_SCANNED));
             Vec::new()
         } else {
-            read_children(&path, &directory, &name, &stat, ctx, depth + 1)
+            read_children(&path, &stat, ctx, depth + 1)
         };
         let local = Local::dir(name, &stat, grandchildren);
         if live {
@@ -1238,6 +1262,7 @@ mod tests {
             error_count: AtomicU64::new(0),
             skip: Vec::new(),
             root,
+            listing_slots: std::array::from_fn(|_| Mutex::new(())),
         }
     }
 
@@ -1293,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn recursion_uses_the_open_parent_after_its_path_is_replaced() {
+    fn a_replaced_ancestor_is_skipped_when_children_are_reopened() {
         for method in [
             Method::Portable,
             #[cfg(target_os = "macos")]
@@ -1314,9 +1339,11 @@ mod tests {
 
             let children = build(&root, listing, &ctx, 0);
             assert_eq!(children.len(), 1, "{method:?}");
-            assert_eq!(children[0].children.len(), 1, "{method:?}");
-            assert_eq!(children[0].children[0].name, "original", "{method:?}");
-            assert_eq!(ctx.error_count.load(AtomicOrdering::Relaxed), 0);
+            assert!(children[0].children.is_empty(), "{method:?}");
+            assert_eq!(ctx.error_count.load(AtomicOrdering::Relaxed), 1);
+            let errors = ctx.errors.lock().unwrap();
+            assert_eq!(errors[0].path, root.join("child").to_string_lossy());
+            assert_eq!(errors[0].error, DIRECTORY_CHANGED);
         }
     }
 
@@ -1367,6 +1394,61 @@ mod tests {
             tree.path(4),
             PathBuf::from(root_name).join(second).join("file")
         );
+    }
+
+    #[test]
+    fn previews_keep_raw_paths_and_colliding_names_after_stop() {
+        let scratch = Scratch::new();
+        let file = scratch.0.join("file");
+        fs::write(&file, b"data").unwrap();
+        let dir_stat = Stat::of(&fs::metadata(&scratch.0).unwrap());
+        let file_stat = Stat::of(&fs::metadata(file).unwrap());
+        let root = scratch.0.join(OsString::from_vec(b"root\xff".to_vec()));
+        let locals: Vec<_> = (*b"\xfe\xff")
+            .into_iter()
+            .map(|byte| {
+                Local::dir(
+                    OsString::from_vec(vec![b'd', byte]),
+                    &dir_stat,
+                    vec![Local::leaf(
+                        OsString::from_vec(vec![b'f', byte]),
+                        &file_stat,
+                    )],
+                )
+            })
+            .collect();
+        let progress = Progress::default();
+        let mut ctx = context(&scratch.0, &progress, Method::Portable);
+        ctx.root = &root;
+        ctx.finish(&root, &[]);
+        let empty = partial(&root.to_string_lossy(), &progress.finished.lock().unwrap());
+        assert_eq!(empty.path(ROOT), root);
+        assert_eq!(empty.nodes.len(), 1);
+        ctx.finish(&root.join(&locals[0].name), &[&locals[0].children[0]]);
+        let early = partial(&root.to_string_lossy(), &progress.finished.lock().unwrap());
+        ctx.finish(&root.join(&locals[1].name), &[&locals[1].children[0]]);
+        ctx.finish(&root, &locals.iter().collect::<Vec<_>>());
+        progress.stop.store(true, AtomicOrdering::Relaxed);
+        let stopped = partial(&root.to_string_lossy(), &progress.finished.lock().unwrap());
+        assert_eq!(
+            (
+                stopped.root().dirs,
+                stopped.root().files,
+                stopped.root().size
+            ),
+            (2, 2, 8)
+        );
+        assert_eq!(stopped.path(ROOT), root);
+        assert_eq!(stopped.raw_names.len(), 5);
+        for (index, local) in locals.iter().enumerate() {
+            let id = 2 + 2 * index as NodeId;
+            assert_eq!(
+                stopped.path(id),
+                root.join(&local.name).join(&local.children[0].name)
+            );
+        }
+        assert_eq!(early.path(2), stopped.path(2));
+        assert!(partial("/ordinary", &[]).raw_names.is_empty());
     }
 
     #[test]

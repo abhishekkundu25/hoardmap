@@ -301,7 +301,8 @@ fn a_preview_keeps_its_ids_as_the_scan_goes_on() {
 #[test]
 fn a_preview_adds_up_folders_still_being_read() {
     let file = |path: &[&str], size| hoardmap::scan::Finished {
-        path: path.iter().map(|s| s.to_string()).collect(),
+        path: path.iter().map(|s| (*s).into()).collect(),
+        raw_root: None,
         kind: Kind::File,
         size,
         physical: size,
@@ -695,8 +696,81 @@ fn stop_interrupts_listing_one_folder_with_200k_files() {
                 "{method:?}: Stop must arrive during listing"
             );
             assert!(latency < Duration::from_secs(1), "{method:?}: {latency:?}");
+            assert!(
+                tree.root().files > 0,
+                "{method:?}: keep files already listed"
+            );
+            assert_eq!(
+                u64::from(tree.root().files),
+                progress.files.load(Ordering::Relaxed)
+            );
+            let preview = partial(root.0.to_str().unwrap(), &progress.finished.lock().unwrap());
+            assert_eq!(preview.root().files, tree.root().files);
             assert!(u64::from(tree.root().files) < FILES, "{method:?}");
             assert_eq!(tree.error_count, 0, "{method:?}");
         });
+    }
+}
+
+#[test]
+fn deep_scan_under_a_256_descriptor_limit() {
+    const CHILD: &str = "HOARDMAP_TEST_LOW_NOFILE";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "deep_scan_under_a_256_descriptor_limit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    const DEPTH: u32 = 300;
+    const BRANCHES: u32 = 4;
+    let root = Scratch(std::env::temp_dir().join(format!("hoardmap-deep-{}", std::process::id())));
+    fs::create_dir(&root.0).unwrap();
+    for branch in 0..BRANCHES {
+        let mut dir = root.0.join(branch.to_string());
+        fs::create_dir(&dir).unwrap();
+        for _ in 0..DEPTH {
+            dir.push("d");
+            fs::create_dir(&dir).unwrap();
+        }
+        fs::write(dir.join("file"), b"data").unwrap();
+    }
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: the child changes only its own soft limit, retaining the hard limit.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()), 0);
+        let mut limit = limit.assume_init();
+        limit.rlim_cur = 256.min(limit.rlim_max);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+    }
+    for method in [
+        Method::Portable,
+        #[cfg(target_os = "macos")]
+        Method::Bulk,
+    ] {
+        for threads in [1, 64] {
+            let tree = scan_with_threads(&root.0, &Progress::default(), method, threads).unwrap();
+            assert_eq!(
+                tree.error_count, 0,
+                "{method:?}, {threads} threads: {:?}",
+                tree.errors
+            );
+            assert_eq!(
+                (tree.root().dirs, tree.root().files, tree.root().size),
+                (BRANCHES * (DEPTH + 1), BRANCHES, u64::from(BRANCHES) * 4)
+            );
+        }
     }
 }
