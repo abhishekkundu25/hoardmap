@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-11-06
+
 - The Rebuildable tab opens with every group collapsed to one line, so a home-folder scan fits on a screen. Cautions stay visible; open a group with its arrow (or the Right key) to see why it comes back, its documentation and its largest 50 folders, then Show all. Open groups stay open while a scan refreshes the tab.
 - Gradle `build` folders carry the caution that `build` is a common name. A `build` folder beside both `CMakeLists.txt` and `package.json` is grouped as CMake output, with CMake's caution. A folder named like a marker file (`CACHEDIR.TAG`, `package.json`) no longer counts as one. The Ollama caution says models made with `ollama create` do not download again.
 - Drives with a folder whose name ends in `.previous` or `.inprogress` are no longer hidden from the Disks menu; only Time Machine's own markers hide a drive.
