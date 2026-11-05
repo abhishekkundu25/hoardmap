@@ -291,7 +291,8 @@ function fetchNode(id) {
       }
       return node;
     })
-    .finally(() => pending.delete(id));
+    // A live refresh may have replaced this entry with a newer request for the id.
+    .finally(() => pending.get(id) === promise && pending.delete(id));
   pending.set(id, promise);
   return promise;
 }
@@ -1728,6 +1729,8 @@ function forgetTree() {
   store.rebuild = null;
   store.layout = null;
   store.loadedPath = null;
+  // Folder ids belong to the old tree; a group key holds in the new one.
+  rebuildView.cursorId = null;
   // Answers still on their way are for the old tree.
   layoutRequest += 1;
   bottomRequest += 1;
@@ -1736,8 +1739,20 @@ function forgetTree() {
   hideTooltip();
 }
 
-// Loads the new tree once a scan has finished.
+// Opens the folders below `node` whose paths are in `paths`, as the list had them.
+async function reopen(node, paths) {
+  for (const child of node.children) {
+    if (!paths.has(joinPath(node.path, child.name))) continue;
+    const loaded = await fetchNode(child.id);
+    expanded.add(child.id);
+    await reopen(loaded, paths);
+  }
+}
+
+// Loads the new tree once a scan has finished. The finished tree has new ids, so the
+// folders opened in its preview are found again by path.
 async function loadTree() {
+  const opened = new Set([...expanded].map((id) => nodes.get(id)?.path));
   forgetTree();
   const started = generation;
   store.loadedPath = store.status.path;
@@ -1759,6 +1774,7 @@ async function loadTree() {
   renderHint();
   fetchTreemap();
   loadBottom();
+  reopen(nodes.get(0), opened).then(renderList, () => {});
 }
 
 // While a scan runs, reloads its preview tree at most every LIVE_MS, keeping the
@@ -1941,8 +1957,10 @@ async function showAccess() {
 async function accessAction(url) {
   try {
     await postJSON(url, {});
+    return true;
   } catch (e) {
     showMessage(e.message, true);
+    return false;
   }
 }
 
@@ -1955,10 +1973,15 @@ $("access-close").addEventListener("click", () => el.access.close());
 $("access-done").addEventListener("click", () => el.access.close());
 $("access-settings").addEventListener("click", () => accessAction("/api/access/settings"));
 $("access-reveal").addEventListener("click", () => accessAction("/api/access/reveal"));
-$("access-relaunch").addEventListener("click", () => {
-  $("access-relaunch").textContent = "Relaunching";
-  $("access-relaunch").disabled = true;
-  accessAction("/api/relaunch");
+$("access-relaunch").addEventListener("click", async () => {
+  const button = $("access-relaunch");
+  const label = button.textContent;
+  button.textContent = "Relaunching";
+  button.disabled = true;
+  // On success the app quits; a failure leaves it running, so the button comes back.
+  if (await accessAction("/api/relaunch")) return;
+  button.textContent = label;
+  button.disabled = false;
 });
 $("access-rescan").addEventListener("click", () => {
   el.access.close();
