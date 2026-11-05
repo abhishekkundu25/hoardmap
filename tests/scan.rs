@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 use hoardmap::scan::{
     LIVE_DEPTH, Method, NOT_SCANNED, Progress, partial, scan, scan_skipping, scan_with_threads,
 };
-use hoardmap::tree::{Kind, NodeId, ROOT, Tree};
+use hoardmap::tree::{Kind, NodeId, ROOT, Shared, Tree};
 
 /// The fixture folder; removed on drop, with `locked/` made writable again first.
 struct Fixture {
@@ -167,10 +167,10 @@ fn hard_link_counted_once() {
     let a = child(&tree, ROOT, "a");
     let first = &tree.nodes[child(&tree, a, "small.txt") as usize];
     let second = &tree.nodes[child(&tree, ROOT, "link.txt") as usize];
-    assert!(!first.hard_link);
+    assert_eq!(first.shared, Shared::None);
     assert_eq!(first.size, 10);
     assert!(first.physical >= 10);
-    assert!(second.hard_link);
+    assert_eq!(second.shared, Shared::HardLink);
     assert_eq!(second.size, 0);
     assert_eq!(second.physical, 0);
     assert_eq!(second.kind, Kind::File);
@@ -394,7 +394,7 @@ fn fingerprint(tree: &Tree) -> Vec<String> {
         .iter()
         .map(|n| {
             format!(
-                "{} {:?} {:?} {} {} {} {} {} {:?} {}",
+                "{} {:?} {:?} {} {} {} {} {} {:?} {:?}",
                 n.name,
                 n.parent,
                 n.kind,
@@ -404,39 +404,146 @@ fn fingerprint(tree: &Tree) -> Vec<String> {
                 n.dirs,
                 n.mtime,
                 n.children,
-                n.hard_link
+                n.shared
+            )
+        })
+        .collect()
+}
+
+/// The fields both listing methods know on any folder, clones or not: no allocation
+/// figures, and hard links but not clones.
+#[cfg(target_os = "macos")]
+fn logical_fingerprint(tree: &Tree) -> Vec<String> {
+    tree.nodes
+        .iter()
+        .map(|n| {
+            format!(
+                "{} {:?} {:?} {} {} {} {} {:?} {}",
+                n.name,
+                n.parent,
+                n.kind,
+                n.size,
+                n.files,
+                n.dirs,
+                n.mtime,
+                n.children,
+                n.shared == Shared::HardLink
             )
         })
         .collect()
 }
 
 #[cfg(target_os = "macos")]
-fn same_tree_both_ways(root: &Path) {
-    use hoardmap::scan::{Method, scan_with};
+fn assert_same(a: Vec<String>, b: Vec<String>) {
+    assert_eq!(a.len(), b.len(), "node counts differ");
+    for (x, y) in a.iter().zip(&b) {
+        assert_eq!(x, y);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn both_ways(root: &Path) -> (Tree, Tree) {
+    use hoardmap::scan::scan_with;
     let bulk = scan_with(root, &Progress::default(), Method::Bulk).expect("bulk scan");
     let portable = scan_with(root, &Progress::default(), Method::Portable).expect("portable scan");
     assert_eq!(bulk.error_count, portable.error_count);
-    let (b, p) = (fingerprint(&bulk), fingerprint(&portable));
-    assert_eq!(b.len(), p.len(), "node counts differ");
-    for (x, y) in b.iter().zip(&p) {
-        assert_eq!(x, y);
-    }
+    assert!(!portable.clone_aware);
+    (bulk, portable)
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn bulk_and_portable_listing_agree_on_the_fixture() {
     let fx = Fixture::build();
-    same_tree_both_ways(&fx.root);
+    let (bulk, portable) = both_ways(&fx.root);
+    assert_same(fingerprint(&bulk), fingerprint(&portable));
 }
 
+/// The build folder may hold clones (a copy-on-write copy of a build cache), so the
+/// methods need only agree on what both know, and clones only lower On disk.
 #[cfg(target_os = "macos")]
 #[test]
 fn bulk_and_portable_listing_agree_on_the_target_folder() {
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/build");
     if target.is_dir() {
-        same_tree_both_ways(&target);
+        let (bulk, portable) = both_ways(&target);
+        assert_same(logical_fingerprint(&bulk), logical_fingerprint(&portable));
+        assert!(bulk.root().physical <= portable.root().physical);
     }
+}
+
+/// `orig` is 4 MB of random bytes; `full` and `part` are clones of it, `part` with its
+/// second megabyte rewritten and so counted in full; `copy` is a plain copy; `small`
+/// and `link` are one file.
+/// Clones made with `/bin/cp -c`.
+#[cfg(target_os = "macos")]
+#[test]
+fn clones_are_counted_once() {
+    use std::process::Command;
+    const MB: u64 = 1 << 20;
+    let root =
+        Scratch(std::env::temp_dir().join(format!("hoardmap-clones-{}", std::process::id())));
+    fs::create_dir_all(&root.0).unwrap();
+    let mut random = vec![0u8; 4 * MB as usize];
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    for byte in &mut random {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = state as u8;
+    }
+    fs::write(root.0.join("orig"), &random).unwrap();
+    fs::write(root.0.join("copy"), &random).unwrap();
+    for name in ["full", "part"] {
+        let cp = Command::new("/bin/cp")
+            .arg("-c")
+            .args([root.0.join("orig"), root.0.join(name)])
+            .status()
+            .unwrap();
+        assert!(cp.success());
+    }
+    let mut part = File::options()
+        .write(true)
+        .open(root.0.join("part"))
+        .unwrap();
+    std::io::Seek::seek(&mut part, std::io::SeekFrom::Start(MB)).unwrap();
+    part.write_all(&vec![7u8; MB as usize]).unwrap();
+    part.sync_all().unwrap();
+    drop(part);
+    write(&root.0.join("small"), 10);
+    fs::hard_link(root.0.join("small"), root.0.join("link")).unwrap();
+
+    let (bulk, portable) = both_ways(&root.0);
+    assert_same(logical_fingerprint(&bulk), logical_fingerprint(&portable));
+    if !bulk.clone_aware {
+        println!("skipped: the temp folder's volume has no clones");
+        return;
+    }
+    fn node<'a>(tree: &'a Tree, name: &str) -> &'a hoardmap::tree::Node {
+        &tree.nodes[child(tree, ROOT, name) as usize]
+    }
+    for name in ["orig", "full", "part", "copy"] {
+        assert_eq!(node(&bulk, name).size, 4 * MB, "{name}");
+        assert_eq!(node(&portable, name).physical, 4 * MB, "{name}");
+    }
+    // Both are clones; the pair sorts by name, so `full` keeps the shared data.
+    let (first, clone) = (node(&bulk, "full"), node(&bulk, "orig"));
+    assert_eq!((first.shared, first.physical), (Shared::Clone, 4 * MB));
+    assert_eq!((clone.shared, clone.physical), (Shared::Clone, 0));
+    // A clone with part of its data rewritten no longer shares all of it.
+    let part = node(&bulk, "part");
+    assert_eq!((part.shared, part.physical), (Shared::None, 4 * MB));
+    let copy = node(&bulk, "copy");
+    assert_eq!((copy.shared, copy.physical), (Shared::None, 4 * MB));
+
+    assert_eq!(bulk.clone_counted_once, 4 * MB);
+    // `link` sorts first, so it keeps the bytes.
+    let (kept, link) = (node(&bulk, "link"), node(&bulk, "small"));
+    assert_eq!(kept.shared, Shared::None);
+    assert_eq!((link.shared, link.physical), (Shared::HardLink, 0));
+    assert_eq!(bulk.root().physical, 12 * MB + kept.physical);
+    assert_eq!(portable.root().physical, 16 * MB + kept.physical);
+    assert_eq!(portable.clone_counted_once, 0);
 }
 
 fn same_tree_on_one_thread_and_eight(root: &Path) {
@@ -445,6 +552,8 @@ fn same_tree_on_one_thread_and_eight(root: &Path) {
     };
     let (one, eight) = (scan(1), scan(8));
     assert_eq!(one.error_count, eight.error_count);
+    let figures = |t: &Tree| (t.clone_aware, t.clone_counted_once);
+    assert_eq!(figures(&one), figures(&eight));
     let (a, b) = (fingerprint(&one), fingerprint(&eight));
     assert_eq!(a.len(), b.len(), "node counts differ");
     for (x, y) in a.iter().zip(&b) {

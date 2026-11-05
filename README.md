@@ -189,14 +189,33 @@ The Largest files tab lists the biggest files under the current treemap root wit
 full paths. Click a row to select the file in the directory list; double-click it to
 open it in Finder.
 
+The Rebuildable tab gathers the folders their tools fill again on their own:
+`node_modules`, Cargo `target`, Python virtual environments, Swift `.build`, Xcode
+DerivedData, and the caches of Gradle, Homebrew, pip, npm, pnpm, Cargo, Go, uv and
+Hugging Face. Each group names its owner, says in a line how the folder comes back,
+and links the owner's documentation. A project folder is recognised by a file beside
+or inside it (`package.json`, `CACHEDIR.TAG`, `pyvenv.cfg`, `Package.swift`), so a
+folder that merely shares the name is left out. Click a group to highlight its folders
+in the treemap, and a folder to select it; double-click opens it in Finder. Hoardmap
+does not clear anything; that stays with you and the owning tool.
+
 ### Logical and Physical
 
 Logical is the number of bytes a file contains. Physical is the number of bytes
 allocated for it on disk. The two differ for sparse files and for APFS clones. A Docker
 disk image such as `Docker.raw` can report 64 GB logical while only a few GB are
-allocated. Physical is the default because it is what clearing a file gives back;
+allocated. Physical is the default because it is what the files take on disk;
 switch to Logical to see file contents. Every view, and the total in the status line,
 follows the toggle.
+
+APFS clones share their data. Duplicating a file in Finder, and tools such as pnpm, uv
+and bun, make clones that take no extra space until one copy changes. Physical counts
+the data of clones that still share all of it once; most other disk tools, and `du`,
+count every clone in full. A clone that has partly changed is counted in full.
+Clones are marked in the list, and the marker's tooltip says that removing one
+frees nothing now. The status line says how much shared data was counted once. Data
+kept by Time Machine snapshots is not freed by removing a file either. The portable
+scanner and disks other than APFS do not show clones.
 
 Hard links are counted once. A file reached again through a second link shows 0 bytes
 and is marked as a hard link, so totals match what the disk says. The scan stays on the
@@ -258,7 +277,8 @@ after looking.
 On macOS each folder is listed with `getattrlistbulk`, which returns names, types,
 sizes and allocated blocks for a batch of entries in one system call. Elsewhere, and
 on a Mac with `HOARDMAP_SCANNER=portable`, each folder is read with `read_dir` and
-each entry with `lstat`. Both build the same tree. Subfolders are read in parallel on
+each entry with `lstat`. Both build the same tree, except that only `getattrlistbulk`
+sees APFS clones. Subfolders are read in parallel on
 the fast cores: on Apple silicon the Performance (and Super) cores, not the Efficiency
 ones, since more threads only queue for the file system. On an M6 that is 6 threads,
 and a home folder of a million items scans in 1.1 s instead of 1.3 s on all 12, with

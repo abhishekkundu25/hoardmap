@@ -56,7 +56,10 @@ renames anything. Closing the window quits the app.
 8. As a user, I want a bar in the percentage column, so that I can compare siblings at
    a glance.
 9. As a user, I want to switch between logical and physical (allocated) size, so that
-   sparse and cloned files do not mislead me.
+   sparse and cloned files do not mislead me. Physical counts once the data of APFS
+   clones that still share all of it; a clone that has partly changed is counted in
+   full (see `docs/specs/true-cost-rebuildable.md`; before that, it counted every clone
+   in full).
 10. As a user, I want hard links counted once, so that totals match what the disk says.
 11. As a user, I want the scan to stay on the root's volume, so that scanning `/` does
     not count `/Volumes` or the Data volume twice through firmlinks.
@@ -130,7 +133,8 @@ renames anything. Closing the window quits the app.
   binary with `include_str!`.
 - **Tree**: an arena `Vec<Node>`, root at index 0, `NodeId = u32`. A node holds name,
   parent, kind (dir, file, symlink, other), logical size, physical size, file count,
-  dir count, latest mtime, children (largest first), and a hard-link flag. Directory
+  dir count, latest mtime, children (largest first), and what it shares (`Shared`:
+  none, hard link, clone). Directory
   figures are subtree totals. The root's name is the scanned path. The extension is
   derived from the name (`tree::extension`), not stored.
 - **Scan**: `scan::scan(path, &Progress) -> io::Result<Tree>`. Parallel over
@@ -138,8 +142,13 @@ renames anything. Closing the window quits the app.
   the root's device (`st_dev`). Each worker builds a local subtree; the result is
   flattened depth-first into the arena with children sorted by size. Files with
   `nlink > 1` are keyed by `(dev, ino)`: the first occurrence in depth-first order
-  keeps its bytes, later ones get `size = 0`, `physical = 0`, `hard_link = true`.
-  Physical size is `blocks × 512`. Unreadable directories are counted in
+  keeps its bytes, later ones get `size = 0`, `physical = 0`, `shared = HardLink`.
+  Physical size is `blocks × 512`. On a volume with clones the bulk listing also reads
+  clone id and extended flags: files that share all their data are `Clone`, keyed by
+  `(dev, clone id)`, and only the first in depth-first order keeps `physical`; removing
+  any one frees nothing now. A clone that has partly changed shares nothing as far as
+  the scan knows and keeps its full allocation. The portable listing cannot
+  see clones, so the two scanners agree on every field only on clone-free folders. Unreadable directories are counted in
   `error_count`, the first 1000 kept with their error text, and the scan goes on.
   Progress is three atomics (dirs, files, bytes) the scanner increments and a reader
   samples; nothing polls when no scan runs.
@@ -184,8 +193,8 @@ renames anything. Closing the window quits the app.
   `open <path>` for a directory, through `PATH` lookup so tests can substitute `open`.
   On a non-macOS build the command is `xdg-open <dir>`.
 - **API** (all JSON):
-  - `GET /api/status` → `{state, path, dirs, files, bytes, physical, elapsed_ms,
-    error_count, error, disk, live}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
+  - `GET /api/status` → `{state, path, dirs, files, bytes, physical, clone_aware,
+    clone_counted_once, elapsed_ms, error_count, error, disk, live}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
     the progress so far; when done they are the tree's totals. `disk` is `{total, free}`
     in bytes for the volume holding `path`, or null. `live`, while scanning, counts the
     finished entries the preview was built from (null before the first preview).
@@ -210,21 +219,26 @@ renames anything. Closing the window quits the app.
   - `POST /api/choose {}` → 200 `{path}` from the macOS folder picker, or 204 when
     cancelled.
   - `GET /api/node/{id}` → the node with `path` and `children`, each child with `id,
-    name, kind, size, physical, files, dirs, mtime, hard_link, has_children`, largest
+    name, kind, size, physical, files, dirs, mtime, has_children` and `shared`
+    (`hard_link` or `clone`; absent when nothing is shared), largest
     first. 404 for an unknown id, 409 when no tree is loaded.
   - `GET /api/treemap?root=ID&w=PX&h=PX&min=PX&mode=logical|physical` → the Layout.
   - `GET /api/extensions?root=ID&mode=` → `{total, items: [{ext, color, bytes,
     physical, files}]}` largest first; `ext` is `""` for files without one.
   - `GET /api/largest?root=ID&n=N&mode=` → `{items: [{id, path, size, physical,
     mtime}]}` largest first, N capped at 1000.
+  - `GET /api/rebuildable?root=ID&mode=` → `{total, groups: [{key, label, owner, why,
+    source, bytes, count, folders: [{id, path, bytes}], more}]}`: the folders their
+    tools fill again (`src/rebuildable.rs`), groups and folders largest first, at most
+    500 folders per group.
   - `GET /api/errors` → `{count, items: [{path, error}]}`. Without Full Disk Access
     on macOS, the home folders that would each raise a macOS prompt are counted but
     not read, and listed with the error `Not scanned: needs Full Disk Access`.
   - `POST /api/open {"id"}` → 204.
 - **Page**: `index.html`, `style.css`, `app.js`, vanilla JS and canvas. Layout: a top
   bar (path field, Scan, Rescan, Open in Finder, Logical/Physical toggle, status text),
-  the directory list on the left, the treemap on the right, the extension list and
-  largest files tabs at the bottom. The list fetches children lazily per expanded node.
+  the directory list on the left, the treemap on the right, the extension list,
+  largest files and Rebuildable tabs at the bottom. The list fetches children lazily per expanded node.
   The treemap is one canvas drawn from the server's rects, redrawn on resize (debounced)
   and on selection change; hit testing is a linear scan of the rects. Selection is one
   node id shared by all views. Colours come from the server. System theme via

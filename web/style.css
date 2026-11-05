@@ -266,6 +266,8 @@ thead th.pct { width: 84px; }
 thead th.date { width: 118px; }
 #list table { min-width: 800px; }
 #tab-largest thead th.num { width: 96px; }
+#tab-rebuildable { outline-offset: -2px; }
+#tab-rebuildable thead th.owner { width: 110px; }
 tbody tr { height: var(--row-h); }
 tbody tr:nth-child(even) { background: var(--panel-alt); }
 tbody tr:hover { background: var(--accent-soft); }
@@ -371,6 +373,23 @@ tr.selected .icon.file::before { background: var(--selected-fg); }
 #ext-rows tr.highlight td { font-weight: 600; }
 #largest-rows td.name { direction: rtl; text-align: left; }
 #largest-rows td.name span { unicode-bidi: plaintext; }
+/* A group reads as one block: its row and its why line on the alternate panel, its
+   folders on the panel below. */
+#rebuild-rows tr { background: none; }
+#rebuild-rows tr.group, #rebuild-rows tr.why { background: var(--panel-alt); }
+#rebuild-rows tr.group { border-top: 1px solid var(--border); }
+#rebuild-rows tr.group:first-child { border-top: none; }
+#rebuild-rows tr.group td.name { font-weight: 600; }
+#rebuild-rows tr.group.highlight:not(.selected) td.name { color: var(--accent); }
+#rebuild-rows tr.why { height: auto; }
+#rebuild-rows tr.why td { padding: 0 8px 4px; font-size: 12px; white-space: normal; }
+#rebuild-rows .source { user-select: text; cursor: text; }
+#rebuild-rows tr.folder td.name, #rebuild-rows tr.rest td.name { padding-left: 24px; direction: rtl; text-align: left; }
+#rebuild-rows tr.folder td.name span { unicode-bidi: plaintext; }
+#rebuild-rows tr.rest { height: var(--row-h); }
+#rebuild-rows tr.group:hover, #rebuild-rows tr.folder:hover { background: var(--accent-soft); }
+#rebuild-rows tr.selected, #rebuild-rows tr.selected:hover { background: var(--selected-bg); color: var(--selected-fg); }
+#rebuild-rows tr.selected td.name, #rebuild-rows tr.selected .muted { color: inherit; }
 
 #tooltip {
   position: fixed;

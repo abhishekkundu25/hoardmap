@@ -14,6 +14,7 @@ pub mod access;
 pub mod api;
 pub mod cli;
 pub mod icicle;
+pub mod rebuildable;
 pub mod scan;
 pub mod server;
 pub mod tree;

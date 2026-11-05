@@ -21,6 +21,12 @@
 //! deduplicated children, and a `children` list is sorted again only when a hard link
 //! changed a child's size.
 //!
+//! On a volume with clones the bulk listing also reads each file's clone id and
+//! extended flags. The flatten counts a group of clones that share all their data
+//! once, keyed by `(dev, clone id)` the way hard links are keyed by `(dev, inode)`, in
+//! the same depth-first order. A clone that has partly changed since is counted in
+//! full. The portable listing cannot see clones: its tree is not clone-aware.
+//!
 //! [`Progress::bytes`] and [`Progress::physical`] count every entry's logical and
 //! allocated size as it is seen, so a file with several hard links is counted once per
 //! link there; the finished tree counts it once.
@@ -38,7 +44,7 @@ use std::{env, mem};
 use rayon::prelude::*;
 
 use crate::access;
-use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ROOT, ScanError, Tree};
+use crate::tree::{Kind, MAX_ERRORS, Node, NodeId, ROOT, ScanError, Shared, Tree};
 
 /// Counters a running scan increments and a reader samples.
 #[derive(Debug, Default)]
@@ -51,6 +57,8 @@ pub struct Progress {
     pub bytes: AtomicU64,
     /// Bytes allocated on disk for the non-directory entries seen.
     pub physical: AtomicU64,
+    /// Set when the scan starts if it reads clone figures.
+    pub clone_aware: AtomicBool,
     /// The entries down to [`LIVE_DEPTH`] that the scan has finished, for [`partial`].
     pub finished: Mutex<Vec<Finished>>,
     /// Set to end the scan early: folders not read yet are left empty.
@@ -92,6 +100,7 @@ struct Local {
     kind: Kind,
     size: u64,
     physical: u64,
+    blocks: Blocks,
     mtime: i64,
     ino: u64,
     nlink: u64,
@@ -109,6 +118,7 @@ impl Local {
             kind: stat.kind,
             size: stat.size,
             physical: stat.physical,
+            blocks: stat.blocks,
             mtime: stat.mtime,
             ino: stat.ino,
             nlink: stat.nlink,
@@ -127,6 +137,7 @@ impl Local {
             kind: Kind::Dir,
             size: 0,
             physical: 0,
+            blocks: Blocks::Own,
             mtime: stat.mtime,
             ino: stat.ino,
             nlink: stat.nlink,
@@ -156,6 +167,7 @@ struct Stat {
     kind: Kind,
     size: u64,
     physical: u64,
+    blocks: Blocks,
     mtime: i64,
     ino: u64,
     nlink: u64,
@@ -167,6 +179,15 @@ struct Stat {
     dataless: bool,
 }
 
+/// What a file shares with other files, as APFS reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Blocks {
+    /// Shares nothing, only part of its data, or the scan cannot tell.
+    Own,
+    /// Shares all its data with the other files of this clone id.
+    All(u64),
+}
+
 /// `SF_DATALESS` from <sys/stat.h>: the item's contents are in the cloud, not on disk.
 #[cfg(target_os = "macos")]
 const SF_DATALESS: u32 = 0x4000_0000;
@@ -174,6 +195,7 @@ const SF_DATALESS: u32 = 0x4000_0000;
 impl Stat {
     fn of(meta: &Metadata) -> Stat {
         let ft = meta.file_type();
+        let physical = meta.blocks() * 512;
         let kind = if ft.is_dir() {
             Kind::Dir
         } else if ft.is_file() {
@@ -186,7 +208,8 @@ impl Stat {
         Stat {
             kind,
             size: meta.len(),
-            physical: meta.blocks() * 512,
+            physical,
+            blocks: Blocks::Own,
             mtime: meta.mtime(),
             ino: meta.ino(),
             nlink: meta.nlink(),
@@ -223,6 +246,8 @@ impl Default for Method {
 
 struct Ctx<'a> {
     method: Method,
+    /// The bulk listing reads clone figures.
+    clones: bool,
     root_dev: u64,
     progress: &'a Progress,
     errors: Mutex<Vec<ScanError>>,
@@ -294,7 +319,7 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
         dirs: 0,
         mtime: 0,
         children: Vec::new(),
-        hard_link: false,
+        shared: Shared::None,
     }];
     // Finished nodes keep their reported totals; the others add up their children.
     let mut fixed = vec![false];
@@ -317,7 +342,7 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
                         dirs: 0,
                         mtime: 0,
                         children: Vec::new(),
-                        hard_link: false,
+                        shared: Shared::None,
                     });
                     fixed.push(false);
                     nodes[at as usize].children.push(id);
@@ -368,6 +393,8 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
         nodes,
         errors: Vec::new(),
         error_count: 0,
+        clone_aware: false,
+        clone_counted_once: 0,
     }
 }
 
@@ -507,8 +534,15 @@ fn walk(
     }
     #[cfg(target_os = "macos")]
     never_download();
+    let clones = match method {
+        Method::Portable => false,
+        #[cfg(target_os = "macos")]
+        Method::Bulk => bulk::has_clones(path),
+    };
+    progress.clone_aware.store(clones, AtomicOrdering::Relaxed);
     let ctx = Ctx {
         method,
+        clones,
         root_dev: meta.dev(),
         progress,
         errors: Mutex::new(Vec::new()),
@@ -529,13 +563,15 @@ fn walk(
 
     let (dirs, files, ..) = progress.snapshot();
     let mut nodes = Vec::with_capacity((dirs + files + 1) as usize);
-    let mut seen = HashSet::new();
+    let mut seen = Seen::default();
     flatten(root, None, &mut nodes, &mut seen);
 
     Ok(Tree {
         nodes,
         errors: ctx.errors.into_inner().unwrap(),
         error_count: ctx.error_count.load(AtomicOrdering::Relaxed),
+        clone_aware: clones,
+        clone_counted_once: seen.clone_counted_once,
     })
 }
 
@@ -644,7 +680,8 @@ fn build(dir: &Path, entries: Vec<(String, Stat)>, ctx: &Ctx, depth: usize) -> V
 
 /// The `getattrlistbulk` listing. One call fills a buffer with as many entries as fit,
 /// each a length, the set of attributes returned, then those attributes in a fixed
-/// order: common ones by bit, then directory ones, then file ones.
+/// order: common ones by bit, then directory ones, then file ones, then the extended
+/// common ones (asked for in the `forkattr` word) by bit.
 #[cfg(target_os = "macos")]
 mod bulk {
     use std::cell::RefCell;
@@ -655,10 +692,12 @@ mod bulk {
     use std::path::Path;
     use std::ptr;
 
-    use super::{Ctx, Kind, SF_DATALESS, Stat, mem};
+    use super::{Blocks, Ctx, Kind, SF_DATALESS, Stat, mem};
 
     /// Not in the libc crate; from <sys/attr.h>.
     const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+    /// Not in the libc crate; from <sys/stat.h>.
+    const EF_SHARES_ALL_BLOCKS: u64 = 0x40;
     /// `enum vtype` from <sys/vnode.h>.
     const VREG: u32 = 1;
     const VDIR: u32 = 2;
@@ -667,6 +706,40 @@ mod bulk {
 
     thread_local! {
         static BUF: RefCell<Vec<u8>> = RefCell::new(vec![0; BUFFER]);
+    }
+
+    /// Whether the volume holding `path` supports clones (`VOL_CAP_INT_CLONE`).
+    pub(super) fn has_clones(path: &Path) -> bool {
+        let Ok(cpath) = CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        let mut request = libc::attrlist {
+            bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+            reserved: 0,
+            commonattr: 0,
+            volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_CAPABILITIES,
+            dirattr: 0,
+            fileattr: 0,
+            forkattr: 0,
+        };
+        let mut buf = [0u8; 4 + mem::size_of::<libc::vol_capabilities_attr_t>()];
+        // SAFETY: the request and buffer outlive the call; the kernel writes at most
+        // buf.len() bytes.
+        let rc = unsafe {
+            libc::getattrlist(
+                cpath.as_ptr(),
+                (&raw mut request).cast(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return false;
+        }
+        let caps: libc::vol_capabilities_attr_t = read(&buf, 4);
+        let i = libc::VOL_CAPABILITIES_INTERFACES;
+        caps.valid[i] & caps.capabilities[i] & libc::VOL_CAP_INT_CLONE != 0
     }
 
     pub(super) fn list(dir: &Path, ctx: &Ctx) -> io::Result<Vec<(String, Stat)>> {
@@ -699,7 +772,16 @@ mod bulk {
             fileattr: libc::ATTR_FILE_LINKCOUNT
                 | libc::ATTR_FILE_ALLOCSIZE
                 | libc::ATTR_FILE_DATALENGTH,
-            forkattr: 0,
+            forkattr: if ctx.clones {
+                libc::ATTR_CMNEXT_CLONEID | libc::ATTR_CMNEXT_EXT_FLAGS
+            } else {
+                0
+            },
+        };
+        let options = if ctx.clones {
+            libc::FSOPT_ATTR_CMN_EXTENDED as u64
+        } else {
+            0
         };
         let mut out = Vec::new();
         BUF.with_borrow_mut(|buf| {
@@ -712,7 +794,7 @@ mod bulk {
                         (&raw mut request).cast(),
                         buf.as_mut_ptr().cast(),
                         buf.len(),
-                        0,
+                        options,
                     )
                 };
                 if count < 0 {
@@ -753,6 +835,7 @@ mod bulk {
             kind: Kind::Other,
             size: 0,
             physical: 0,
+            blocks: Blocks::Own,
             mtime: 0,
             ino: 0,
             nlink: 1,
@@ -820,7 +903,23 @@ mod bulk {
         }
         if file & libc::ATTR_FILE_DATALENGTH != 0 {
             stat.size = read::<libc::off_t>(entry, at) as u64;
+            at += mem::size_of::<libc::off_t>();
         }
+        let ext = returned.forkattr;
+        let mut clone = 0;
+        let mut flags = 0;
+        if ext & libc::ATTR_CMNEXT_CLONEID != 0 {
+            clone = read::<u64>(entry, at);
+            at += mem::size_of::<u64>();
+        }
+        if ext & libc::ATTR_CMNEXT_EXT_FLAGS != 0 {
+            flags = read::<u64>(entry, at);
+        }
+        stat.blocks = if flags & EF_SHARES_ALL_BLOCKS != 0 && clone != 0 {
+            Blocks::All(clone)
+        } else {
+            Blocks::Own
+        };
         Some((name, stat))
     }
 
@@ -841,17 +940,23 @@ fn by_size_then_name(a: (u64, &str), b: (u64, &str)) -> Ordering {
     b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1))
 }
 
-fn flatten(
-    local: Local,
-    parent: Option<NodeId>,
-    nodes: &mut Vec<Node>,
-    seen: &mut HashSet<(u64, u64)>,
-) -> NodeId {
+/// The files the flatten has counted, and what it left out of `physical`.
+#[derive(Default)]
+struct Seen {
+    /// `(dev, inode)` of hard-linked files.
+    links: HashSet<(u64, u64)>,
+    /// `(dev, clone id)` of files that share all their data.
+    clones: HashSet<(u64, u64)>,
+    clone_counted_once: u64,
+}
+
+fn flatten(local: Local, parent: Option<NodeId>, nodes: &mut Vec<Node>, seen: &mut Seen) -> NodeId {
     let Local {
         name,
         kind,
         mut size,
         mut physical,
+        blocks,
         mut mtime,
         ino,
         nlink,
@@ -860,11 +965,20 @@ fn flatten(
         ..
     } = local;
     let id = nodes.len() as NodeId;
-    let mut hard_link = false;
-    if kind != Kind::Dir && nlink > 1 && !seen.insert((dev, ino)) {
-        size = 0;
-        physical = 0;
-        hard_link = true;
+    let mut shared = Shared::None;
+    if kind != Kind::Dir {
+        if nlink > 1 && !seen.links.insert((dev, ino)) {
+            (size, physical) = (0, 0);
+            shared = Shared::HardLink;
+        } else {
+            if let Blocks::All(clone) = blocks {
+                if !seen.clones.insert((dev, clone)) {
+                    seen.clone_counted_once += physical;
+                    physical = 0;
+                }
+                shared = Shared::Clone;
+            }
+        }
     }
     nodes.push(Node {
         name,
@@ -876,7 +990,7 @@ fn flatten(
         dirs: 0,
         mtime,
         children: Vec::new(),
-        hard_link,
+        shared,
     });
     if kind != Kind::Dir {
         return id;

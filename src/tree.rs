@@ -28,7 +28,8 @@ pub struct Node {
     pub kind: Kind,
     /// Logical bytes of the subtree. A file reached through a second hard link counts 0.
     pub size: u64,
-    /// Bytes allocated on disk for the subtree (blocks × 512).
+    /// Bytes allocated on disk for the subtree (blocks × 512), data shared by clones
+    /// counted once.
     pub physical: u64,
     /// Files, symlinks and other non-directories in the subtree; 0 for a non-directory.
     pub files: u32,
@@ -38,9 +39,21 @@ pub struct Node {
     pub mtime: i64,
     /// Largest first; empty for a non-directory.
     pub children: Vec<NodeId>,
+    pub shared: Shared,
+}
+
+/// What a file shares with files counted elsewhere in the tree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shared {
+    None,
     /// A later occurrence of a file with more than one hard link: its bytes are counted
-    /// under the first occurrence and `size` is 0 here.
-    pub hard_link: bool,
+    /// under the first occurrence, and `size` and `physical` are 0 here.
+    HardLink,
+    /// A member of a group of clones that share all their data. The first member in
+    /// the tree carries the data in `physical`; the others have `physical` 0. Removing
+    /// any one of them frees nothing now.
+    Clone,
 }
 
 /// A path the scan could not read, with the error text.
@@ -57,6 +70,11 @@ pub struct Tree {
     pub errors: Vec<ScanError>,
     /// All unreadable paths, including those not kept in `errors`.
     pub error_count: u64,
+    /// The scan read clone figures from the file system; when false, no file is a
+    /// clone.
+    pub clone_aware: bool,
+    /// Allocated bytes of the [`Shared::Clone`] files, left out of `physical`.
+    pub clone_counted_once: u64,
 }
 
 pub const MAX_ERRORS: usize = 1000;
@@ -130,7 +148,7 @@ mod tests {
                     dirs: 0,
                     mtime: 0,
                     children: vec![1],
-                    hard_link: false,
+                    shared: Shared::None,
                 },
                 Node {
                     name: "a".into(),
@@ -142,7 +160,7 @@ mod tests {
                     dirs: 0,
                     mtime: 0,
                     children: vec![2],
-                    hard_link: false,
+                    shared: Shared::None,
                 },
                 Node {
                     name: "b.txt".into(),
@@ -154,11 +172,13 @@ mod tests {
                     dirs: 0,
                     mtime: 0,
                     children: vec![],
-                    hard_link: false,
+                    shared: Shared::None,
                 },
             ],
             errors: vec![],
             error_count: 0,
+            clone_aware: false,
+            clone_counted_once: 0,
         };
         assert_eq!(tree.path(2), PathBuf::from("/tmp/x/a/b.txt"));
         assert_eq!(tree.ancestors(2), vec![2, 1, 0]);

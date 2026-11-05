@@ -154,6 +154,7 @@ impl App {
                 "idle",
                 self.start.lock().unwrap().as_deref().map(lossy),
                 (0, 0, 0, 0),
+                (false, 0),
                 0,
                 0,
                 None,
@@ -168,6 +169,7 @@ impl App {
                     "scanning",
                     Some(lossy(path)),
                     progress.snapshot(),
+                    (progress.clone_aware.load(AtomicOrdering::Relaxed), 0),
                     started.elapsed().as_millis(),
                     0,
                     None,
@@ -194,6 +196,7 @@ impl App {
                         root.size,
                         root.physical,
                     ),
+                    (tree.clone_aware, tree.clone_counted_once),
                     duration.as_millis(),
                     tree.error_count,
                     None,
@@ -202,9 +205,15 @@ impl App {
                 status["preview"] = json!(preview);
                 status
             }
-            State::Failed { path, error } => {
-                status_json("failed", Some(lossy(path)), (0, 0, 0, 0), 0, 0, Some(error))
-            }
+            State::Failed { path, error } => status_json(
+                "failed",
+                Some(lossy(path)),
+                (0, 0, 0, 0),
+                (false, 0),
+                0,
+                0,
+                Some(error),
+            ),
         }
     }
 
@@ -324,7 +333,8 @@ impl App {
         thread::spawn(move || {
             thread::sleep(STOP_WAIT);
             let finished = progress.finished.lock().unwrap().clone();
-            let tree = scan::partial(&lossy(&path), &finished);
+            let mut tree = scan::partial(&lossy(&path), &finished);
+            tree.clone_aware = progress.clone_aware.load(AtomicOrdering::Relaxed);
             app.replace_scan(
                 &progress,
                 State::Done {
@@ -365,7 +375,8 @@ impl App {
                 };
                 if let Some(finished) = finished {
                     built = finished.len();
-                    let tree = scan::partial(&root, &finished);
+                    let mut tree = scan::partial(&root, &finished);
+                    tree.clone_aware = progress.clone_aware.load(AtomicOrdering::Relaxed);
                     let live = Live {
                         colours: Colours::new(&tree),
                         tree: Arc::new(tree),
@@ -408,10 +419,12 @@ pub fn disk(path: &Path) -> Option<(u64, u64)> {
     Some((stat.f_blocks as u64 * block, stat.f_bavail as u64 * block))
 }
 
+/// `clones` is the tree's `(clone_aware, clone_counted_once)`.
 fn status_json(
     state: &str,
     path: Option<String>,
     (dirs, files, bytes, physical): (u64, u64, u64, u64),
+    (clone_aware, clone_counted_once): (bool, u64),
     elapsed_ms: u128,
     error_count: u64,
     error: Option<&str>,
@@ -423,6 +436,8 @@ fn status_json(
         "files": files,
         "bytes": bytes,
         "physical": physical,
+        "clone_aware": clone_aware,
+        "clone_counted_once": clone_counted_once,
         "elapsed_ms": elapsed_ms as u64,
         "error_count": error_count,
         "error": error,
