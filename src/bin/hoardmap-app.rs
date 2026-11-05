@@ -2,7 +2,7 @@
 //! the Dock icon or the `hoardmap` command. Closing the window quits the app.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Sender};
 
 use hoardmap::access::log_launch;
 use hoardmap::server::{self, Config};
@@ -44,14 +44,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let (opened_folder, folders) = mpsc::channel();
     let app = served.app.clone();
-    std::thread::spawn(move || {
-        open_folders(folders, |path| {
-            if let Err(error) = app.open_folder(path) {
-                log_launch(&format!("open folder: {error}"));
-            }
-        });
+    let opened_folder = folder_opener(move |path| {
+        if let Err(error) = app.open_folder(path) {
+            log_launch(&format!("open folder: {error}"));
+        }
     });
     let origin = format!("http://127.0.0.1:{}", served.port);
     log_launch(&format!("server on {origin}"));
@@ -106,10 +103,12 @@ fn main() {
     });
 }
 
-fn open_folders(folders: Receiver<PathBuf>, mut open_folder: impl FnMut(PathBuf)) {
-    for path in folders {
-        open_folder(path);
-    }
+/// One thread opens the folders in the order they were sent, off the event loop since
+/// checking a folder may block. A thread per folder would let a slow one finish last.
+fn folder_opener(open_folder: impl FnMut(PathBuf) + Send + 'static) -> Sender<PathBuf> {
+    let (sender, folders) = mpsc::channel();
+    std::thread::spawn(move || folders.into_iter().for_each(open_folder));
+    sender
 }
 
 /// The standard app, Edit and Window menus; Edit is what makes copy and paste work in
@@ -168,21 +167,18 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
+    // The event loop's part, sending each opened folder, needs a window and is not tested.
     #[test]
     fn a_slow_folder_open_cannot_overtake_a_later_one() {
-        let (sender, folders) = mpsc::channel();
         let (entered, started) = mpsc::channel();
         let (resume, blocked) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let mut opened = Vec::new();
-            open_folders(folders, |path| {
-                if path == Path::new("A") {
-                    entered.send(()).unwrap();
-                    blocked.recv().unwrap();
-                }
-                opened.push(path);
-            });
-            opened
+        let (opened, done) = mpsc::channel();
+        let sender = folder_opener(move |path| {
+            if path == Path::new("A") {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            }
+            opened.send(path).unwrap();
         });
         sender.send(PathBuf::from("A")).unwrap();
         started.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -190,7 +186,7 @@ mod tests {
         drop(sender);
         resume.send(()).unwrap();
         assert_eq!(
-            worker.join().unwrap(),
+            done.iter().collect::<Vec<_>>(),
             [PathBuf::from("A"), PathBuf::from("B")]
         );
     }

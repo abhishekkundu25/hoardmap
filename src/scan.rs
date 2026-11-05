@@ -215,9 +215,7 @@ impl Stat {
             mtime: meta.st_mtime as i64,
             ino: meta.st_ino as u64,
             nlink: meta.st_nlink as u64,
-            #[cfg(target_os = "macos")]
-            dev: meta.st_dev as u32 as u64,
-            #[cfg(not(target_os = "macos"))]
+            // Sign-extended like std's `MetadataExt::dev`, which gives the root's.
             dev: meta.st_dev as u64,
             mount_point: false,
             #[cfg(target_os = "macos")]
@@ -1028,7 +1026,8 @@ mod bulk {
             at += mem::size_of::<libc::attrreference_t>();
         }
         if common & libc::ATTR_CMN_DEVID != 0 {
-            stat.dev = read::<libc::dev_t>(entry, at) as u32 as u64;
+            // Sign-extended like std's `MetadataExt::dev`, which gives the root's.
+            stat.dev = read::<libc::dev_t>(entry, at) as u64;
             at += mem::size_of::<libc::dev_t>();
         }
         if common & libc::ATTR_CMN_OBJTYPE != 0 {
@@ -1449,6 +1448,21 @@ mod tests {
         }
         assert_eq!(early.path(2), stopped.path(2));
         assert!(partial("/ordinary", &[]).raw_names.is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::unnecessary_cast)]
+    fn a_device_number_with_bit_31_set_matches_the_std_one() {
+        // SAFETY: `stat` is plain integers, for which all zeros is valid.
+        let mut meta: libc::stat = unsafe { mem::zeroed() };
+        meta.st_dev = 0x8000_0001u32 as libc::dev_t;
+        // What std's `MetadataExt::dev` (`st_dev as u64`) gives for the same number.
+        let std_dev = if mem::size_of::<libc::dev_t>() == 4 {
+            0xffff_ffff_8000_0001
+        } else {
+            0x8000_0001
+        };
+        assert_eq!(Stat::of_raw(&meta).dev, std_dev);
     }
 
     #[test]

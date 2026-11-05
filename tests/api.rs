@@ -898,13 +898,17 @@ fn megabyte_request_lines_and_headers_are_refused_without_unbounded_memory() {
 fn idle_connections_past_the_cap_release_slots_and_the_page_still_answers() {
     let fx = fixture();
     let server = start_done(&fx);
-    let mut idle: Vec<_> = (0..MAX_CONNECTIONS + 8).map(|_| server.connect()).collect();
-    let mut refused = idle.pop().unwrap();
-    refused
+    let mut idle: Vec<_> = (0..MAX_CONNECTIONS + 7).map(|_| server.connect()).collect();
+    // The last reserved slot past the cap: admitted, not refused, so the page is answered.
+    assert_eq!(server.get("/").0, 200);
+    // An idle connection past the cap is closed after the short admission wait, not held
+    // for the read timeout.
+    let mut overflow = idle.pop().unwrap();
+    overflow
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
     let mut byte = [0];
-    assert!(matches!(refused.read(&mut byte), Ok(0)));
+    assert!(matches!(overflow.read(&mut byte), Ok(0)));
 
     let deadline = Instant::now() + READ_TIMEOUT + Duration::from_secs(3);
     loop {
@@ -933,7 +937,7 @@ fn idle_connections_past_the_cap_release_slots_and_the_page_still_answers() {
 }
 
 #[test]
-fn a_connection_that_sends_nothing_is_closed_after_the_read_timeout() {
+fn a_connection_that_sends_nothing_is_closed_silently_after_the_read_timeout() {
     let fx = fixture();
     let server = start_done(&fx);
     let mut stream = server.connect();
@@ -943,7 +947,11 @@ fn a_connection_that_sends_nothing_is_closed_after_the_read_timeout() {
     let started = Instant::now();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
-    assert_eq!(common::parse_response(&response).0, 400);
+    assert!(
+        response.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
     assert!(started.elapsed() >= READ_TIMEOUT / 2);
     assert!(started.elapsed() < READ_TIMEOUT + Duration::from_secs(2));
     assert_eq!(server.get("/api/status").0, 200);

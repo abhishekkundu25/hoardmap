@@ -50,7 +50,9 @@ jobs:
     uses: ./.github/workflows/pages.yml
 
   # Writes packaging/homebrew/hoardmap.rb and its README into abhishekkundu25/homebrew-tap
-  # for the new release. TAP_DEPLOY_KEY is the private half of a deploy key with write
+  # for the newest stable release, which is not always this run's tag: GitHub cancels a
+  # pending job in the concurrency group when a newer one queues, so a run that finishes
+  # out of order must still leave the newest version in the tap. TAP_DEPLOY_KEY is the private half of a deploy key with write
   # access to that repo only.
   tap:
     needs: release
@@ -70,18 +72,22 @@ jobs:
             echo "::warning::TAP_DEPLOY_KEY is not set; the Homebrew tap was not updated"
             exit 0
           fi
-          version=${GITHUB_REF_NAME#v}
-          release=${version%%+*}
-          if [[ "$release" == *-* ]]; then
-            echo "::notice::Skipping Hoardmap $version; the tap only publishes stable versions"
+          # Stable versions only: no "-" before any "+build" part.
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 \
+            --json tagName --jq '.[].tagName' \
+            | awk '{ v = $0; sub(/\+.*/, "", v) } v ~ /^v/ && v !~ /-/' | sort -V | tail -1)
+          if [ -z "$tag" ]; then
+            echo "::notice::No stable release yet; the tap only publishes stable versions"
             exit 0
           fi
-          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
+          version=${tag#v}
+          release=${version%%+*}
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
           app=$(awk '$2 == "Hoardmap.zip" { print $1 }' SHA256SUMS)
           test -n "$app"
-          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/hoardmap.rb?ref=$GITHUB_REF_NAME" \
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/hoardmap.rb?ref=$tag" \
             -H "Accept: application/vnd.github.raw" >cask.rb
-          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/README.md?ref=$GITHUB_REF_NAME" \
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/README.md?ref=$tag" \
             -H "Accept: application/vnd.github.raw" >README.tap.md
 
           mkdir -p ~/.ssh

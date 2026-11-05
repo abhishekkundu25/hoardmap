@@ -123,8 +123,10 @@ pub struct App {
     /// rather than on each status, since a network drive that stopped answering blocks
     /// the read.
     disk: Mutex<Option<(u64, u64)>>,
-    /// (Last folder request, whether the first scan has been requested.)
-    folder_request: Mutex<(usize, bool)>,
+    /// (Last folder request handed out, last one that passed its checks, whether the
+    /// first scan has been requested.) A request older than the last passed one is
+    /// dropped; one that fails its checks leaves earlier ones standing.
+    folder_request: Mutex<(usize, usize, bool)>,
 }
 
 impl App {
@@ -137,7 +139,7 @@ impl App {
             native,
             start: Mutex::new(None),
             disk: Mutex::new(None),
-            folder_request: Mutex::new((0, false)),
+            folder_request: Mutex::new((0, 0, false)),
         }
     }
 
@@ -250,7 +252,7 @@ impl App {
     fn next_folder_request(&self, scan: bool) -> usize {
         let mut request = self.folder_request.lock().unwrap();
         request.0 += 1;
-        request.1 |= scan;
+        request.2 |= scan;
         request.0
     }
 
@@ -276,8 +278,8 @@ impl App {
         let disk = disk(&path);
         {
             let mut state = self.state.lock().unwrap();
-            let current = self.folder_request.lock().unwrap();
-            if request != current.0 {
+            let mut current = self.folder_request.lock().unwrap();
+            if request < current.1 {
                 return Ok(());
             }
             if let State::Scanning { progress, .. } = &*state {
@@ -286,6 +288,7 @@ impl App {
                 }
                 progress.stop.store(true, AtomicOrdering::Relaxed);
             }
+            current.1 = request;
             *self.disk.lock().unwrap() = disk;
             *state = State::Scanning {
                 path: path.clone(),
@@ -352,17 +355,18 @@ impl App {
         {
             let state = self.state.lock().unwrap();
             let mut current = self.folder_request.lock().unwrap();
-            if request != current.0 {
+            if request < current.1 {
                 return Ok(());
             }
-            if matches!(*state, State::Idle) && !current.1 {
+            if matches!(*state, State::Idle) && !current.2 {
+                current.1 = request;
                 *self.start.lock().unwrap() = Some(path);
                 drop(current);
                 drop(state);
                 self.notify_status();
                 return Ok(());
             }
-            current.1 = true;
+            current.2 = true;
         }
         self.start_scan_for(Some(path), request, true)
     }
@@ -852,16 +856,17 @@ fn host_allowed(host: Option<&str>, port: u16) -> bool {
         && given.is_none_or(|p| p.parse::<u16>() == Ok(port))
 }
 
-/// Reads one request. `Ok(None)` when the client closed without sending one; `Err` is
-/// the status code to answer with.
+/// Reads one request. `Ok(None)` when the client closed or timed out without sending a
+/// byte (a browser may later use a pre-opened socket and must not read an answer it
+/// never asked for); `Err` is the status code to answer with.
 fn read_request(stream: impl Read) -> Result<Option<Request>, u16> {
     // Limit the source before buffering, including BufReader's read-ahead.
     let mut reader = BufReader::new(stream.take(MAX_HEAD_BYTES as u64));
-    let mut line = String::new();
-    let mut total = reader.read_line(&mut line).map_err(|_| 400u16)?;
-    if total == 0 {
+    if !reader.fill_buf().is_ok_and(|bytes| !bytes.is_empty()) {
         return Ok(None);
     }
+    let mut line = String::new();
+    let mut total = reader.read_line(&mut line).map_err(|_| 400u16)?;
     if !line.ends_with('\n') {
         return Err(if total == MAX_HEAD_BYTES { 431 } else { 400 });
     }
@@ -1048,6 +1053,20 @@ mod tests {
                 .unwrap();
             assert_eq!(app.status()["path"], lossy(&root.join("assets")));
         }
+    }
+
+    #[test]
+    fn a_failed_folder_request_does_not_drop_an_earlier_one() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let missing = root.join("no such folder");
+        let app = Arc::new(App::new(0, false));
+        let first = app.next_folder_request(false);
+        app.open_folder(missing.clone()).unwrap_err();
+        app.start_scan(Some(missing)).unwrap_err();
+        app.start_scan_for(Some(root.join("web")), first, true)
+            .unwrap();
+        assert_ne!(app.status()["state"], "idle");
+        assert_eq!(app.status()["path"], lossy(&root.join("web")));
     }
 
     #[test]
