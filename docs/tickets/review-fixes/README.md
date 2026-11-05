@@ -29,7 +29,7 @@ close-out itself after the last landing: `README.md`, `CHANGELOG.md`,
 | # | Status |
 |---|---|
 | 01 | done: request head read through a 16 KiB `take` (431 past it, 400 cut short); 64 live connections, 2 s read timeout (none on an open event stream); folder checked before the state lock (invalid folder during a scan is now 400, not 409); disk totals and state written together only by the current scan; event snapshot queued under the state lock; `hoardmap` takes `OsString` args. Tests 20→25 api, 6→8 cli. |
-| 02 | done: both scanners `openat` children with `O_NOFOLLOW \| O_DIRECTORY` and check `(dev, ino)`; changed folders skipped as errors; non-UTF-8 names kept in `Tree::raw_names` (Node stays 96 bytes); Stop checked every 256 entries and between bulk batches (stops in 0.4 ms portable, 2.3 ms bulk in a 200,000-file folder). Home scan under `ulimit -n 256`: same 62 unreadable as unlimited, so held parent descriptors stay within a Finder-launched app's limit. Unverified: a real non-UTF-8 name (APFS rejects them). |
+| 02 | done: both scanners open children by full path with `O_NOFOLLOW \| O_DIRECTORY` and check the listed `(dev, ino)`; changed folders skipped as errors; non-UTF-8 names kept in `Tree::raw_names` (Node stays 96 bytes); Stop checked every 256 entries and between bulk batches (stops in 0.4 ms portable, 2.3 ms bulk in a 200,000-file folder). Home scan under `ulimit -n 256`: same 62 unreadable as unlimited. After the second review, each descriptor closes once its folder is listed, with at most 32 listings at once. Unverified: a real non-UTF-8 name (APFS rejects them). |
 | 03 | done: Gradle `build` cautioned; tool-specific sentinels outrank `package.json` (CMake over JS for `build`, Python over JS for `dist`); 35 sentinels checked by kind; Ollama caution covers `ollama create`; Time Machine by `Backups.backupdb` dir or APFS `backup_manifest.plist`. `groups` 17.7 ms on 1,001,401 fixture entries. Unverified live: a real APFS Time Machine disk. |
 | 04 | done: `layoutRequest` bumped on tree reset, new `selectRequest` for `reveal()`, `generation` checked in live-refresh, `expand()` and `setRoot()` catch paths; extension, Largest files and Rebuildable panels keyboard-operable; path sent as typed; Rebuildable groups collapsed, caution shown, 50 then Show all, open state per root. Checked in headless Chrome with screenshots. |
 | 05 | done: relaunch waits on `open -n` and the new instance waits up to 10 s for the old pid; one worker opens folders in order; release cleanup detaches; tap job serialised with a version guard; checkout@v5. Unverified live: LaunchServices relaunch, DMG detach, tap concurrency. |
@@ -42,3 +42,26 @@ close-out itself after the last landing: `README.md`, `CHANGELOG.md`,
 - 02 needs private access for its race tests in `src/scan.rs`, which rename and remove fixtures; the orchestrator narrowed the guard to skip the `#[cfg(test)] mod tests` block at the end of each source file. App code is still checked. 02 and 03 also each added one fixture line to a file outside their list (`src/icicle.rs`, `src/rebuildable.rs`, `tests/treemap.rs`) for the new `Tree` field.
 - 04 kept the list's "more" row out of the arrow-key order: Down past the last shown child loads the next 1,000 and selects the first of them. It also put the caution line above the why line in an open group, so the caution does not move when the group opens.
 - The scan budget (no more than 5% slower) could not be measured on a quiet machine: another project's builds kept the load between 17 and 59. Rerun `scan_bench` on a quiet machine before release.
+
+## Second and third review
+
+The second review (gpt-6-astra at xhigh) found 14 issues on the merged branch. What
+landed for them:
+
+- Server: a whole-request deadline (2 s) and a drain deadline (1 s), 8 slots past the
+  64 kept for requests with the launch token, the last folder request wins, and
+  `POST /api/scan {}` rescans the server's own path.
+- Scan: descriptors close after each listing, with at most 32 listings at once; Stop
+  keeps the entries already listed; previews keep raw names.
+- Page: only a request's own pending entry is cleared, the Rebuildable folder cursor
+  resets with the tree, opened folders reopen after a scan finishes, Relaunch recovers
+  from a failure, and Rescan and the deferred first scan send `{}`.
+- Release: the tap takes stable versions only. The no-delete guard needs the test
+  module to be the last item, and the spec's HTTP section matches the `std::net`
+  server.
+
+The third review (Claude Opus 5.5) found 10 issues, being fixed now: among them the
+path field drops leading white space again, a folder closed while opened folders are
+being reopened stays closed, and the spec's HTTP and scan descriptions match the code.
+#10 stays a known limit: the folder picker and the path field pass names as text, so
+a folder whose name is not valid UTF-8 can only be rescanned, not chosen or typed.

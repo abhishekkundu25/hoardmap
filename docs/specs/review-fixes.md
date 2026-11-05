@@ -50,10 +50,12 @@ Rebuildable tab's groups by default.
    folder before taking the lock. A finishing scan updates disk totals only while it
    is still the current scan. The event stream sends its snapshot and later events in
    order. `main` reads arguments with `args_os`.
-2. **The walk reads the folder it listed.** Each child folder is opened relative to
-   its parent's open descriptor with `O_NOFOLLOW | O_DIRECTORY` (bulk scanner), or
-   checked against the `(dev, ino)` its listing reported (portable scanner), so a
-   folder swapped for a symlink is skipped and recorded as an error. Names keep their
+2. **The walk reads the folder it listed.** Both scanners open each child folder by
+   its full path with `O_NOFOLLOW | O_DIRECTORY` and check it against the
+   `(dev, ino)` its parent's listing reported, so a folder swapped for a symlink or
+   another folder is skipped and recorded as an error. A folder's descriptor closes
+   once it is listed, and at most 32 listings run at once. Paths longer than macOS's
+   `PATH_MAX` (1024 bytes) fail as they did before. Names keep their
    raw bytes for traversal and for `Tree::path`; the lossy name is display only. Stop
    is checked between batches of entries inside a folder.
 3. **Rules say what they cannot know.** Gradle `build` gets the generic-name caution.

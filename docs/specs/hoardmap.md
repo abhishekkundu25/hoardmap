@@ -169,9 +169,14 @@ renames anything. Closing the window quits the app.
 - **HTTP**: a `std::net` listener on `127.0.0.1`, port 48273 for the app (any free
   port when that one is taken). The debug test server (`HOARDMAP_TEST_SERVER=1`)
   prints `Listening on http://127.0.0.1:PORT/?token=TOKEN` as its first line. Each
-  request is handled on its own thread, at most 64 at once (more are closed at once).
-  The request line and headers are read only up to 16 KiB (431 past it, 400 when cut
-  short) and within 2 s of each read (bodies up to 64 KiB, under the same timeout); an
+  connection is handled on its own thread, 64 at once. Past that, 8 more are kept for
+  the page: each must send a whole request carrying the launch token (cookie or
+  `?token=`) within 50 ms, and any other connection past the limit is closed with no
+  answer. A whole request (line, headers and body) must arrive within 2 s of the
+  connection being accepted; the head is read only up to 16 KiB (431 past it, 400 when
+  cut short) and the body up to 64 KiB. A connection that sends nothing in those 2 s is
+  closed with no answer. After an error answered before the body was read, what the
+  client still sends is read and dropped for at most 1 s, so it sees the status. An
   open event stream has no timeout. GET `/`, `/app.js`, `/style.css` serve the
   embedded files with the right content types and `Cache-Control: no-store`.
 - **Events**: GET `/api/events` is a Server-Sent Events stream. (Until 0.4 its open
@@ -251,7 +256,10 @@ renames anything. Closing the window quits the app.
   node id shared by all views. Colours come from the server. System theme via
   `prefers-color-scheme`.
 - **Paths in JSON** are strings; a non-UTF-8 name is shown lossily, while the tree keeps
-  its raw bytes, so the scan reads it and `open` opens the real path.
+  its raw bytes, so the scan reads it and `open` opens the real path. The folder picker
+  and the path field pass a folder as text, so a folder whose own name is not valid
+  UTF-8 cannot be chosen or typed; once scanned, as from the command, Rescan scans it
+  again.
 - **Rebuildable tab**: groups start collapsed: one row (disclosure button, name, owner,
   size, percent, count) and the caution line when there is one. An open group shows the
   why line and docs address, the largest 50 folders, then Show all up to the 500 the API

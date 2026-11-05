@@ -573,9 +573,13 @@ function rowOf(id) {
   return el.rows.querySelector(`tr[data-id="${id}"]`);
 }
 
+// Counts the user's opens and closes, so a reopen() still running gives way to them.
+let toggles = 0;
+
 async function expand(id) {
   const node = nodes.get(id);
   if (!node || node.kind !== "dir" || !node.has_children) return;
+  toggles += 1;
   expanded.add(id);
   if (!Array.isArray(node.children)) {
     const started = generation;
@@ -595,6 +599,7 @@ async function expand(id) {
 
 function collapse(id) {
   if (!expanded.has(id)) return;
+  toggles += 1;
   expanded.delete(id);
   renderList();
 }
@@ -1634,7 +1639,7 @@ for (const tab of tabs) {
 el.scanForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (store.status && store.status.state === "scanning") stopScan();
-  else startScan(el.path.value);
+  else startScan(el.path.value.trimStart());
 });
 
 async function stopScan() {
@@ -1700,8 +1705,8 @@ el.rescan.addEventListener("click", () => {
   if (store.status && store.status.path) startScan(null);
 });
 
-// The path goes as typed: a folder name may end in a space. A text field drops the
-// line breaks of a pasted path on its own.
+// The path goes as typed, less leading white space: a folder name may end in a space.
+// A text field drops the line breaks of a pasted path on its own.
 // `null` rescans the server's own folder, whose real name may not survive as text.
 async function startScan(path) {
   if (path !== null && !path.trim()) {
@@ -1740,13 +1745,15 @@ function forgetTree() {
   hideTooltip();
 }
 
-// Opens the folders below `node` whose paths are in `paths`, as the list had them.
-async function reopen(node, paths) {
+// Opens the folders below `node` whose paths are in `paths`, as the list had them. It
+// stops once the user opens or closes a folder.
+async function reopen(node, paths, toggled = toggles) {
   for (const child of node.children) {
     if (!paths.has(joinPath(node.path, child.name))) continue;
     const loaded = await fetchNode(child.id);
+    if (toggled !== toggles) return;
     expanded.add(child.id);
-    await reopen(loaded, paths);
+    await reopen(loaded, paths, toggled);
   }
 }
 
