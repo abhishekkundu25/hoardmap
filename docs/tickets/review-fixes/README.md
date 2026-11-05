@@ -28,15 +28,17 @@ close-out itself after the last landing: `README.md`, `CHANGELOG.md`,
 
 | # | Status |
 |---|---|
-| 01 | todo |
+| 01 | done: request head read through a 16 KiB `take` (431 past it, 400 cut short); 64 live connections, 2 s read timeout (none on an open event stream); folder checked before the state lock (invalid folder during a scan is now 400, not 409); disk totals and state written together only by the current scan; event snapshot queued under the state lock; `hoardmap` takes `OsString` args. Tests 20→25 api, 6→8 cli. |
 | 02 | done: both scanners `openat` children with `O_NOFOLLOW \| O_DIRECTORY` and check `(dev, ino)`; changed folders skipped as errors; non-UTF-8 names kept in `Tree::raw_names` (Node stays 96 bytes); Stop checked every 256 entries and between bulk batches (stops in 0.4 ms portable, 2.3 ms bulk in a 200,000-file folder). Home scan under `ulimit -n 256`: same 62 unreadable as unlimited, so held parent descriptors stay within a Finder-launched app's limit. Unverified: a real non-UTF-8 name (APFS rejects them). |
 | 03 | done: Gradle `build` cautioned; tool-specific sentinels outrank `package.json` (CMake over JS for `build`, Python over JS for `dist`); 35 sentinels checked by kind; Ollama caution covers `ollama create`; Time Machine by `Backups.backupdb` dir or APFS `backup_manifest.plist`. `groups` 17.7 ms on 1,001,401 fixture entries. Unverified live: a real APFS Time Machine disk. |
-| 04 | todo |
+| 04 | done: `layoutRequest` bumped on tree reset, new `selectRequest` for `reveal()`, `generation` checked in live-refresh, `expand()` and `setRoot()` catch paths; extension, Largest files and Rebuildable panels keyboard-operable; path sent as typed; Rebuildable groups collapsed, caution shown, 50 then Show all, open state per root. Checked in headless Chrome with screenshots. |
 | 05 | done: relaunch waits on `open -n` and the new instance waits up to 10 s for the old pid; one worker opens folders in order; release cleanup detaches; tap job serialised with a version guard; checkout@v5. Unverified live: LaunchServices relaunch, DMG detach, tap concurrency. |
-| close-out | todo |
+| close-out | done: README, CHANGELOG and `docs/specs/hoardmap.md` updated. Full suite on the merged tree: 139 tests pass, 1 timing test ignored, plus the app's ordering test; fmt and both clippy runs clean; idle-CPU test passes alone. `scan_bench ~ 3` against main (machine busy, load 17-59 from another project): bulk median 14.4 s branch vs 15.9 s and 12.5 s main, within noise; portable median 30.9 s branch (best 19.0 s) vs 25.8 s and 25.6 s main (best 24.0 s), too noisy to call. Both scanners still agree on 62 unreadable folders. |
 
 ## Departures from the plan
 
 - 05: the orchestrator capped the relaunch wait at 10 s, so a reused pid cannot hang the new instance.
 - 03 put unit tests that delete their temp fixtures in `src/volumes.rs`, which the no-delete guard in `tests/api.rs` rejects; the orchestrator made `volumes::is_backup` public and moved them to `tests/volumes.rs`.
 - 02 needs private access for its race tests in `src/scan.rs`, which rename and remove fixtures; the orchestrator narrowed the guard to skip the `#[cfg(test)] mod tests` block at the end of each source file. App code is still checked. 02 and 03 also each added one fixture line to a file outside their list (`src/icicle.rs`, `src/rebuildable.rs`, `tests/treemap.rs`) for the new `Tree` field.
+- 04 kept the list's "more" row out of the arrow-key order: Down past the last shown child loads the next 1,000 and selects the first of them. It also put the caution line above the why line in an open group, so the caution does not move when the group opens.
+- The scan budget (no more than 5% slower) could not be measured on a quiet machine: another project's builds kept the load between 17 and 59. Rerun `scan_bench` on a quiet machine before release.

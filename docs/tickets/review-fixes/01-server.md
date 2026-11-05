@@ -8,7 +8,7 @@ snapshot and later events in order, and `main` reads arguments with `args_os`.
 
 **Blocked by:** none.
 
-**Status:** todo
+**Status:** done
 
 ## Acceptance
 

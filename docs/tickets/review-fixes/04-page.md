@@ -9,7 +9,7 @@ refreshes for the current root, disclosure control separate from the highlight c
 
 **Blocked by:** none.
 
-**Status:** todo
+**Status:** done
 
 ## Acceptance
 

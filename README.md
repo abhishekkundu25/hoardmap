@@ -217,8 +217,10 @@ installs), iOS DeviceSupport, simulators and VS Code's cached data (no documenta
 from Apple or Microsoft), and whole tool folders such as `~/.m2` and `~/.gradle`,
 which hold settings and credentials beside the cache.
 
-Click a group to highlight its folders in the treemap, and a folder to select it;
-double-click opens it in Finder. Hoardmap does not clear anything; that stays with you
+Groups start collapsed to one line each, with any caution still shown. Open one with
+its arrow (or Right or Space) to see why it comes back, the owner's documentation and
+its largest 50 folders, then Show all. Click a group to highlight its folders in the
+treemap, and a folder to select it; double-click opens it in Finder. Hoardmap does not clear anything; that stays with you
 and the owning tool.
 
 ### Logical and Physical
