@@ -182,6 +182,10 @@ struct Stat {
     /// A cloud folder (iCloud Drive, Google Drive, ...) whose listing is not on this Mac.
     /// Reading it would download it, so the walk does not enter it.
     dataless: bool,
+    /// A firmlink: one of the startup disk's top folders, such as `/Users`, that
+    /// stands for a folder on the data volume. The bulk listing reports the stand-in's
+    /// inode, and opening it gives the folder it stands for.
+    firmlink: bool,
 }
 
 /// What a file shares with other files, as APFS reports it.
@@ -196,6 +200,10 @@ enum Blocks {
 /// `SF_DATALESS` from <sys/stat.h>: the item's contents are in the cloud, not on disk.
 #[cfg(target_os = "macos")]
 const SF_DATALESS: u32 = 0x4000_0000;
+
+/// `SF_FIRMLINK` from <sys/stat.h>. Only the system sets it.
+#[cfg(target_os = "macos")]
+const SF_FIRMLINK: u32 = 0x0080_0000;
 
 impl Stat {
     // libc's integer widths differ across Unix targets.
@@ -222,6 +230,7 @@ impl Stat {
             dataless: meta.st_flags & SF_DATALESS != 0,
             #[cfg(not(target_os = "macos"))]
             dataless: false,
+            firmlink: false,
         }
     }
 
@@ -251,6 +260,7 @@ impl Stat {
             dataless: std::os::macos::fs::MetadataExt::st_flags(meta) & SF_DATALESS != 0,
             #[cfg(not(target_os = "macos"))]
             dataless: false,
+            firmlink: false,
         }
     }
 }
@@ -681,7 +691,12 @@ fn open_directory(path: &Path, expected: Option<&Stat>) -> io::Result<File> {
     let directory = unsafe { File::from_raw_fd(fd) };
     if let Some(expected) = expected {
         let actual = directory.metadata()?;
-        if (actual.dev(), actual.ino()) != (expected.dev, expected.ino) {
+        // A firmlink opens as the folder it stands for, whose inode is not the listed
+        // one. Firmlinks sit on the sealed system volume, where nothing can swap one
+        // for another folder; the flag takes root to set, and the folder opened must
+        // still be on the scanned device.
+        let same_inode = expected.firmlink || actual.ino() == expected.ino;
+        if actual.dev() != expected.dev || !same_inode {
             return Err(io::Error::other(DIRECTORY_CHANGED));
         }
     }
@@ -875,7 +890,7 @@ mod bulk {
     use std::path::Path;
     use std::ptr;
 
-    use super::{Blocks, Ctx, Kind, SF_DATALESS, Stat, mem};
+    use super::{Blocks, Ctx, Kind, SF_DATALESS, SF_FIRMLINK, Stat, mem};
 
     /// Not in the libc crate; from <sys/attr.h>.
     const ATTR_CMN_ERROR: u32 = 0x2000_0000;
@@ -1016,6 +1031,7 @@ mod bulk {
             dev: 0,
             mount_point: false,
             dataless: false,
+            firmlink: false,
         };
         if common & libc::ATTR_CMN_NAME != 0 {
             let reference: libc::attrreference_t = read(entry, at);
@@ -1044,7 +1060,9 @@ mod bulk {
             at += mem::size_of::<libc::timespec>();
         }
         if common & libc::ATTR_CMN_FLAGS != 0 {
-            stat.dataless = read::<u32>(entry, at) & SF_DATALESS != 0;
+            let flags = read::<u32>(entry, at);
+            stat.dataless = flags & SF_DATALESS != 0;
+            stat.firmlink = flags & SF_FIRMLINK != 0;
             at += mem::size_of::<u32>();
         }
         if common & libc::ATTR_CMN_FILEID != 0 {
@@ -1263,6 +1281,30 @@ mod tests {
             root,
             listing_slots: std::array::from_fn(|_| Mutex::new(())),
         }
+    }
+
+    /// `/Users` is a firmlink on every Mac since macOS 10.15: the listing of `/` names
+    /// its stand-in on the system volume, and the walk must still enter it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_firmlink_on_the_startup_disk_is_entered() {
+        let root = Path::new("/");
+        let progress = Progress::default();
+        let ctx = context(root, &progress, Method::Bulk);
+        let listing = list(root, File::open(root).unwrap(), &ctx).unwrap();
+        let (_, users) = listing
+            .iter()
+            .find(|(name, _)| name == "Users")
+            .expect("/Users");
+        assert!(users.firmlink);
+        assert_eq!(users.dev, ctx.root_dev);
+        let opened = open_directory(Path::new("/Users"), Some(users)).expect("open /Users");
+        assert_ne!(opened.metadata().unwrap().ino(), users.ino);
+        let (_, system) = listing
+            .iter()
+            .find(|(name, _)| name == "System")
+            .expect("/System");
+        assert!(!system.firmlink);
     }
 
     #[test]
