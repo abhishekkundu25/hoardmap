@@ -75,7 +75,7 @@ pub fn list() -> Vec<Volume> {
 /// Off macOS: the root file system alone.
 #[cfg(not(target_os = "macos"))]
 pub fn list() -> Vec<Volume> {
-    let Some((total, free)) = crate::server::disk(Path::new("/")) else {
+    let Some((total, free)) = crate::disk::space(Path::new("/")) else {
         return Vec::new();
     };
     vec![Volume {

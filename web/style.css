@@ -16,8 +16,20 @@
   --tm-outline: rgba(0, 0, 0, 0.55);
   --tm-border: rgba(0, 0, 0, 0.3);
   --error: #c62828;
-  --disk-other: #a1a1a8;
-  --disk-free: #e6e6ea;
+  --disk-free: #e4e4e9;
+  --part-applications: #f28c28;
+  --part-rebuildable: #14b8a6;
+  --part-photos: #eab308;
+  --part-media: #5cb85c;
+  --part-mail: #e2568f;
+  --part-cloud: #38b2e6;
+  --part-app-data: #8e6fe0;
+  --part-bin: #a88262;
+  --part-documents: #ef5350;
+  --part-rest: #b9b9c1;
+  --part-macos: #8d8d96;
+  --part-swap: #5d6b8a;
+  --part-volumes: #a3a9b8;
   --row-h: 24px;
   --list-w: 45%;
   --bottom-h: 30%;
@@ -43,8 +55,20 @@
     --tm-outline: rgba(255, 255, 255, 0.5);
     --tm-border: rgba(0, 0, 0, 0.45);
     --error: #ff6b6b;
-    --disk-other: #5a5a60;
-    --disk-free: #333336;
+    --disk-free: #37373b;
+    --part-applications: #f59a3c;
+    --part-rebuildable: #2cc4b2;
+    --part-photos: #f0c12b;
+    --part-media: #6cc56c;
+    --part-mail: #ea6a9d;
+    --part-cloud: #4fbdec;
+    --part-app-data: #a088ee;
+    --part-bin: #b89478;
+    --part-documents: #f4675f;
+    --part-rest: #85858e;
+    --part-macos: #66666f;
+    --part-swap: #7384a8;
+    --part-volumes: #575e70;
   }
 }
 
@@ -125,33 +149,65 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 
 #disk {
   flex: 1 0 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
   min-width: 0;
+  padding-top: 2px;
 }
 #disk[hidden] { display: none; }
 #disk-bar {
+  display: flex;
+  gap: 1px;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+}
+/* Each part grows by its share of the disk; a part too small to see keeps a sliver. */
+#disk-bar .seg {
+  flex: 0 1 0;
+  min-width: 2px;
+  background: var(--part);
+  transition: flex-grow 0.35s ease, opacity 0.15s, filter 0.15s;
+  animation: seg-in 0.35s ease;
+}
+@keyframes seg-in { from { opacity: 0; } }
+#disk.pointing .seg:not(.on) { opacity: 0.35; }
+#disk.pointing .seg.on { filter: saturate(1.15) brightness(1.06); }
+#disk-info {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+#disk-legend {
   flex: 1 1 auto;
   display: flex;
-  height: 8px;
-  border-radius: 4px;
+  flex-wrap: wrap;
+  gap: 0 14px;
+  min-width: 0;
+  /* Two lines at most; what does not fit is still in the bar. */
+  max-height: 32px;
   overflow: hidden;
-  background: var(--disk-free);
-  min-width: 80px;
 }
-#disk-scan { background: var(--accent); transition: width 0.3s; }
-#disk-other { background: var(--disk-other); transition: width 0.3s; }
-#disk-legend { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#disk-legend .part { white-space: nowrap; transition: opacity 0.15s; }
+#disk-legend .part b { font-weight: 500; color: var(--text); }
 #disk-legend .key {
   display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  margin: 0 4px 0 10px;
-  vertical-align: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  background: var(--part);
 }
-#disk-legend .key:first-child { margin-left: 0; }
+/* Free space is the colour of the empty track, so its key needs an edge to be seen. */
+#disk-legend .part[data-key="free"] .key { box-shadow: inset 0 0 0 1px var(--control-border); }
+#disk.pointing #disk-legend .part:not(.on) { opacity: 0.45; }
+#disk-summary { flex: none; margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#disk-summary b { font-weight: 600; color: var(--text); margin-right: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  #disk-bar .seg { transition: none; animation: none; }
+}
 
 #list-head th[data-sort] { cursor: pointer; user-select: none; }
 #list-head th[data-sort]:hover { color: var(--text); }
@@ -427,6 +483,10 @@ tr.selected .icon.file::before { background: var(--selected-fg); }
   text-overflow: ellipsis;
 }
 #tooltip .size { color: var(--muted); }
+#tooltip .title { display: block; font-weight: 600; }
+#tooltip .title .key { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+#tooltip .title .figures { font-weight: 400; color: var(--muted); margin-left: 8px; }
+#tooltip .note { display: block; color: var(--muted); }
 #tooltip .path { display: block; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 #tooltip .path span { unicode-bidi: plaintext; }
 

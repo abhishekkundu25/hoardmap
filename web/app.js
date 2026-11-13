@@ -218,9 +218,9 @@ const $ = (id) => document.getElementById(id);
 const el = {
   places: $("places"),
   disk: $("disk"),
-  diskScan: $("disk-scan"),
-  diskOther: $("disk-other"),
+  diskBar: $("disk-bar"),
   diskLegend: $("disk-legend"),
+  diskSummary: $("disk-summary"),
   path: $("path"),
   scanForm: $("scan-form"),
   scan: $("scan"),
@@ -314,33 +314,196 @@ function showMessage(text, isError) {
 
 // Status line.
 
-// The volume the folder is on: this folder, everything else, and what is free. The
-// folder's part is its bytes on disk, so it compares with the volume in either mode.
+// The disk bar: the whole disk the folder is on, as parts. The scan comes first, by
+// kind of thing once it is done; then what the scan did not cover; then free space.
+
+// For each part: the name shown, its colour, and what it is.
+const DISK_PARTS = {
+  scanned: ["Scanned so far", "var(--accent)", "What the scan has read so far."],
+  applications: ["Applications", "var(--part-applications)", "Apps in the Applications folders."],
+  rebuildable: ["Rebuildable", "var(--part-rebuildable)", "Folders a tool fills again on its own. Click to list them."],
+  photos: ["Photos", "var(--part-photos)", "The Pictures folder, with the Photos library."],
+  media: ["Music & Movies", "var(--part-media)", "The Music and Movies folders."],
+  mail: ["Mail & Messages", "var(--part-mail)", "Mail and Messages kept on this Mac."],
+  cloud: ["iCloud Drive", "var(--part-cloud)", "iCloud Drive and other cloud folders, as far as they are kept on this Mac."],
+  app_data: ["App data", "var(--part-app-data)", "What apps and tools keep for themselves: Library and hidden folders."],
+  bin: ["Trash", "var(--part-bin)", "Files in the Trash."],
+  documents: ["Documents", "var(--part-documents)", "The Documents, Desktop and Downloads folders."],
+  other: ["Other files", "var(--accent)", "Everything else in the scanned folder."],
+  used: ["In use", "var(--part-rest)", "In use on this volume."],
+  rest: ["Other folders", "var(--part-rest)", "In use on this volume, outside the scanned folder."],
+  unread: ["Not scanned", "var(--part-rest)", "In use where the scan could not read: protected folders, snapshots and the disk's own records."],
+  macos: ["macOS", "var(--part-macos)", "The system, with its startup and recovery volumes."],
+  swap: ["Swap", "var(--part-swap)", "Memory macOS has moved to disk. It grows when apps need more memory than the Mac has."],
+  volumes: ["Other volumes", "var(--part-volumes)", "Other volumes sharing this disk."],
+  free: ["Free", "var(--disk-free)", "Space still available."],
+};
+
+// A part smaller than this share of the disk is left out: too thin to see or point at.
+const DISK_PART_MIN = 0.001;
+
+// The parts of the disk in bar order, `[key, bytes]` each, adding up to the disk. The
+// scan's part is its bytes on disk, so it compares with the disk in either mode.
+function diskParts(s) {
+  const d = s.disk;
+  const used = Math.max(0, d.total - d.free);
+  const scanned = Math.min(s.physical, used);
+  const parts = [];
+  // macOS's own volumes, plus the system folders a scan of the whole disk read.
+  let macos = 0;
+  if (s.state === "done" && Array.isArray(s.categories)) {
+    // A scan can hold more than the disk says is in use, on a drive that reports
+    // loosely; the parts shrink together to fit.
+    const fit = s.physical > used ? used / s.physical : 1;
+    for (const { key, bytes } of s.categories) {
+      if (key === "system") macos += bytes * fit;
+      else if (DISK_PARTS[key]) parts.push([key, bytes * fit]);
+      else parts.push(["other", bytes * fit]);
+    }
+  } else if (scanned > 0) {
+    parts.push(["scanned", scanned]);
+  }
+  // What the scan did not cover, handed out until none is left.
+  let left = used - scanned;
+  const take = (bytes) => {
+    const taken = Math.min(Math.max(0, bytes), left);
+    left -= taken;
+    return taken;
+  };
+  const outside = scanned === 0 ? "used" : d.whole ? "unread" : "rest";
+  if (d.volume == null) {
+    parts.push([outside, take(left)]);
+  } else {
+    parts.push([outside, take(d.volume - scanned)]);
+    parts.push(["macos", macos + take(d.system)]);
+    parts.push(["swap", take(d.swap)]);
+    // What is left belongs to no mounted volume.
+    parts.push(["volumes", take(d.volumes) + take(left)]);
+  }
+  const floor = d.total * DISK_PART_MIN;
+  const largest = parts.length && parts[0][0] !== outside ? parts[0][0] : null;
+  const shown = parts.filter(([key, bytes]) => bytes >= floor || (key === largest && bytes > 0));
+  shown.push(["free", d.free]);
+  return shown;
+}
+
+// The elements of each part, kept so a part that stays keeps its place and animates.
+const diskSegs = new Map();
+const diskKeys = new Map();
+let diskShown = new Map();
+
+function diskElement(cache, key, build) {
+  if (!cache.has(key)) {
+    const node = build();
+    node.dataset.key = key;
+    node.style.setProperty("--part", DISK_PARTS[key][1]);
+    cache.set(key, node);
+  }
+  return cache.get(key);
+}
+
 function renderDisk() {
   const s = store.status;
   const d = s && s.disk;
   el.disk.hidden = !d || !d.total;
   if (el.disk.hidden) return;
-  const used = Math.max(0, d.total - d.free);
-  const scanned = Math.min(s.physical, used);
-  const width = (bytes) => `${((100 * bytes) / d.total).toFixed(2)}%`;
-  el.diskScan.style.width = width(scanned);
-  el.diskOther.style.width = width(used - scanned);
-  const parts = [
-    ["var(--accent)", s.state === "done" ? "This folder" : "Scanned so far", scanned],
-    ["var(--disk-other)", "Everything else", used - scanned],
-    ["var(--disk-free)", "Free", d.free],
-  ];
-  el.diskLegend.textContent = "";
-  for (const [color, label, bytes] of parts) {
-    const key = document.createElement("span");
-    key.className = "key";
-    key.style.background = color;
-    el.diskLegend.append(key, `${label} ${formatBytes(bytes)}`);
+  const parts = diskParts(s);
+  diskShown = new Map(parts);
+  const order = parts.map(([key]) => key).join(" ");
+  const segs = [];
+  const keys = [];
+  for (const [key, bytes] of parts) {
+    const seg = diskElement(diskSegs, key, () => {
+      const span = document.createElement("span");
+      span.className = "seg";
+      return span;
+    });
+    seg.style.flexGrow = ((1000 * bytes) / d.total).toFixed(3);
+    segs.push(seg);
+    const item = diskElement(diskKeys, key, () => {
+      const span = document.createElement("span");
+      span.className = "part";
+      const dot = document.createElement("span");
+      dot.className = "key";
+      span.append(dot, document.createElement("b"), "");
+      return span;
+    });
+    item.children[1].textContent = DISK_PARTS[key][0];
+    item.lastChild.textContent = ` ${formatBytes(Math.round(bytes))}`;
+    keys.push(item);
   }
-  el.diskLegend.append(` · ${formatBytes(d.total)} disk`);
-  el.disk.title = `${formatPercent(percent(used, d.total))} of the disk is in use`;
+  // Putting an element back in the page restarts its animation, so only on a change.
+  if (el.diskBar.dataset.order !== order) {
+    el.diskBar.dataset.order = order;
+    el.diskBar.replaceChildren(...segs);
+    el.diskLegend.replaceChildren(...keys);
+  }
+  // The pointer may rest on a part while its figure changes or the part goes.
+  if (diskPointed !== null) {
+    if (diskShown.has(diskPointed)) describeDiskPart(diskPointed);
+    else pointAtDisk(null);
+  }
+  const used = Math.max(0, d.total - d.free);
+  const text = `${formatBytes(used)} of ${formatBytes(d.total)} used`;
+  el.diskSummary.textContent = "";
+  if (d.name) {
+    const name = document.createElement("b");
+    name.textContent = d.name;
+    el.diskSummary.append(name);
+  }
+  el.diskSummary.append(text);
+  const spoken = parts.map(([key, bytes]) => `${DISK_PARTS[key][0]} ${formatBytes(Math.round(bytes))}`);
+  el.diskBar.setAttribute("aria-label", `${d.name ? `${d.name}: ` : ""}${text}. ${spoken.join(", ")}.`);
 }
+
+// Marks the part under the pointer in the bar and the legend, and says what it is.
+let diskPointed = null;
+
+function pointAtDisk(key, event) {
+  if (key !== diskPointed) {
+    diskPointed = key;
+    el.disk.classList.toggle("pointing", key !== null);
+    for (const cache of [diskSegs, diskKeys]) {
+      for (const [k, node] of cache) node.classList.toggle("on", k === key);
+    }
+    if (key === null) hideTooltip();
+    else describeDiskPart(key);
+  }
+  if (key !== null && event) placeTooltip(event);
+}
+
+function describeDiskPart(key) {
+  const [label, colour, note] = DISK_PARTS[key];
+  const bytes = diskShown.get(key) || 0;
+  const title = document.createElement("span");
+  title.className = "title";
+  const dot = document.createElement("span");
+  dot.className = "key";
+  dot.style.background = colour;
+  const figures = document.createElement("span");
+  figures.className = "figures";
+  const share = formatPercent(percent(bytes, store.status.disk.total));
+  figures.textContent = `${formatBytes(Math.round(bytes))} · ${share} of the disk`;
+  title.append(dot, label, figures);
+  const line = document.createElement("span");
+  line.className = "note";
+  line.textContent = note;
+  el.tooltip.replaceChildren(title, line);
+  el.tooltip.hidden = false;
+}
+
+function diskKeyAt(event) {
+  const part = event.target instanceof Element && event.target.closest("[data-key]");
+  return part && diskShown.has(part.dataset.key) ? part.dataset.key : null;
+}
+
+el.disk.addEventListener("mousemove", (event) => pointAtDisk(diskKeyAt(event), event));
+el.disk.addEventListener("mouseleave", () => pointAtDisk(null));
+el.disk.addEventListener("click", (event) => {
+  if (diskKeyAt(event) === "rebuildable") {
+    document.querySelector('[role="tab"][data-tab="rebuildable"]').click();
+  }
+});
 
 function renderStatus() {
   renderDisk();

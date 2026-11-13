@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The bar under the top bar now shows what the disk holds, like the Storage bar in System Settings. The scanned folder is split by kind of thing: Applications, Rebuildable, Photos, Music & Movies, Mail & Messages, iCloud Drive, App data, Trash, Documents and Other files. The rest of the disk, which used to be one "Everything else" figure, is split into Other folders, macOS, Swap and other volumes. Point at a part to see its size, its share of the disk and what it is. Swap is memory macOS has moved to disk, so a large Swap part points at an app using too much memory.
+- Fixed: scanning the startup disk (Macintosh HD in the Disks menu, or `/`) showed only the system itself, with `/Users`, `/Applications` and `/Library` at 0 bytes and listed as unreadable. Since 0.6.0 the scan skipped them because they are links to the data volume. They are read again.
+
 ## 0.6.0 — 2026-11-06
 
 - The Rebuildable tab opens with every group collapsed to one line, so a home-folder scan fits on a screen. Cautions stay visible; open a group with its arrow (or the Right key) to see why it comes back, its documentation and its largest 50 folders, then Show all. Open groups stay open while a scan refreshes the tab.

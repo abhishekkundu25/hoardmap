@@ -132,6 +132,29 @@ fn status_reaches_done_with_the_fixture_totals() {
         free.as_u64().unwrap() <= total.as_u64().unwrap(),
         "{status}"
     );
+    // The disk bar's figures: the scan by kind of thing, adding up to the scan, and on
+    // an APFS disk what the volumes sharing it hold.
+    let categories = status["categories"].as_array().expect("categories");
+    let split: u64 = categories
+        .iter()
+        .map(|c| {
+            assert!(c["key"].is_string(), "{status}");
+            c["bytes"].as_u64().unwrap()
+        })
+        .sum();
+    assert_eq!(split, status["physical"].as_u64().unwrap(), "{status}");
+    let disk = &status["disk"];
+    assert!(
+        disk["name"].is_string() || disk["name"].is_null(),
+        "{status}"
+    );
+    assert_eq!(disk["whole"], false, "{status}");
+    if !disk["volume"].is_null() {
+        assert!(disk["volume"].as_u64().unwrap() >= split, "{status}");
+        for part in ["system", "swap", "volumes"] {
+            assert!(disk[part].is_u64(), "{part}: {status}");
+        }
+    }
     assert_eq!(
         status["error_count"],
         if fx.locked_unreadable { 1 } else { 0 }
@@ -1087,7 +1110,7 @@ fn a_stopped_scan_can_be_followed_by_a_scan_of_another_folder() {
     let scan = serde_json::json!({"path": second.root}).to_string();
     assert_eq!(post_json(&server, "/api/scan", &scan).0, 202);
     let status = server.wait_for("done", Duration::from_secs(5));
-    let total = hoardmap::server::disk(&second.root).unwrap().0;
+    let total = hoardmap::disk::space(&second.root).unwrap().0;
     assert_eq!(status["path"], lossy(&second.root));
     assert_eq!(status["disk"]["total"], total);
     assert_eq!(status["bytes"], second.total_bytes());

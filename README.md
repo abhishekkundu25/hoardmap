@@ -121,8 +121,20 @@ Scan turns into Stop, which ends it and keeps what it has read so far; the statu
 the figures are partial. If the scanned drive is disconnected, the scan ends with an
 error saying so.
 
-Under the top bar, a bar shows the whole disk: the scanned folder, everything else, and
-the free space, with the sizes beside it.
+Under the top bar, a bar shows the whole disk the folder is on, with the disk's name and
+how much of it is in use. Once a scan is done, the scanned folder is split by kind of
+thing, largest first: Applications, Rebuildable (the folders of the Rebuildable tab),
+Photos, Music & Movies, Mail & Messages, iCloud Drive, App data (Library and the hidden
+folders of a home folder), Trash, Documents (with Desktop and Downloads) and Other
+files. After the scan come the parts of the disk it did not cover: Other folders,
+macOS (the system with its startup and recovery volumes), Swap (memory macOS has moved
+to disk) and other volumes sharing the disk, then the free space. Point at a part, in
+the bar or in the list under it, to see its size, its share of the disk and what it
+is; click Rebuildable to open that tab. The figures are bytes on disk whatever the
+size toggle says, and macOS's own parts are read when a scan starts and ends, so press
+Rescan to see swap as it is now. The kinds are told by where a folder is, so they will
+not match the Storage pane of System Settings exactly. Parts under a thousandth of the
+disk are left out, and a disk that is not APFS shows no macOS or Swap parts.
 
 While a scan runs, the list and the map fill in as folders finish, about once a
 second, the way WinDirStat grows its tree. Expanded folders, the selection and the zoom
@@ -244,7 +256,8 @@ scanner and disks other than APFS do not show clones.
 Hard links are counted once. A file reached again through a second link shows 0 bytes
 and is marked as a hard link, so totals match what the disk says. The scan stays on the
 volume of the folder you scanned, so scanning `/` does not count `/Volumes` or count
-the Data volume twice through firmlinks. Symlinks are not followed.
+the Data volume twice through firmlinks: it reads `/Users`, `/Applications` and the
+other top folders once, where they appear. Symlinks are not followed.
 
 ### Unreadable folders
 
