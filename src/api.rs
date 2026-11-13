@@ -106,6 +106,14 @@ struct View {
 }
 
 impl View {
+    /// Whether a request may be about the node `id`: it exists and, under a filter,
+    /// is of the kind or holds some of it. The root always is, so a kind the scan
+    /// does not have shows an empty folder.
+    fn has(&self, id: NodeId) -> bool {
+        self.tree.get(id).is_some()
+            && (id == crate::tree::ROOT || self.measure(Mode::Physical).shows(id))
+    }
+
     /// How this view sizes entries in `mode`.
     fn measure(&self, mode: Mode) -> Measure<'_> {
         Measure {
@@ -249,8 +257,8 @@ fn node(app: &App, id: &str, query: &Query) -> Response {
     let Some((id, node)) = id
         .parse::<NodeId>()
         .ok()
-        .and_then(|id| Some((id, tree.get(id)?)))
-        .filter(|&(id, _)| id == crate::tree::ROOT || measure.shows(id))
+        .filter(|&id| view.has(id))
+        .map(|id| (id, &tree.nodes[id as usize]))
     else {
         return error(404, "no such node");
     };
@@ -290,7 +298,7 @@ fn treemap(app: &App, query: &Query) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if view.tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
     let measure = view.measure(mode);
@@ -309,7 +317,7 @@ fn icicle(app: &App, query: &Query) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if view.tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
     let measure = view.measure(mode);
@@ -328,7 +336,7 @@ fn extensions(app: &App, query: &Query) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if view.tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
     let items = treemap::extensions(&view.tree, root, view.measure(mode), &view.colours);
@@ -362,7 +370,7 @@ fn largest(app: &App, query: &Query) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
     let items: Vec<Value> = treemap::largest(tree, root, n, view.measure(mode))
@@ -402,7 +410,7 @@ fn rebuildable(app: &App, query: &Query) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
     let groups = crate::rebuildable::groups(tree, root, view.measure(mode));

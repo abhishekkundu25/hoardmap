@@ -510,7 +510,7 @@ function renderFilter() {
   const figures = document.createElement("span");
   figures.className = "figures";
   figures.textContent = held ? `${formatBytes(held.bytes)} of the ${formatBytes(s.physical)} scanned` : "";
-  el.filterText.replaceChildren("Showing only ", name, figures);
+  el.filterText.replaceChildren("Showing only ", name, " ", figures);
 }
 
 // Shows one kind alone, or everything again with null. The tree keeps its ids under a
@@ -526,16 +526,32 @@ async function setKind(kind) {
   store.highlightExt = null;
   store.highlightGroup = null;
   store.highlightIds = null;
+  // What is on screen belongs to the view before the click, and so do the answers
+  // still on their way: both go now, so nothing old ever sits under the new band.
+  layoutRequest += 1;
+  bottomRequest += 1;
+  rebuildRequest += 1;
+  selectRequest += 1;
+  store.layout = null;
+  store.rebuild = null;
+  el.extRows.textContent = "";
+  el.largestRows.textContent = "";
   hideTooltip();
   renderFilter();
+  renderList();
   renderCaption();
+  renderRebuildable();
+  drawTreemap();
   const keep = new Set([0, ...expanded, store.root, store.selection].filter((id) => id !== null));
   // A folder the kind leaves out is not found; it stays open for when the filter ends.
   await Promise.all([...keep].map((id) => fetchNode(id).catch(() => {})));
   if (started !== generation) return;
   const has = (id) => nodes.get(id)?.path !== undefined;
   if (!has(0)) {
-    showMessage("The scan could not be read again.", true);
+    // Without the scanned folder there is nothing to show under this filter; say so
+    // and go back to everything, or leave the views empty if that failed too.
+    showMessage(kind === null ? "The scan could not be read again; press Rescan." : "That kind could not be shown.", true);
+    if (kind !== null) setKind(null);
     return;
   }
   // A zoom or selection the kind leaves out falls back to the scanned folder.

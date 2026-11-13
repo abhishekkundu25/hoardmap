@@ -229,7 +229,8 @@ renames anything. Closing the window quits the app.
     then answer for that kind alone: a node's `size`, `physical`, `files` and `dirs`
     count only its entries of the kind, children without any are left out, and
     `has_children` follows. Node ids are the tree's own, filtered or not. A node the
-    kind leaves out is a 404, the root excepted, which answers with zeros. An
+    kind leaves out is a 404, as an id and as a `root`; the scan's root is
+    excepted and answers with zeros. An
     unknown key is a 400; a `kind` while a scan runs is a 409, since kinds are known
     once it is done. The filter for a kind is made on its first request: one walk of
     the tree, kept as one bit per entry plus the figures of the folders above a rule
