@@ -7,7 +7,7 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -15,9 +15,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::api::{self, lossy};
+use crate::categories::{self, Category};
+use crate::disk::{self, Usage};
 use crate::scan::{self, Progress};
 use crate::tree::Tree;
 use crate::treemap::Colours;
@@ -93,6 +95,8 @@ pub enum State {
         tree: Arc<Tree>,
         duration: Duration,
         colours: Colours,
+        /// The tree's bytes on disk by kind of thing, largest first, for the disk bar.
+        categories: Vec<(Category, u64)>,
         /// Stopped before the end: the folders it had not read count as empty.
         stopped: bool,
         /// The running scan's preview stood in for a scan that did not wind down: only
@@ -119,10 +123,9 @@ pub struct App {
     pub native: bool,
     /// The folder to scan first; the idle status names it so the page can start it.
     pub start: Mutex<Option<PathBuf>>,
-    /// `(total, free)` of the scanned folder's volume, read when a scan starts and ends
-    /// rather than on each status, since a network drive that stopped answering blocks
-    /// the read.
-    disk: Mutex<Option<(u64, u64)>>,
+    /// The scanned folder's disk, read when a scan starts and ends rather than on each
+    /// status, since a network drive that stopped answering blocks the read.
+    disk: Mutex<Option<Usage>>,
     /// (Last folder request handed out, last one that passed its checks, whether the
     /// first scan has been requested.) A request older than the last passed one is
     /// dropped; one that fails its checks leaves earlier ones standing.
@@ -151,8 +154,12 @@ impl App {
 
     fn status_of(&self, state: &State) -> serde_json::Value {
         let mut status = self.state_json(state);
-        let disk = *self.disk.lock().unwrap();
-        status["disk"] = json!(disk.map(|(total, free)| json!({ "total": total, "free": free })));
+        status["disk"] = self
+            .disk
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(Value::Null, disk_json);
         status
     }
 
@@ -190,6 +197,7 @@ impl App {
                 path,
                 tree,
                 duration,
+                categories,
                 stopped,
                 preview,
                 ..
@@ -209,6 +217,10 @@ impl App {
                     tree.error_count,
                     None,
                 );
+                status["categories"] = categories
+                    .iter()
+                    .map(|(category, bytes)| json!({ "key": category.key(), "bytes": bytes }))
+                    .collect();
                 status["stopped"] = json!(stopped);
                 status["preview"] = json!(preview);
                 status
@@ -275,7 +287,7 @@ impl App {
         if !path.is_dir() {
             return Err(format!("{} is not a directory", path.display()));
         }
-        let disk = disk(&path);
+        let disk = disk::usage(&path);
         {
             let mut state = self.state.lock().unwrap();
             let mut current = self.folder_request.lock().unwrap();
@@ -313,6 +325,7 @@ impl App {
             Ok(tree) => State::Done {
                 path,
                 colours: Colours::new(&tree),
+                categories: categories::split(&tree),
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
                 stopped: progress.stop.load(AtomicOrdering::Relaxed),
@@ -323,7 +336,7 @@ impl App {
                 error: error.to_string(),
             },
         };
-        let disk = disk(&path_for_disk);
+        let disk = disk::usage(&path_for_disk);
         self.update_scan(progress, |state| {
             *self.disk.lock().unwrap() = disk;
             *state = next;
@@ -352,6 +365,7 @@ impl App {
         if !path.is_dir() {
             return Err(format!("{} is not a directory", path.display()));
         }
+        let disk = disk::usage(&path);
         {
             let state = self.state.lock().unwrap();
             let mut current = self.folder_request.lock().unwrap();
@@ -361,6 +375,8 @@ impl App {
             if matches!(*state, State::Idle) && !current.2 {
                 current.1 = request;
                 *self.start.lock().unwrap() = Some(path);
+                // The start screen's bar shows the disk of the folder it will scan.
+                *self.disk.lock().unwrap() = disk;
                 drop(current);
                 drop(state);
                 self.notify_status();
@@ -394,6 +410,7 @@ impl App {
             let next = State::Done {
                 path,
                 colours: Colours::new(&tree),
+                categories: categories::split(&tree),
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
                 stopped: true,
@@ -460,17 +477,22 @@ impl App {
     }
 }
 
-/// `(total, free)` bytes of the volume holding `path`; free is what an ordinary user
-/// may still write.
-pub fn disk(path: &Path) -> Option<(u64, u64)> {
-    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: a valid C string and a statvfs the call fills in.
-    if unsafe { libc::statvfs(cpath.as_ptr(), &mut stat) } != 0 {
-        return None;
+/// The status document's `disk`: the size, free space and name, and on an APFS disk
+/// what the volumes sharing it hold.
+fn disk_json(disk: &Usage) -> Value {
+    let mut out = json!({
+        "total": disk.total,
+        "free": disk.free,
+        "name": disk.name,
+        "whole": disk.whole,
+    });
+    if let Some(shares) = disk.shares {
+        out["volume"] = json!(shares.volume);
+        out["system"] = json!(shares.system);
+        out["swap"] = json!(shares.swap);
+        out["volumes"] = json!(shares.volumes);
     }
-    let block = stat.f_frsize as u64;
-    Some((stat.f_blocks as u64 * block, stat.f_bavail as u64 * block))
+    out
 }
 
 /// `clones` is the tree's `(clone_aware, clone_counted_once)`.
@@ -653,7 +675,7 @@ pub fn spawn(config: Config) -> io::Result<Spawned> {
     let port = listener.local_addr()?.port();
     let app = App::new(port, config.native);
     *app.start.lock().unwrap() = Some(config.path.clone());
-    *app.disk.lock().unwrap() = disk(&config.path);
+    *app.disk.lock().unwrap() = disk::usage(&config.path);
     let url = page_url(port, &app.token);
     let app = Arc::new(app);
     if config.scan_at_start
@@ -1019,6 +1041,8 @@ fn reason(status: u16) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -1143,13 +1167,20 @@ mod tests {
             started: Instant::now(),
             live: None,
         };
-        *app.disk.lock().unwrap() = Some((123, 45));
+        let stale = Some(Usage {
+            total: 123,
+            free: 45,
+            name: None,
+            whole: false,
+            shares: None,
+        });
+        *app.disk.lock().unwrap() = stale.clone();
         app.finish_scan(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("assets"),
             &old,
             Instant::now(),
         );
-        assert_eq!(*app.disk.lock().unwrap(), Some((123, 45)));
+        assert_eq!(*app.disk.lock().unwrap(), stale);
         assert!(
             matches!(&*app.state.lock().unwrap(), State::Scanning { progress, .. } if Arc::ptr_eq(progress, &current))
         );

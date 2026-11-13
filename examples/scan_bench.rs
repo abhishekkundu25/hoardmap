@@ -72,6 +72,22 @@ fn main() {
         println!("    bulk     {:?}", a[i]);
         println!("    portable {:?}", b[i]);
     }
+    // What a finished scan adds for the disk bar: one pass over the tree, and a few
+    // questions to the system about the disk.
+    let started = Instant::now();
+    let split = hoardmap::categories::split(&bulk);
+    let split_time = started.elapsed();
+    let started = Instant::now();
+    let usage = hoardmap::disk::usage(&path);
+    println!(
+        "disk bar: categories in {:.1} ms, disk in {:.3} ms",
+        split_time.as_secs_f64() * 1e3,
+        started.elapsed().as_secs_f64() * 1e3
+    );
+    for (category, bytes) in &split {
+        println!("  {:<12} {bytes}", category.key());
+    }
+    println!("  {usage:?}");
     drop((bulk, portable));
 
     for method in [Method::Portable, Method::Bulk] {

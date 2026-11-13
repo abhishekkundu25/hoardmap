@@ -62,7 +62,9 @@ renames anything. Closing the window quits the app.
    in full).
 10. As a user, I want hard links counted once, so that totals match what the disk says.
 11. As a user, I want the scan to stay on the root's volume, so that scanning `/` does
-    not count `/Volumes` or the Data volume twice through firmlinks.
+    not count `/Volumes` or the Data volume twice through firmlinks. A firmlink such
+    as `/Users` is entered where it appears: the bulk listing names its stand-in on
+    the system volume, so its inode is not compared with the opened folder's.
 12. As a user, I want folders I may not read to be counted and listed as errors rather
     than stopping the scan, so that a protected folder does not break the page.
 13. As a user, I want the treemap to show every file as a rectangle sized by bytes and
@@ -204,9 +206,24 @@ renames anything. Closing the window quits the app.
 - **API** (all JSON):
   - `GET /api/status` → `{state, path, dirs, files, bytes, physical, clone_aware,
     clone_counted_once, elapsed_ms, error_count, error, disk, live}`; `state` is `idle | scanning | done | failed`. While scanning the counts are
-    the progress so far; when done they are the tree's totals. `disk` is `{total, free}`
-    in bytes for the volume holding `path`, or null. `live`, while scanning, counts the
+    the progress so far; when done they are the tree's totals. `disk` is null or
+    `{total, free, name, whole}` for the volume holding `path`: bytes, the volume's
+    name (or null), and whether `path` is the volume's top folder. On a local APFS
+    disk it also has the bytes in use by volume (`src/disk.rs`): `volume` (the one
+    holding `path`; the system and data volumes together when `path` is on the
+    startup disk's system volume), `system` (macOS's own volumes), `swap` (the VM
+    volume) and `volumes` (the rest). It is read when a scan starts and ends. When
+    done, `categories` is `[{key, bytes}]`, the tree's bytes on disk by kind of thing
+    (`src/categories.rs`), largest first and adding up to `physical`; `key` is one of
+    `applications`, `rebuildable`, `photos`, `media`, `mail`, `cloud`, `app_data`,
+    `system`, `bin` (the Trash), `documents`, `other`. `live`, while scanning, counts the
     finished entries the preview was built from (null before the first preview).
+  - The disk bar draws these: the scan (one part while it runs, `categories` when
+    done), then what the scan did not cover (`volume` less the scan, `system` with
+    the scan's own `system` category, `swap`, `volumes` with whatever no mounted
+    volume accounts for), then `free`. A kind is given by place: a rule table of
+    paths from the file system root, the most specific rule above a file winning,
+    with every rebuildable folder its own kind wherever it lies.
   - While scanning, the tree endpoints (`node`, `treemap`, `icicle`, `extensions`,
     `largest`, `errors`) answer from a preview: the entries down to three levels below
     the root that the scan has finished, rebuilt every second. Folders still being read

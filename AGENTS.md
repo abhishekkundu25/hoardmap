@@ -31,6 +31,13 @@ deletes, moves or renames anything; do not add such an action.
   abhishekkundu25/homebrew-tap.
 - `src/api.rs`: the JSON endpoints, documented in `docs/specs/hoardmap.md`.
 - `src/volumes.rs`: the disks the Disks menu offers, and the macOS folder picker.
+- `src/disk.rs`: the scanned folder's disk for the disk bar: size, free space, name,
+  and on APFS the bytes in use by each volume sharing it (macOS's own, swap). Read
+  at launch, when a folder is handed over and when a scan starts and ends; nothing
+  polls it.
+- `src/categories.rs`: the finished tree split by kind of thing (Applications, App
+  data, Rebuildable, ...) for the disk bar: a path rule table, no file system access.
+  The split must add up to the root's `physical`.
 - `assets/`: the logo. `hoardmap.svg` is the source, served as `/logo.svg` and
   embedded with `include_str!`; `hoardmap.icns` is the app icon and
   `dmg-background.tiff` the DMG window, both made by `tools/make-images.sh` (needs

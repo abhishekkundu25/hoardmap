@@ -1035,7 +1035,7 @@ impl Matcher {
 
 /// The names from the file system root down to `id`: the scan root's full path split
 /// into its components, then each name below it.
-fn path_names(tree: &Tree, id: NodeId) -> Vec<&str> {
+pub(crate) fn path_names(tree: &Tree, id: NodeId) -> Vec<&str> {
     let mut chain = tree.ancestors(id);
     chain.reverse();
     let mut names: Vec<&str> = Vec::new();
@@ -1050,12 +1050,11 @@ fn path_names(tree: &Tree, id: NodeId) -> Vec<&str> {
     names
 }
 
-/// The rebuildable folders under `root` (`root` included), grouped by rule, groups
-/// and their folders largest first in `mode`. One walk; a matched folder is not
-/// descended into, so a nested match counts once, inside the outer one. Rules without
-/// a match are left out.
-pub fn groups(tree: &Tree, root: NodeId, mode: Mode) -> Vec<Group> {
-    let mut found: Vec<Vec<Folder>> = RULES.iter().map(|_| Vec::new()).collect();
+/// The folders under `root` (`root` included) each rule matches, in [`RULES`] order.
+/// One walk; a matched folder is not descended into, so a nested match counts once,
+/// inside the outer one.
+fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
+    let mut found: Vec<Vec<NodeId>> = RULES.iter().map(|_| Vec::new()).collect();
     // The names down to the node being looked at; depth-first order keeps its
     // ancestors in place, so a node at `depth` below `root` replaces everything after
     // its parent.
@@ -1086,18 +1085,34 @@ pub fn groups(tree: &Tree, root: NodeId, mode: Mode) -> Vec<Group> {
             }
         }
         match rule {
-            Some(r) => found[r].push(Folder {
-                id,
-                bytes: mode.bytes(node),
-            }),
+            Some(r) => found[r].push(id),
             None => stack.extend(node.children.iter().map(|&c| (c, depth + 1))),
         }
     }
+    found
+}
+
+/// Every rebuildable folder under `root` (`root` included), whatever its rule; none
+/// lies inside another.
+pub fn folders(tree: &Tree, root: NodeId) -> Vec<NodeId> {
+    matched(tree, root).into_iter().flatten().collect()
+}
+
+/// The rebuildable folders under `root` (`root` included), grouped by rule, groups
+/// and their folders largest first in `mode`. Rules without a match are left out.
+pub fn groups(tree: &Tree, root: NodeId, mode: Mode) -> Vec<Group> {
     let mut groups: Vec<Group> = RULES
         .iter()
-        .zip(found)
+        .zip(matched(tree, root))
         .filter(|(_, folders)| !folders.is_empty())
-        .map(|(rule, mut folders)| {
+        .map(|(rule, folders)| {
+            let mut folders: Vec<Folder> = folders
+                .into_iter()
+                .map(|id| Folder {
+                    id,
+                    bytes: mode.bytes(&tree.nodes[id as usize]),
+                })
+                .collect();
             folders.sort_by_key(|f| (Reverse(f.bytes), f.id));
             let count = folders.len();
             let bytes = folders.iter().map(|f| f.bytes).sum();
