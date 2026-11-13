@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::api::{self, lossy};
-use crate::categories::{self, Category};
+use crate::categories::Kinds;
 use crate::disk::{self, Usage};
 use crate::scan::{self, Progress};
 use crate::tree::Tree;
@@ -95,8 +95,9 @@ pub enum State {
         tree: Arc<Tree>,
         duration: Duration,
         colours: Colours,
-        /// The tree's bytes on disk by kind of thing, largest first, for the disk bar.
-        categories: Vec<(Category, u64)>,
+        /// The tree by kind of thing: the split the disk bar draws, and the filters
+        /// that show one kind alone.
+        kinds: Arc<Kinds>,
         /// Stopped before the end: the folders it had not read count as empty.
         stopped: bool,
         /// The running scan's preview stood in for a scan that did not wind down: only
@@ -197,7 +198,7 @@ impl App {
                 path,
                 tree,
                 duration,
-                categories,
+                kinds,
                 stopped,
                 preview,
                 ..
@@ -217,7 +218,8 @@ impl App {
                     tree.error_count,
                     None,
                 );
-                status["categories"] = categories
+                status["categories"] = kinds
+                    .split()
                     .iter()
                     .map(|(category, bytes)| json!({ "key": category.key(), "bytes": bytes }))
                     .collect();
@@ -325,7 +327,7 @@ impl App {
             Ok(tree) => State::Done {
                 path,
                 colours: Colours::new(&tree),
-                categories: categories::split(&tree),
+                kinds: Arc::new(Kinds::new(&tree)),
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
                 stopped: progress.stop.load(AtomicOrdering::Relaxed),
@@ -410,7 +412,7 @@ impl App {
             let next = State::Done {
                 path,
                 colours: Colours::new(&tree),
-                categories: categories::split(&tree),
+                kinds: Arc::new(Kinds::new(&tree)),
                 tree: Arc::new(tree),
                 duration: started.elapsed(),
                 stopped: true,

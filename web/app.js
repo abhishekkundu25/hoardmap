@@ -191,6 +191,8 @@ const store = {
   selection: null,
   root: 0,
   mode: "physical",
+  // The one kind of thing the views show, by the disk bar's key; null for everything.
+  kind: null,
   view: "treemap",
   highlightExt: null,
   // The Rebuildable group whose folders the map highlights, by key, and their ids.
@@ -221,6 +223,9 @@ const el = {
   diskBar: $("disk-bar"),
   diskLegend: $("disk-legend"),
   diskSummary: $("disk-summary"),
+  filter: $("filter"),
+  filterText: $("filter-text"),
+  filterClear: $("filter-clear"),
   path: $("path"),
   scanForm: $("scan-form"),
   scan: $("scan"),
@@ -275,6 +280,11 @@ async function postJSON(url, data) {
   return response.status === 204 ? null : response.json();
 }
 
+// The part of a request that names the kind the views are filtered to, if any.
+function kindQuery() {
+  return store.kind ? `kind=${store.kind}` : "";
+}
+
 // A node with its path and children, fetched once. Child summaries from the parent's
 // answer are cached shallowly (children: null) so rows render before their own fetch.
 function fetchNode(id) {
@@ -282,7 +292,7 @@ function fetchNode(id) {
   if (cached && cached.path !== undefined) return Promise.resolve(cached);
   if (pending.has(id)) return pending.get(id);
   const started = generation;
-  const promise = getJSON(`/api/node/${id}`)
+  const promise = getJSON(`/api/node/${id}?${kindQuery()}`)
     .then((node) => {
       if (started !== generation) throw new Error("the tree changed");
       nodes.set(id, node);
@@ -321,7 +331,7 @@ function showMessage(text, isError) {
 const DISK_PARTS = {
   scanned: ["Scanned so far", "var(--accent)", "What the scan has read so far."],
   applications: ["Applications", "var(--part-applications)", "Apps in the Applications folders."],
-  rebuildable: ["Rebuildable", "var(--part-rebuildable)", "Folders a tool fills again on its own. Click to list them."],
+  rebuildable: ["Rebuildable", "var(--part-rebuildable)", "Folders a tool fills again on its own, listed in the Rebuildable tab."],
   photos: ["Photos", "var(--part-photos)", "The Pictures folder, with the Photos library."],
   media: ["Music & Movies", "var(--part-media)", "The Music and Movies folders."],
   mail: ["Mail & Messages", "var(--part-mail)", "Mail and Messages kept on this Mac."],
@@ -431,6 +441,18 @@ function renderDisk() {
     item.children[1].textContent = DISK_PARTS[key][0];
     item.lastChild.textContent = ` ${formatBytes(Math.round(bytes))}`;
     keys.push(item);
+    // A kind of the scan can be clicked, or chosen with the keyboard in the legend.
+    const can = canFilter(key);
+    seg.classList.toggle("can", can);
+    item.classList.toggle("can", can);
+    if (can) {
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+    } else {
+      item.removeAttribute("tabindex");
+      item.removeAttribute("role");
+      item.removeAttribute("aria-pressed");
+    }
   }
   // Putting an element back in the page restarts its animation, so only on a change.
   if (el.diskBar.dataset.order !== order) {
@@ -454,7 +476,80 @@ function renderDisk() {
   el.diskSummary.append(text);
   const spoken = parts.map(([key, bytes]) => `${DISK_PARTS[key][0]} ${formatBytes(Math.round(bytes))}`);
   el.diskBar.setAttribute("aria-label", `${d.name ? `${d.name}: ` : ""}${text}. ${spoken.join(", ")}.`);
+  renderFilter();
 }
+
+// The filter: one kind of the scan shown alone in the list, the map and the tabs.
+
+// Whether a click on the part filters to it: a kind the finished scan has. macOS is
+// left out, since its part also holds volumes the scan did not read.
+function canFilter(key) {
+  const s = store.status;
+  return Boolean(s && s.state === "done" && Array.isArray(s.categories) && s.categories.some((c) => c.key === key));
+}
+
+// Says in three places that a filter is on: the bar and its legend keep the kind lit
+// and the rest dimmed, and a band in the kind's colour names it, with the way back.
+function renderFilter() {
+  const kind = store.kind;
+  el.disk.classList.toggle("filtered", kind !== null);
+  for (const cache of [diskSegs, diskKeys]) {
+    for (const [key, node] of cache) node.classList.toggle("picked", key === kind);
+  }
+  for (const [key, item] of diskKeys) {
+    if (item.classList.contains("can")) item.setAttribute("aria-pressed", String(key === kind));
+  }
+  el.filter.hidden = kind === null;
+  if (kind === null) return;
+  const [label, colour] = DISK_PARTS[kind];
+  el.filter.style.setProperty("--part", colour);
+  const s = store.status;
+  const held = (s.categories || []).find((c) => c.key === kind);
+  const name = document.createElement("b");
+  name.textContent = label;
+  const figures = document.createElement("span");
+  figures.className = "figures";
+  figures.textContent = held ? `${formatBytes(held.bytes)} of the ${formatBytes(s.physical)} scanned` : "";
+  el.filterText.replaceChildren("Showing only ", name, figures);
+}
+
+// Shows one kind alone, or everything again with null. The tree keeps its ids under a
+// filter, so the view keeps its open folders, selection and zoom where the kind has
+// them, and fetches their figures again.
+async function setKind(kind) {
+  if (kind === store.kind || store.loadedPath === null) return;
+  store.kind = kind;
+  generation += 1;
+  const started = generation;
+  nodes.clear();
+  pending.clear();
+  store.highlightExt = null;
+  store.highlightGroup = null;
+  store.highlightIds = null;
+  hideTooltip();
+  renderFilter();
+  renderCaption();
+  const keep = new Set([0, ...expanded, store.root, store.selection].filter((id) => id !== null));
+  // A folder the kind leaves out is not found; it stays open for when the filter ends.
+  await Promise.all([...keep].map((id) => fetchNode(id).catch(() => {})));
+  if (started !== generation) return;
+  const has = (id) => nodes.get(id)?.path !== undefined;
+  if (!has(0)) {
+    showMessage("The scan could not be read again.", true);
+    return;
+  }
+  // A zoom or selection the kind leaves out falls back to the scanned folder.
+  if (!has(store.root)) store.root = 0;
+  if (store.selection === null || !has(store.selection)) store.selection = 0;
+  renderList();
+  renderCaption();
+  renderControls();
+  renderHint();
+  fetchTreemap();
+  loadBottom();
+}
+
+el.filterClear.addEventListener("click", () => setKind(null));
 
 // Marks the part under the pointer in the bar and the legend, and says what it is.
 let diskPointed = null;
@@ -489,6 +584,12 @@ function describeDiskPart(key) {
   line.className = "note";
   line.textContent = note;
   el.tooltip.replaceChildren(title, line);
+  if (canFilter(key)) {
+    const hint = document.createElement("span");
+    hint.className = "note";
+    hint.textContent = key === store.kind ? "Click to show everything again." : "Click to show only this.";
+    el.tooltip.append(hint);
+  }
   el.tooltip.hidden = false;
 }
 
@@ -499,10 +600,21 @@ function diskKeyAt(event) {
 
 el.disk.addEventListener("mousemove", (event) => pointAtDisk(diskKeyAt(event), event));
 el.disk.addEventListener("mouseleave", () => pointAtDisk(null));
-el.disk.addEventListener("click", (event) => {
-  if (diskKeyAt(event) === "rebuildable") {
-    document.querySelector('[role="tab"][data-tab="rebuildable"]').click();
-  }
+// A click on a kind shows it alone; a click on the kind already shown ends the filter.
+function toggleKind(key) {
+  if (key === null || !canFilter(key)) return;
+  setKind(store.kind === key ? null : key);
+  // The tooltip's last line says what the next click does.
+  if (diskPointed === key) describeDiskPart(key);
+}
+
+el.disk.addEventListener("click", (event) => toggleKind(diskKeyAt(event)));
+el.diskLegend.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const key = diskKeyAt(event);
+  if (key === null || !canFilter(key)) return;
+  event.preventDefault();
+  toggleKind(key);
 });
 
 function renderStatus() {
@@ -930,7 +1042,7 @@ async function fetchTreemap() {
   }
   const { w, h } = paneSize();
   try {
-    const layout = await getJSON(`/api/${store.view}?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}`);
+    const layout = await getJSON(`/api/${store.view}?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}&${kindQuery()}`);
     if (request !== layoutRequest) return;
     store.layout = layout;
     drawTreemap();
@@ -1171,6 +1283,18 @@ function renderCaption() {
   span.textContent = text;
   el.caption.appendChild(span);
   el.caption.title = text;
+  // Under a filter the map shows one kind; the caption says which.
+  if (store.kind !== null && text) {
+    const [label, colour] = DISK_PARTS[store.kind];
+    const tag = document.createElement("b");
+    tag.className = "kind";
+    tag.style.setProperty("--part", colour);
+    tag.textContent = label;
+    // The caption runs right to left so a long path loses its start, not its end;
+    // the first element is the one furthest right.
+    el.caption.prepend(tag);
+    el.caption.title = `${text}, ${label} only`;
+  }
 }
 
 // Root and mode changes.
@@ -1252,8 +1376,8 @@ async function loadBottom() {
   }
   try {
     const [extensions, largest] = await Promise.all([
-      getJSON(`/api/extensions?root=${store.root}&mode=${store.mode}`),
-      getJSON(`/api/largest?root=${store.root}&n=200&mode=${store.mode}`),
+      getJSON(`/api/extensions?root=${store.root}&mode=${store.mode}&${kindQuery()}`),
+      getJSON(`/api/largest?root=${store.root}&n=200&mode=${store.mode}&${kindQuery()}`),
     ]);
     if (request !== bottomRequest) return;
     renderExtensions(extensions);
@@ -1475,7 +1599,7 @@ async function loadRebuildable() {
   }
   try {
     const [data, root] = await Promise.all([
-      getJSON(`/api/rebuildable?root=${store.root}&mode=${store.mode}`),
+      getJSON(`/api/rebuildable?root=${store.root}&mode=${store.mode}&${kindQuery()}`),
       fetchNode(store.root),
     ]);
     if (request !== rebuildRequest) return;
@@ -1892,6 +2016,9 @@ function forgetTree() {
   pending.clear();
   store.selection = null;
   store.root = 0;
+  // A new tree starts unfiltered: its kinds are not known until its scan is done.
+  store.kind = null;
+  renderFilter();
   store.highlightExt = null;
   store.highlightGroup = null;
   store.highlightIds = null;
@@ -2038,6 +2165,9 @@ document.addEventListener("keydown", (event) => {
   if (el.errors.open || el.access.open) return;
   if (store.highlightExt !== null || store.highlightGroup !== null) {
     setHighlight(null);
+    event.preventDefault();
+  } else if (store.kind !== null) {
+    setKind(null);
     event.preventDefault();
   }
 });

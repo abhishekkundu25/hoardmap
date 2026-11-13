@@ -4,7 +4,7 @@
 use serde::Serialize;
 
 use crate::tree::{Kind, NodeId, Tree, extension};
-use crate::treemap::{Colours, Mode};
+use crate::treemap::{Colours, Measure};
 
 /// Rows are never thinner than this; deeper levels are left out instead.
 pub const MIN_ROW: f32 = 18.0;
@@ -44,15 +44,16 @@ pub struct Icicle {
 /// `min` pixels is left out with everything under it; levels that would make rows
 /// thinner than [`MIN_ROW`] are left out too. An unknown root or a viewport without
 /// area yields no bars.
-pub fn icicle(
+pub fn icicle<'a>(
     tree: &Tree,
     root: NodeId,
     w: f32,
     h: f32,
     min: f32,
-    mode: Mode,
+    measure: impl Into<Measure<'a>>,
     colours: &Colours,
 ) -> Icicle {
+    let measure = measure.into();
     let mut out = Icicle {
         root,
         w,
@@ -77,10 +78,11 @@ pub fn icicle(
         let mut children: Vec<(NodeId, u64)> = node
             .children
             .iter()
-            .map(|&c| (c, mode.bytes(&tree.nodes[c as usize])))
+            .map(|&c| (c, measure.bytes(c, &tree.nodes[c as usize])))
             .filter(|&(_, b)| b > 0)
             .collect();
-        // The tree sorts by logical size; physical sizes may be out of order.
+        // The tree sorts by logical size; physical and filtered sizes may be out of
+        // order.
         if !children.is_sorted_by(|a, b| a.1 >= b.1) {
             children.sort_by_key(|&(_, b)| std::cmp::Reverse(b));
         }
@@ -116,7 +118,7 @@ pub fn icicle(
                 w: width,
                 h: row,
                 depth,
-                bytes: mode.bytes(node),
+                bytes: measure.bytes(id, node),
                 kind: node.kind,
                 name: node.name.clone(),
                 ext,
@@ -131,6 +133,7 @@ pub fn icicle(
 mod tests {
     use super::*;
     use crate::tree::{Node, Shared};
+    use crate::treemap::Mode;
 
     fn node(
         name: &str,

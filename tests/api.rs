@@ -452,6 +452,76 @@ fn largest_two_are_big_bin_then_x_jpg() {
     assert_eq!(get_json(&server, "/api/largest?root=999999").0, 404);
 }
 
+/// The fixture lies in one place, so one kind holds all of it; any other kind holds
+/// nothing. `src/categories.rs` tests a tree of several kinds.
+#[test]
+fn a_kind_filters_every_tree_endpoint() {
+    let fx = fixture();
+    let server = start_done(&fx);
+    let status = server.status();
+    let categories = status["categories"].as_array().unwrap();
+    assert_eq!(categories.len(), 1, "{status}");
+    let all = categories[0]["key"].as_str().unwrap();
+    let none = if all == "photos" { "media" } else { "photos" };
+
+    let whole = node(&server, 0);
+    let (code, kept) = get_json(&server, &format!("/api/node/0?kind={all}"));
+    assert_eq!(code, 200);
+    assert_eq!(kept, whole);
+    let a = child_id(&server, 0, "a");
+    let (code, kept) = get_json(&server, &format!("/api/node/{a}?kind={all}"));
+    assert_eq!((code, kept), (200, node(&server, a)));
+
+    let (code, empty) = get_json(&server, &format!("/api/node/0?kind={none}"));
+    assert_eq!(code, 200);
+    for figure in ["size", "physical", "files", "dirs"] {
+        assert_eq!(empty[figure], 0, "{figure}: {empty}");
+    }
+    assert_eq!(empty["has_children"], false);
+    assert_eq!(empty["children"], serde_json::json!([]));
+    assert_eq!(empty["path"], whole["path"]);
+    assert_eq!(
+        get_json(&server, &format!("/api/node/{a}?kind={none}")).0,
+        404
+    );
+
+    for view in ["treemap", "icicle"] {
+        let size = "w=400&h=300&mode=physical";
+        let (code, kept) = get_json(&server, &format!("/api/{view}?{size}&kind={all}"));
+        assert_eq!(code, 200);
+        assert_eq!(kept, get_json(&server, &format!("/api/{view}?{size}")).1);
+        let (code, empty) = get_json(&server, &format!("/api/{view}?{size}&kind={none}"));
+        assert_eq!(code, 200);
+        let rects = empty["rects"].as_array().unwrap();
+        // The icicle keeps the root's own bar, now of no bytes.
+        assert!(rects.iter().all(|r| r["id"] == 0), "{view}: {empty}");
+    }
+    let (code, kept) = get_json(&server, &format!("/api/extensions?kind={all}"));
+    assert_eq!((code, kept), (200, get_json(&server, "/api/extensions").1));
+    let (code, empty) = get_json(&server, &format!("/api/extensions?kind={none}"));
+    assert_eq!(code, 200);
+    assert_eq!(empty, serde_json::json!({ "total": 0, "items": [] }));
+    let (code, kept) = get_json(&server, &format!("/api/largest?kind={all}"));
+    assert_eq!((code, kept), (200, get_json(&server, "/api/largest").1));
+    let (code, empty) = get_json(&server, &format!("/api/largest?kind={none}"));
+    assert_eq!((code, empty), (200, serde_json::json!({ "items": [] })));
+    let (code, empty) = get_json(&server, &format!("/api/rebuildable?kind={none}"));
+    assert_eq!(code, 200);
+    assert_eq!(empty, serde_json::json!({ "total": 0, "groups": [] }));
+
+    for path in [
+        "/api/node/0?kind=everything",
+        "/api/treemap?w=400&h=300&kind=everything",
+        "/api/extensions?kind=Photos",
+    ] {
+        let (code, body) = get_json(&server, path);
+        assert_eq!(code, 400, "{path}");
+        assert_eq!(body["error"], "no such kind");
+    }
+    // No kind, or an empty one, is the whole tree.
+    assert_eq!(get_json(&server, "/api/node/0?kind=").1, whole);
+}
+
 #[test]
 fn errors_report_the_locked_dir() {
     let fx = fixture();

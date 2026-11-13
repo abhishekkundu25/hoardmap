@@ -11,7 +11,7 @@
 use std::cmp::Reverse;
 
 use crate::tree::{Kind, NodeId, Tree};
-use crate::treemap::Mode;
+use crate::treemap::Measure;
 
 /// At most this many folders per group are returned; the rest are counted in
 /// [`Group::more`].
@@ -1099,18 +1099,27 @@ pub fn folders(tree: &Tree, root: NodeId) -> Vec<NodeId> {
 }
 
 /// The rebuildable folders under `root` (`root` included), grouped by rule, groups
-/// and their folders largest first in `mode`. Rules without a match are left out.
-pub fn groups(tree: &Tree, root: NodeId, mode: Mode) -> Vec<Group> {
+/// and their folders largest first in `measure`. Rules without a match are left out,
+/// and so are folders a filter leaves out.
+pub fn groups<'a>(tree: &Tree, root: NodeId, measure: impl Into<Measure<'a>>) -> Vec<Group> {
+    let measure = measure.into();
     let mut groups: Vec<Group> = RULES
         .iter()
         .zip(matched(tree, root))
+        .map(|(rule, folders)| {
+            let folders: Vec<NodeId> = folders
+                .into_iter()
+                .filter(|&id| measure.shows(id))
+                .collect();
+            (rule, folders)
+        })
         .filter(|(_, folders)| !folders.is_empty())
         .map(|(rule, folders)| {
             let mut folders: Vec<Folder> = folders
                 .into_iter()
                 .map(|id| Folder {
                     id,
-                    bytes: mode.bytes(&tree.nodes[id as usize]),
+                    bytes: measure.bytes(id, &tree.nodes[id as usize]),
                 })
                 .collect();
             folders.sort_by_key(|f| (Reverse(f.bytes), f.id));
@@ -1134,6 +1143,7 @@ pub fn groups(tree: &Tree, root: NodeId, mode: Mode) -> Vec<Group> {
 mod tests {
     use super::*;
     use crate::tree::Node;
+    use crate::treemap::Mode;
 
     /// A tree rooted at `/scan/home` from relative paths: a path ending in `/` is a
     /// folder, any other a file of `len` bytes (logical; physical is twice that).
