@@ -59,8 +59,26 @@ pub enum Matcher {
         child: &'static str,
         kind: Kind,
     },
+    /// A folder whose path ends in these names, where a name may hold one `*` that
+    /// stands for any run of characters within that one name. With `*` as the last
+    /// name it takes every folder directly inside a place, so it ranks below the
+    /// rules that name one of them.
+    PathGlob(&'static [&'static str]),
     /// A folder of any name that contains a `child` of the given kind.
     AnyWithChild { child: &'static str, kind: Kind },
+}
+
+/// Whether `name` fits `pattern`: the same name, or with one `*` in the pattern, the
+/// text before and after it at the two ends of the name.
+fn fits(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == name,
+        Some((before, after)) => {
+            name.len() >= before.len() + after.len()
+                && name.starts_with(before)
+                && name.ends_with(after)
+        }
+    }
 }
 
 /// How far a rule's "comes back" goes. The page lists each class apart, and only
@@ -129,6 +147,14 @@ pub struct Rule {
 }
 
 const CHECKED: &str = "2026-10-30";
+
+/// The rules from `docs/research/rebuildable-coverage.md`.
+const CHECKED_NOV: &str = "2026-11-14";
+
+/// Apple's promise is the app's to keep, which hoardmap cannot check.
+const APPLE_CACHES_CAUTION: &str = "Apple's rule binds the app, so anything an app keeps here against that rule does not come back.";
+
+const APPLE_CACHES_SOURCE: &str = "https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html";
 
 /// Tool-specific sentinels take precedence over package.json for generic output
 /// folders (`build`, `dist`, `out`), and named rules take precedence over a cache tag.
@@ -1246,6 +1272,372 @@ pub const RULES: &[Rule] = &[
             },
         ],
     },
+    // Apple's cache folders, which every app has, developer's or not. A sandboxed app's
+    // and an app group's are each one folder; the shared one is listed app by app, below
+    // the rules that name an app's folder in it.
+    Rule {
+        key: "sandboxed_caches",
+        label: "Sandboxed app caches",
+        owner: "Apple and each app",
+        why: "A sandboxed app's own Caches folder, which Apple defines as cached data that can be regenerated as needed.",
+        source: APPLE_CACHES_SOURCE,
+        checked: CHECKED_NOV,
+        caution: Some(APPLE_CACHES_CAUTION),
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathGlob(&[
+            "Containers",
+            "*",
+            "Data",
+            "Library",
+            "Caches",
+        ])],
+    },
+    Rule {
+        key: "group_caches",
+        label: "App group caches",
+        owner: "Apple and each app",
+        why: "An app group's Caches folder, which Apple defines as cached data that can be regenerated as needed.",
+        source: APPLE_CACHES_SOURCE,
+        checked: CHECKED_NOV,
+        caution: Some(APPLE_CACHES_CAUTION),
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathGlob(&[
+            "Group Containers",
+            "*",
+            "Library",
+            "Caches",
+        ])],
+    },
+    Rule {
+        key: "app_caches",
+        label: "App caches",
+        owner: "Apple and each app",
+        why: "Apple gives each app this folder for cached data that can be regenerated as needed, and tells apps never to rely on it existing.",
+        source: APPLE_CACHES_SOURCE,
+        checked: CHECKED_NOV,
+        caution: Some(APPLE_CACHES_CAUTION),
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathGlob(&["Library", "Caches", "*"])],
+    },
+    Rule {
+        key: "user_cache_dir",
+        label: "Per-user system caches",
+        owner: "macOS",
+        why: "macOS gives each user this cache folder for apps and system services, and the caches are created again as needed.",
+        source: "https://support.apple.com/en-us/102624",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathGlob(&["var", "folders", "*", "*", "C"])],
+    },
+    // The cache folders Chromium names, which browsers and Electron apps keep inside
+    // Application Support. `Cache` is too common a name alone; the others are Chromium's.
+    Rule {
+        key: "chromium_caches",
+        label: "Chromium and Electron caches",
+        owner: "Chromium and Electron",
+        why: "Chromium and Electron apps keep their disk cache, code cache and compiled GPU shaders here and fill them again as pages load.",
+        source: "https://www.electronjs.org/docs/latest/api/app",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[
+            Matcher::ChildSentinel {
+                name: "Cache",
+                child: "Cache_Data",
+                kind: Kind::Dir,
+            },
+            Matcher::PathSuffix(&["Code Cache"]),
+            Matcher::PathSuffix(&["GPUCache"]),
+            Matcher::PathSuffix(&["DawnCache"]),
+            Matcher::PathSuffix(&["DawnWebGPUCache"]),
+            Matcher::PathSuffix(&["DawnGraphiteCache"]),
+            Matcher::PathSuffix(&["GraphiteDawnCache"]),
+        ],
+    },
+    // More project folders, each with the file or folder its tool keeps beside or in it.
+    Rule {
+        key: "unity_library",
+        label: "Unity Library",
+        owner: "Unity",
+        why: "Unity keeps its imported form of your assets here and regenerates all of it from the Assets and ProjectSettings folders the next time the project opens.",
+        source: "https://docs.unity3d.com/6000.2/Documentation/Manual/ImportingAssets.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::ChildSentinel {
+            name: "Library",
+            child: "ArtifactDB",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "maven_target",
+        label: "Maven target",
+        owner: "Maven",
+        why: "Maven houses all output of the build here, and the next build writes it again.",
+        source: "https://maven.apache.org/guides/introduction/introduction-to-the-standard-directory-layout.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "mvn clean",
+            beside: true,
+            source: "https://maven.apache.org/guides/introduction/introduction-to-the-lifecycle.html",
+        }),
+        matchers: &[Matcher::SiblingSentinel {
+            name: "target",
+            sibling: "pom.xml",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "sbt_target",
+        label: "sbt target",
+        owner: "sbt",
+        why: "sbt writes all generated files to the target directory, and the next compile writes them again.",
+        source: "https://www.scala-sbt.org/1.x/docs/Command-Line-Reference.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "sbt clean",
+            beside: true,
+            source: "https://www.scala-sbt.org/1.x/docs/Command-Line-Reference.html",
+        }),
+        matchers: &[Matcher::SiblingSentinel {
+            name: "target",
+            sibling: "build.sbt",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "dotnet_obj",
+        label: ".NET obj",
+        owner: ".NET",
+        why: "The intermediate output of a .NET build and the project.assets.json that dotnet restore creates; the next build writes both again.",
+        source: "https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-build",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "dotnet clean",
+            beside: true,
+            source: "https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-clean",
+        }),
+        matchers: &[Matcher::ChildSentinel {
+            name: "obj",
+            child: "project.assets.json",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "svelte_kit",
+        label: "SvelteKit output",
+        owner: "SvelteKit",
+        why: "SvelteKit generates these files and regenerates them the next time you run dev or build.",
+        source: "https://svelte.dev/docs/kit/project-structure",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::SiblingSentinel {
+            name: ".svelte-kit",
+            sibling: "package.json",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "nuxt_build",
+        label: "Nuxt .nuxt",
+        owner: "Nuxt",
+        why: "Nuxt generates your Vue application here in development and generates it again on the next run.",
+        source: "https://nuxt.com/docs/guide/directory-structure/nuxt",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::SiblingSentinel {
+            name: ".nuxt",
+            sibling: "package.json",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "angular_cache",
+        label: "Angular build cache",
+        owner: "Angular",
+        why: "The Angular CLI stores its build cache results here and fills the cache again on the next build.",
+        source: "https://angular.dev/cli/cache",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&[".angular", "cache"])],
+    },
+    Rule {
+        key: "mix_build",
+        label: "Elixir _build",
+        owner: "Mix",
+        why: "Mix writes the project's build artifacts here, and mix compile writes them again.",
+        source: "https://hexdocs.pm/mix/Mix.Tasks.Clean.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "mix clean",
+            beside: true,
+            source: "https://hexdocs.pm/mix/Mix.Tasks.Clean.html",
+        }),
+        matchers: &[Matcher::SiblingSentinel {
+            name: "_build",
+            sibling: "mix.exs",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "mix_deps",
+        label: "Elixir deps",
+        owner: "Mix",
+        why: "mix deps.get fetches unavailable dependencies again from mix.lock.",
+        source: "https://hexdocs.pm/mix/Mix.Tasks.Deps.Get.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::SiblingSentinel {
+            name: "deps",
+            sibling: "mix.lock",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "godot_cache",
+        label: "Godot .godot",
+        owner: "Godot",
+        why: "Godot creates this folder of project cache data when the editor opens the project.",
+        source: "https://docs.godotengine.org/en/stable/tutorials/best_practices/version_control_systems.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::SiblingSentinel {
+            name: ".godot",
+            sibling: "project.godot",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "zig_cache",
+        label: "Zig cache",
+        owner: "Zig",
+        why: "Zig's build cache, which makes later builds faster; zig build fills it again.",
+        source: "https://ziglang.org/learn/build-system/",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::SiblingSentinel {
+            name: ".zig-cache",
+            sibling: "build.zig",
+            kind: Kind::File,
+        }],
+    },
+    Rule {
+        key: "unreal_derived_data",
+        label: "Unreal derived data",
+        owner: "Unreal Engine",
+        why: "Unreal Engine generates these derived data files when it loads content, and generates them again when they are missing.",
+        source: "https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-engine-directory-structure",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&["DerivedDataCache"])],
+    },
+    // More caches at fixed paths in the home folder.
+    Rule {
+        key: "npx_cache",
+        label: "npx cache",
+        owner: "npm",
+        why: "Packages that npx and npm exec installed into the npm cache; npm installs them again the next time the command runs.",
+        source: "https://docs.npmjs.com/cli/v10/commands/npm-exec",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&[".npm", "_npx"])],
+    },
+    Rule {
+        key: "cargo_git",
+        label: "Cargo git sources",
+        owner: "Cargo",
+        why: "Git repositories Cargo cloned for git dependencies and the commits it checked out; Cargo clones them again when a build needs them.",
+        source: "https://doc.rust-lang.org/cargo/guide/cargo-home.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&[".cargo", "git"])],
+    },
+    Rule {
+        key: "konan",
+        label: "Kotlin/Native .konan",
+        owner: "Kotlin",
+        why: "Kotlin/Native downloads its compiler components and caches build results here, and creates the folder again when a build needs it.",
+        source: "https://kotlinlang.org/docs/native-improving-compilation-time.html",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&[".konan"])],
+    },
+    Rule {
+        key: "precommit_cache",
+        label: "pre-commit cache",
+        owner: "pre-commit",
+        why: "pre-commit's store of hook repositories; it sets a hook up again the next time the hook runs.",
+        source: "https://pre-commit.com/",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "pre-commit clean",
+            beside: false,
+            source: "https://pre-commit.com/",
+        }),
+        matchers: &[Matcher::PathSuffix(&[".cache", "pre-commit"])],
+    },
+    Rule {
+        key: "whisper_models",
+        label: "Whisper models",
+        owner: "Whisper",
+        why: "Whisper downloads its model files here and downloads them again when a model is missing.",
+        source: "https://github.com/openai/whisper/blob/main/whisper/__init__.py",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&[".cache", "whisper"])],
+    },
+    Rule {
+        key: "keras_datasets",
+        label: "Keras downloads",
+        owner: "Keras",
+        why: "Keras downloads a file here when it is not already in the cache.",
+        source: "https://keras.io/api/utils/python_utils/",
+        checked: CHECKED_NOV,
+        caution: None,
+        class: Class::Remade,
+        clear: None,
+        matchers: &[Matcher::PathSuffix(&[".keras", "datasets"])],
+    },
     // Any other folder its tool tagged as a cache. Last, so a named rule wins.
     Rule {
         key: "cache_tag",
@@ -1294,14 +1686,16 @@ pub struct Folder {
 impl Matcher {
     /// Lower ranks carry stronger evidence: something the tool keeps inside the
     /// folder or a path only it uses, then a generic output name beside a project
-    /// file, then the cache tag that accepts any folder name.
+    /// file, then any folder inside a place of caches, then the cache tag that
+    /// accepts any folder name anywhere.
     fn priority(&self) -> u8 {
         match self {
             Matcher::SiblingSentinel {
-                name: "build" | "dist" | "out",
+                name: "build" | "dist" | "out" | "target",
                 ..
             } => 1,
-            Matcher::AnyWithChild { .. } => 2,
+            Matcher::PathGlob([.., "*"]) => 2,
+            Matcher::AnyWithChild { .. } => 3,
             _ => 0,
         }
     }
@@ -1358,6 +1752,13 @@ impl Matcher {
                 child,
                 kind,
             } => path.ends_with(suffix) && has_child(id, child, kind),
+            Matcher::PathGlob(patterns) => {
+                path.len() >= patterns.len()
+                    && patterns
+                        .iter()
+                        .zip(&path[path.len() - patterns.len()..])
+                        .all(|(pattern, name)| fits(pattern, name))
+            }
             Matcher::AnyWithChild { child, kind } => has_child(id, child, kind),
         }
     }
@@ -1392,6 +1793,13 @@ fn bundle(name: &str) -> bool {
     name.ends_with(".app")
 }
 
+/// Whether a path from the file system root is on the sealed system volume: under
+/// `/System`, other than the volumes mounted inside it. Nothing there is the user's
+/// or any tool's to make again, whatever it is called.
+fn sealed(path: &[&str]) -> bool {
+    path.first() == Some(&"System") && path.get(1) != Some(&"Volumes")
+}
+
 /// The folders under `root` (`root` included) each rule matches, in [`RULES`] order.
 /// One walk; a matched folder is not descended into, so a nested match counts once,
 /// inside the outer one. Application bundles are not looked into, and below a
@@ -1404,7 +1812,7 @@ fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
     // its parent.
     let mut path = path_names(tree, root);
     let base = path.len();
-    if path.iter().any(|name| bundle(name)) {
+    if sealed(&path) || path.iter().any(|name| bundle(name)) {
         return found;
     }
     // The root's own name aside: a scan of a `node_modules` is a scan of packages.
@@ -1421,6 +1829,9 @@ fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
             }
             path.truncate(base + depth - 1);
             path.push(&node.name);
+            if sealed(&path) {
+                continue;
+            }
         }
         let mut rule = None;
         let mut priority = u8::MAX;
@@ -1659,6 +2070,7 @@ mod tests {
             );
         }
         assert_eq!(CHECKED, "2026-10-30");
+        assert_eq!(CHECKED_NOV, "2026-11-14");
     }
 
     #[test]
@@ -1852,6 +2264,227 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_pattern_fits_within_one_name() {
+        assert!(fits("Caches", "Caches"));
+        assert!(!fits("Caches", "Cache"));
+        assert!(fits("*", "com.apple.Safari"));
+        assert!(fits("*", ""));
+        assert!(fits("_bazel_*", "_bazel_me"));
+        assert!(!fits("_bazel_*", "bazel_me"));
+        assert!(fits("*.noindex", "x.noindex"));
+        assert!(fits("a*z", "az") && fits("a*z", "abcz") && !fits("a*z", "a"));
+    }
+
+    /// Apple's cache folders: the shared one app by app, below the rules that name an
+    /// app's folder; a sandboxed app's and an app group's whole. Chromium's cache
+    /// folders inside Application Support count, the state beside them does not.
+    #[test]
+    fn apples_cache_folders_and_chromiums_inside_application_support() {
+        let tree = build(&[
+            ("Library/Caches/Google/Chrome/Default/Cache/x", 30),
+            ("Library/Caches/com.spotify.client/Data/y", 20),
+            ("Library/Caches/Homebrew/bottle.tar.gz", 9),
+            ("Library/Caches/JetBrains/IntelliJ/LocalHistory/z", 8),
+            ("Library/Caches/loose-file", 1),
+            (
+                "Library/Containers/com.apple.Safari/Data/Library/Caches/WebKit/a",
+                40,
+            ),
+            (
+                "Library/Containers/com.apple.Safari/Data/Library/Preferences/p",
+                2,
+            ),
+            ("Library/Group Containers/group.x/Library/Caches/b", 6),
+            (
+                "Library/Group Containers/243.podcasts/Library/Cache/episode",
+                70,
+            ),
+            ("Library/Application Support/Code/Cache/Cache_Data/f", 50),
+            ("Library/Application Support/Code/GPUCache/g", 4),
+            ("Library/Application Support/Code/Code Cache/js/h", 5),
+            (
+                "Library/Application Support/Code/Local Storage/leveldb/l",
+                3,
+            ),
+            ("Library/Application Support/notes/Cache/readme.txt", 7),
+        ]);
+        let found = groups(&tree, 0, Mode::Logical);
+        let by_key = |key: &str| {
+            let group = found.iter().find(|g| g.rule.key == key).expect(key);
+            let mut paths: Vec<String> = group
+                .folders
+                .iter()
+                .map(|f| {
+                    let path = tree.path(f.id);
+                    path.strip_prefix("/scan/home/Library")
+                        .unwrap()
+                        .display()
+                        .to_string()
+                })
+                .collect();
+            paths.sort();
+            (group.bytes, paths)
+        };
+        assert_eq!(
+            by_key("app_caches"),
+            (
+                50,
+                vec![
+                    "Caches/Google".to_string(),
+                    "Caches/com.spotify.client".to_string()
+                ]
+            )
+        );
+        assert_eq!(by_key("homebrew_cache").0, 9);
+        assert_eq!(by_key("jetbrains_caches").0, 8);
+        assert_eq!(
+            by_key("sandboxed_caches"),
+            (
+                40,
+                vec!["Containers/com.apple.Safari/Data/Library/Caches".to_string()]
+            )
+        );
+        assert_eq!(by_key("group_caches").0, 6);
+        assert_eq!(
+            by_key("chromium_caches"),
+            (
+                59,
+                vec![
+                    "Application Support/Code/Cache".to_string(),
+                    "Application Support/Code/Code Cache".to_string(),
+                    "Application Support/Code/GPUCache".to_string(),
+                ]
+            )
+        );
+        assert_eq!(found.len(), 6);
+        for group in &found {
+            let apple = ["app_caches", "sandboxed_caches", "group_caches"];
+            if apple.contains(&group.rule.key) {
+                assert_eq!(group.rule.class, Class::Remade);
+                assert_eq!(group.rule.caution, Some(APPLE_CACHES_CAUTION));
+            }
+        }
+    }
+
+    /// A scan of the startup disk: the system's own caches under `/System` are not
+    /// the user's, each user's cache folder under `/private/var/folders` is one row,
+    /// and the temporary folder beside it is not a cache.
+    #[test]
+    fn the_startup_disk_keeps_the_sealed_system_out() {
+        let mut tree = build(&[
+            ("System/Library/Caches/com.apple.kernelcaches/k", 90),
+            (
+                "System/Library/Frameworks/Python.framework/__pycache__/m.pyc",
+                5,
+            ),
+            ("Library/Caches/com.apple.iconservices.store/i", 12),
+            (
+                "private/var/folders/ab/hash0000gn/C/com.apple.metal/shaders",
+                60,
+            ),
+            ("private/var/folders/ab/hash0000gn/T/scratch", 15),
+            ("private/var/folders/zz/hash0000gp/C/clang/ModuleCache/m", 7),
+        ]);
+        tree.nodes[0].name = "/".into();
+        let mut found = summary(&tree, 0, Mode::Logical);
+        for (_, _, paths) in &mut found {
+            paths.sort();
+        }
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "user_cache_dir",
+                    67,
+                    vec![
+                        "/private/var/folders/ab/hash0000gn/C".to_string(),
+                        "/private/var/folders/zz/hash0000gp/C".to_string(),
+                    ]
+                ),
+                (
+                    "app_caches",
+                    12,
+                    vec!["/Library/Caches/com.apple.iconservices.store".to_string()]
+                ),
+            ]
+        );
+        // A scan that starts inside the sealed volume finds nothing either.
+        tree.nodes[0].name = "/System/Library".into();
+        assert_eq!(summary(&tree, 0, Mode::Logical), vec![]);
+        // The data volume's own mount point is not sealed.
+        let mut data = build(&[("Library/Caches/Homebrew/b", 9)]);
+        data.nodes[0].name = "/System/Volumes/Data/Users/me".into();
+        assert_eq!(summary(&data, 0, Mode::Logical)[0].0, "homebrew_cache");
+    }
+
+    /// The tools added from the coverage research, each by what it keeps beside or in
+    /// its folder, with a decoy that lacks it.
+    #[test]
+    fn more_project_folders_need_their_project_file() {
+        let tree = build(&[
+            ("java/pom.xml", 1),
+            ("java/target/classes/A.class", 11),
+            ("scala/build.sbt", 1),
+            ("scala/target/scala-3/a", 12),
+            ("rust/Cargo.toml", 1),
+            ("rust/target/plain", 99),
+            ("net/app.csproj", 1),
+            ("net/obj/project.assets.json", 13),
+            ("net2/obj/model.obj", 98),
+            ("unity/Library/ArtifactDB", 14),
+            ("unity/Assets/a.png", 97),
+            ("ex/mix.exs", 1),
+            ("ex/mix.lock", 1),
+            ("ex/_build/dev/a.beam", 15),
+            ("ex/deps/plug/mix.exs", 16),
+            ("game/project.godot", 1),
+            ("game/.godot/imported/a", 17),
+            ("z/build.zig", 1),
+            ("z/.zig-cache/o/a", 18),
+            ("web/package.json", 1),
+            ("web/.svelte-kit/generated/a", 19),
+            ("web/.nuxt/dist/a", 20),
+            ("ng/.angular/cache/17/a", 21),
+            ("ue/DerivedDataCache/a.ddc", 22),
+            (".npm/_npx/abc/node_modules/x/y", 23),
+            (".cargo/git/db/repo/HEAD", 24),
+            (".konan/dependencies/llvm", 25),
+            (".cache/pre-commit/repo1/a", 26),
+            (".cache/whisper/base.pt", 27),
+            (".keras/datasets/mnist.npz", 28),
+            (".keras/keras.json", 96),
+        ]);
+        let mut found: Vec<(&str, u64)> = summary(&tree, 0, Mode::Logical)
+            .into_iter()
+            .map(|(key, bytes, _)| (key, bytes))
+            .collect();
+        found.sort_by_key(|&(_, bytes)| bytes);
+        assert_eq!(
+            found,
+            vec![
+                ("maven_target", 11),
+                ("sbt_target", 12),
+                ("dotnet_obj", 13),
+                ("unity_library", 14),
+                ("mix_build", 15),
+                ("mix_deps", 16),
+                ("godot_cache", 17),
+                ("zig_cache", 18),
+                ("svelte_kit", 19),
+                ("nuxt_build", 20),
+                ("angular_cache", 21),
+                ("unreal_derived_data", 22),
+                ("npx_cache", 23),
+                ("cargo_git", 24),
+                ("konan", 25),
+                ("precommit_cache", 26),
+                ("whisper_models", 27),
+                ("keras_datasets", 28),
+            ]
+        );
+    }
+
     /// Short paths need something of the tool inside them.
     #[test]
     fn short_paths_need_the_tools_own_folder_inside() {
@@ -2003,7 +2636,9 @@ mod tests {
                         (folder, sentinel, *kind)
                     }
                     // Several children at once: `children_need_every_child` below.
-                    Matcher::Children { .. } | Matcher::PathSuffix(_) => continue,
+                    Matcher::Children { .. } | Matcher::PathSuffix(_) | Matcher::PathGlob(_) => {
+                        continue;
+                    }
                 };
                 let directory = format!("{folder}/");
                 let mut tree = build(&[(&directory, 0), (&sentinel, 43)]);
