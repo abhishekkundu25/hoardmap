@@ -407,8 +407,12 @@ footer a { color: var(--ink-2); }
   .hero { height: 215vh; }
   .hud { font-size: 11.5px; padding: 8px 12px; bottom: 18px; }
   .hint { bottom: 62px; }
-  .reveal { bottom: 70px; padding: 18px 20px; }
-  .reveal p { font-size: 15px; }
+  .reveal { bottom: 66px; padding: 15px 17px; border-radius: 18px; }
+  .reveal h2 { font-size: 21px; }
+  .reveal p { font-size: 14px; line-height: 1.4; margin-top: 6px; }
+  .reveal .chips { margin-top: 9px; gap: 4px 12px; font-size: 11.5px; }
+  .reveal small { margin-top: 9px; font-size: 11.5px; line-height: 1.35; }
+  .download .wide { display: none; }
   .stage { height: 260px; }
   .stage .slot img, .stage .slot svg { width: 84px; height: 84px; }
   .stage .ghost { width: 84px; height: 84px; left: calc(25% - 42px); }
@@ -449,7 +453,7 @@ footer a { color: var(--ink-2); }
         <div class="row">
           <a class="download" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
-            <span>Download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
+            <span>Download for Mac<small>Free · macOS 11 or later<span class="wide"> · Apple silicon &amp; Intel</span></small></span>
           </a>
           <div class="brew">
             <code><span class="p">$</span> brew install --cask abhishekkundu25/tap/hoardmap</code>
