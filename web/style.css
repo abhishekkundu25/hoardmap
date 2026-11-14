@@ -169,7 +169,11 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   animation: seg-in 0.35s ease;
 }
 @keyframes seg-in { from { opacity: 0; } }
-#disk.pointing .seg:not(.on) { opacity: 0.35; }
+#disk-bar .seg.can, #disk-legend .part.can { cursor: pointer; }
+/* Under a filter the kind shown stays lit and the rest stays dim; pointing at another
+   part lights that one too. */
+#disk.pointing .seg:not(.on):not(.picked) { opacity: 0.35; }
+#disk.filtered .seg:not(.on):not(.picked) { opacity: 0.22; }
 #disk.pointing .seg.on { filter: saturate(1.15) brightness(1.06); }
 #disk-info {
   display: flex;
@@ -184,13 +188,28 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 0 14px;
   min-width: 0;
+  /* Each part's padding makes the gaps, so the first lines up with the bar's edge. */
+  margin-left: -7px;
   /* Two lines at most; what does not fit is still in the bar. */
   max-height: 32px;
   overflow: hidden;
 }
-#disk-legend .part { white-space: nowrap; transition: opacity 0.15s; }
+#disk-legend .part {
+  white-space: nowrap;
+  padding: 0 7px;
+  border-radius: 8px;
+  transition: opacity 0.15s, background-color 0.15s;
+}
+#disk-legend .part.can:hover { background: var(--accent-soft); }
+/* The kind the views are filtered to: a pill in its own colour, with the way out. */
+#disk-legend .part.picked, #disk-legend .part.picked:hover {
+  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--part) 24%, transparent);
+  box-shadow: inset 0 0 0 1px var(--part);
+  color: var(--text);
+}
+#disk-legend .part.picked::after { content: "×"; margin-left: 6px; font-weight: 600; }
 #disk-legend .part b { font-weight: 500; color: var(--text); }
 #disk-legend .key {
   display: inline-block;
@@ -202,11 +221,37 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 }
 /* Free space is the colour of the empty track, so its key needs an edge to be seen. */
 #disk-legend .part[data-key="free"] .key { box-shadow: inset 0 0 0 1px var(--control-border); }
-#disk.pointing #disk-legend .part:not(.on) { opacity: 0.45; }
+#disk.pointing #disk-legend .part:not(.on):not(.picked) { opacity: 0.45; }
+#disk.filtered #disk-legend .part:not(.on):not(.picked) { opacity: 0.45; }
+
+/* The band that says a filter is on: across the window, right above the views it
+   changes, in the colour of the kind shown. */
+#filter {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px -10px -6px;
+  padding: 4px 10px;
+  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--part) 20%, var(--bg));
+  border-top: 1px solid var(--border);
+  border-top-color: color-mix(in srgb, var(--part) 55%, var(--border));
+  box-shadow: inset 3px 0 0 var(--part);
+  animation: filter-in 0.2s ease;
+}
+#filter[hidden] { display: none; }
+@keyframes filter-in { from { opacity: 0; transform: translateY(-3px); } }
+#filter .key { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--part); }
+#filter-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#filter-text b { font-weight: 600; }
+#filter-text .figures { color: var(--muted); margin-left: 8px; }
+#filter-clear { flex: none; margin-left: auto; padding: 1px 9px; font-size: 12px; }
 #disk-summary { flex: none; margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #disk-summary b { font-weight: 600; color: var(--text); margin-right: 6px; }
 @media (prefers-reduced-motion: reduce) {
   #disk-bar .seg { transition: none; animation: none; }
+  #filter { animation: none; }
 }
 
 #list-head th[data-sort] { cursor: pointer; user-select: none; }
@@ -266,6 +311,17 @@ section { background: var(--panel); min-width: 0; min-height: 0; }
 }
 #view button { padding: 1px 8px; font-size: 12px; }
 #treemap-caption span { unicode-bidi: plaintext; }
+#treemap-caption .kind {
+  unicode-bidi: isolate;
+  margin-left: 8px;
+  padding: 0 7px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--part) 26%, transparent);
+}
 #treemap-pane { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 #canvas { display: block; position: absolute; left: 0; top: 0; background: var(--panel); }
 

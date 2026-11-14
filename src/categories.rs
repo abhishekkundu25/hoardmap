@@ -8,10 +8,11 @@
 //! category, so each byte is counted once and the figures add up to the root's
 //! `physical`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use crate::rebuildable;
-use crate::tree::{NodeId, ROOT, Tree};
+use crate::tree::{Kind, Node, NodeId, ROOT, Tree};
 
 /// In the order ties are listed.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -53,6 +54,16 @@ const ALL: [Category; 11] = [
 ];
 
 impl Category {
+    /// Its place in [`ALL`].
+    fn index(self) -> usize {
+        ALL.iter().position(|&c| c == self).unwrap()
+    }
+
+    /// The category the API calls `key`.
+    pub fn from_key(key: &str) -> Option<Category> {
+        ALL.into_iter().find(|c| c.key() == key)
+    }
+
     /// The name the API uses.
     pub fn key(self) -> &'static str {
         match self {
@@ -152,15 +163,13 @@ fn below(tree: &Tree, pattern: &[Seg]) -> Vec<NodeId> {
     at
 }
 
-/// The bytes on disk of each category in the tree, largest first, empty ones left
-/// out. They add up to the root's `physical`.
-pub fn split(tree: &Tree) -> Vec<(Category, u64)> {
+/// The entries that start a category. Everything below one belongs to it, down to the
+/// next entry in here. The root is always one.
+fn claims(tree: &Tree) -> HashMap<NodeId, Category> {
     let mut root = rebuildable::path_names(tree, ROOT);
     if root.starts_with(&DATA_VOLUME) {
         root.drain(..DATA_VOLUME.len());
     }
-    // The entries that start a category. Everything below one belongs to it, down to
-    // the next entry in here.
     let mut claims: HashMap<NodeId, Category> = HashMap::new();
     // The longest rule at or above the scanned folder says what the folder itself is.
     let mut base: Option<(usize, Category)> = None;
@@ -180,7 +189,11 @@ pub fn split(tree: &Tree) -> Vec<(Category, u64)> {
     for id in rebuildable::folders(tree, ROOT) {
         claims.insert(id, Rebuildable);
     }
+    claims
+}
 
+/// The bytes on disk of each category, largest first, empty ones left out.
+fn tally(tree: &Tree, claims: &HashMap<NodeId, Category>) -> Vec<(Category, u64)> {
     let physical = |id: NodeId| tree.nodes[id as usize].physical;
     let mut own: HashMap<NodeId, u64> = claims.keys().map(|&id| (id, physical(id))).collect();
     for &id in claims.keys() {
@@ -195,8 +208,7 @@ pub fn split(tree: &Tree) -> Vec<(Category, u64)> {
     }
     let mut totals = [0u64; ALL.len()];
     for (id, bytes) in own {
-        let at = ALL.iter().position(|&c| c == claims[&id]).unwrap();
-        totals[at] += bytes;
+        totals[claims[&id].index()] += bytes;
     }
     let mut out: Vec<(usize, u64)> = totals.into_iter().enumerate().collect();
     out.retain(|&(_, bytes)| bytes > 0);
@@ -206,10 +218,202 @@ pub fn split(tree: &Tree) -> Vec<(Category, u64)> {
         .collect()
 }
 
+/// The bytes on disk of each category in the tree, largest first, empty ones left
+/// out. They add up to the root's `physical`.
+pub fn split(tree: &Tree) -> Vec<(Category, u64)> {
+    tally(tree, &claims(tree))
+}
+
+/// What one finished tree holds by category: the split for the disk bar, and a
+/// [`Filter`] per category, made the first time it is asked for.
+pub struct Kinds {
+    claims: HashMap<NodeId, Category>,
+    split: Vec<(Category, u64)>,
+    filters: [OnceLock<Filter>; ALL.len()],
+}
+
+impl Kinds {
+    pub fn new(tree: &Tree) -> Kinds {
+        let claims = claims(tree);
+        Kinds {
+            split: tally(tree, &claims),
+            claims,
+            filters: Default::default(),
+        }
+    }
+
+    /// As [`split`] gives it.
+    pub fn split(&self) -> &[(Category, u64)] {
+        &self.split
+    }
+
+    /// The filter that keeps `category` alone. `tree` is the tree this was made from.
+    pub fn filter(&self, tree: &Tree, category: Category) -> &Filter {
+        self.filters[category.index()].get_or_init(|| Filter::new(tree, &self.claims, category))
+    }
+}
+
+impl std::fmt::Debug for Kinds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Kinds").field("split", &self.split).finish()
+    }
+}
+
+/// A subtree's figures, as [`Node`] keeps them.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Totals {
+    pub size: u64,
+    pub physical: u64,
+    pub files: u32,
+    pub dirs: u32,
+}
+
+impl Totals {
+    fn of(node: &Node) -> Totals {
+        Totals {
+            size: node.size,
+            physical: node.physical,
+            files: node.files,
+            dirs: node.dirs,
+        }
+    }
+}
+
+/// The tree with one category kept and everything else left out: which entries
+/// belong to the category, and the figures of the folders that hold some of it
+/// beside other things. Node ids stay the tree's own. It is one bit per entry, plus
+/// the folders above a rule or a rebuildable folder.
+pub struct Filter {
+    /// One bit per node, set where the node belongs to the category.
+    inside: Vec<u64>,
+    /// The folders that have a category start below them and hold some of this
+    /// category, with what they hold of it.
+    mixed: HashMap<NodeId, Totals>,
+}
+
+impl Filter {
+    fn new(tree: &Tree, claims: &HashMap<NodeId, Category>, category: Category) -> Filter {
+        let count = tree.nodes.len();
+        // Where a category starts, as a table: one lookup per entry in the walk below.
+        const NONE: u8 = u8::MAX;
+        let mut starts = vec![NONE; count];
+        // Every folder above a start: only these can hold more than one category.
+        let mut above: HashSet<NodeId> = HashSet::new();
+        for (&id, &claimed) in claims {
+            starts[id as usize] = claimed.index() as u8;
+            let mut up = tree.nodes[id as usize].parent;
+            while let Some(parent) = up {
+                if !above.insert(parent) {
+                    break;
+                }
+                up = tree.nodes[parent as usize].parent;
+            }
+        }
+        let wanted = category.index() as u8;
+        let mut inside = vec![0u64; count.div_ceil(64)];
+        let mut stack = vec![(ROOT, NONE)];
+        while let Some((id, inherited)) = stack.pop() {
+            let own = match starts[id as usize] {
+                NONE => inherited,
+                start => start,
+            };
+            if own == wanted {
+                inside[id as usize / 64] |= 1 << (id % 64);
+            }
+            let children = &tree.nodes[id as usize].children;
+            stack.extend(children.iter().map(|&child| (child, own)));
+        }
+        let mut filter = Filter {
+            inside,
+            mixed: HashMap::new(),
+        };
+        // The folders above a start, each before the ones below it; taken backwards,
+        // each is reached after the ones below it. No recursion: a tree can be deep.
+        let mut order = Vec::with_capacity(above.len() + 1);
+        let mut stack = vec![ROOT];
+        while let Some(id) = stack.pop() {
+            order.push(id);
+            let children = &tree.nodes[id as usize].children;
+            stack.extend(children.iter().filter(|child| above.contains(child)));
+        }
+        let mut seen: HashMap<NodeId, (Totals, bool)> = HashMap::with_capacity(order.len());
+        for &id in order.iter().rev() {
+            let held = filter.gather(tree, id, &seen);
+            seen.insert(id, held);
+        }
+        filter.mixed = seen
+            .into_iter()
+            .filter_map(|(id, (totals, any))| any.then_some((id, totals)))
+            .collect();
+        filter
+    }
+
+    /// What the folder `id` holds of the category, and whether it holds any entry of
+    /// it at all. `seen` has the answer for each folder below it that is above a
+    /// start; any other child is of the category whole or not at all.
+    fn gather(
+        &self,
+        tree: &Tree,
+        id: NodeId,
+        seen: &HashMap<NodeId, (Totals, bool)>,
+    ) -> (Totals, bool) {
+        let node = &tree.nodes[id as usize];
+        let mut totals = Totals::default();
+        let mut any = self.inside(id);
+        // What the folder's children take of its own figures; the rest is the folder
+        // entry itself.
+        let (mut size, mut physical) = (0u64, 0u64);
+        for &child in &node.children {
+            let entry = &tree.nodes[child as usize];
+            size += entry.size;
+            physical += entry.physical;
+            let within = self.inside(child);
+            let (held, some) = match seen.get(&child) {
+                Some(&below) => below,
+                None if within => (Totals::of(entry), true),
+                None => (Totals::default(), false),
+            };
+            any |= some;
+            totals.size += held.size;
+            totals.physical += held.physical;
+            let folder = entry.kind == Kind::Dir;
+            totals.files += held.files + u32::from(within && !folder);
+            totals.dirs += held.dirs + u32::from(within && folder);
+        }
+        if self.inside(id) {
+            totals.size += node.size.saturating_sub(size);
+            totals.physical += node.physical.saturating_sub(physical);
+        }
+        (totals, any)
+    }
+
+    /// Whether the entry belongs to the category.
+    pub fn inside(&self, id: NodeId) -> bool {
+        self.inside
+            .get(id as usize / 64)
+            .is_some_and(|word| word & (1 << (id % 64)) != 0)
+    }
+
+    /// Whether the entry is of the category or holds some of it: what a filtered view
+    /// shows.
+    pub fn shows(&self, id: NodeId) -> bool {
+        self.inside(id) || self.mixed.contains_key(&id)
+    }
+
+    /// The figures of `node`, the entry `id`, counting the category alone.
+    pub fn totals(&self, id: NodeId, node: &Node) -> Totals {
+        match self.mixed.get(&id) {
+            Some(&totals) => totals,
+            None if self.inside(id) => Totals::of(node),
+            None => Totals::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::{Kind, Node, Shared};
+    use crate::tree::Shared;
 
     /// A tree rooted at `root` from relative paths: a path ending in `/` is a folder,
     /// any other a file of `len` bytes on disk.
@@ -245,6 +449,16 @@ mod tests {
                     let kind = if leaf { Kind::File } else { Kind::Dir };
                     nodes.push(node(name, Some(at), kind, 0));
                     nodes[at as usize].children.push(id);
+                    let mut up = Some(at);
+                    while let Some(above) = up {
+                        let counted = &mut nodes[above as usize];
+                        *(if leaf {
+                            &mut counted.files
+                        } else {
+                            &mut counted.dirs
+                        }) += 1;
+                        up = counted.parent;
+                    }
                     id
                 });
             }
@@ -382,6 +596,217 @@ mod tests {
     #[test]
     fn an_empty_folder_has_no_categories() {
         assert_eq!(keys(&build("/Users/me/empty", &[])), []);
+    }
+
+    fn id(tree: &Tree, path: &str) -> NodeId {
+        let full = std::path::Path::new(&tree.root().name).join(path);
+        (0..tree.nodes.len() as NodeId)
+            .find(|&i| tree.path(i) == full)
+            .unwrap_or_else(|| panic!("no node {path}"))
+    }
+
+    fn mixed_home() -> Tree {
+        build(
+            "/Users/me",
+            &[
+                ("Library/Containers/app/data.bin", 500),
+                ("Library/Mail/V10/inbox.mbox", 40),
+                ("Library/Messages/chat.db", 10),
+                ("Library/Caches/pip/http/a", 25),
+                ("Pictures/a.heic", 200),
+                ("Applications/Tool.app/Contents/MacOS/tool", 70),
+                ("Documents/report.pdf", 20),
+                (".Trash/old.zip", 7),
+                (".zshrc", 1),
+                ("repos/site/package.json", 1),
+                ("repos/site/node_modules/.package-lock.json", 1),
+                ("repos/site/node_modules/left-pad/index.js", 400),
+                ("repos/site/src/main.js", 9),
+                ("repos/empty/", 0),
+            ],
+        )
+    }
+
+    #[test]
+    fn the_filters_share_every_entry_out_exactly_once() {
+        let tree = mixed_home();
+        let kinds = Kinds::new(&tree);
+        for (id, node) in tree.nodes.iter().enumerate() {
+            let id = id as NodeId;
+            let mut sum = Totals::default();
+            let mut inside = 0;
+            for category in ALL {
+                let filter = kinds.filter(&tree, category);
+                let held = filter.totals(id, node);
+                sum.size += held.size;
+                sum.physical += held.physical;
+                sum.files += held.files;
+                sum.dirs += held.dirs;
+                inside += u32::from(filter.inside(id));
+                assert!(filter.shows(id) || held == Totals::default());
+            }
+            assert_eq!(sum, Totals::of(node), "{}", tree.path(id).display());
+            assert_eq!(inside, 1, "{}", tree.path(id).display());
+        }
+    }
+
+    #[test]
+    fn a_filter_at_the_root_holds_what_the_split_says() {
+        let tree = mixed_home();
+        let kinds = Kinds::new(&tree);
+        for category in ALL {
+            let held = kinds.filter(&tree, category).totals(ROOT, tree.root());
+            let split = kinds.split().iter().find(|&&(c, _)| c == category);
+            assert_eq!(
+                held.physical,
+                split.map_or(0, |&(_, bytes)| bytes),
+                "{category:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_filter_keeps_one_kind_and_the_folders_that_lead_to_it() {
+        let tree = mixed_home();
+        let kinds = Kinds::new(&tree);
+        let mail = kinds.filter(&tree, Mail);
+        // The folder above holds mail beside other things: it shows, with mail's
+        // figures only.
+        let library = id(&tree, "Library");
+        assert!(mail.shows(library) && !mail.inside(library));
+        assert_eq!(
+            mail.totals(library, &tree.nodes[library as usize]),
+            Totals {
+                size: 50,
+                physical: 50,
+                files: 2,
+                dirs: 3,
+            }
+        );
+        assert!(mail.inside(id(&tree, "Library/Mail/V10/inbox.mbox")));
+        for hidden in ["Library/Containers", "Pictures", "repos", ".zshrc"] {
+            let hidden = id(&tree, hidden);
+            assert!(!mail.shows(hidden));
+            assert_eq!(
+                mail.totals(hidden, &tree.nodes[hidden as usize]),
+                Totals::default()
+            );
+        }
+
+        // A rebuildable folder inside an "other" folder: each filter keeps its side.
+        let site = id(&tree, "repos/site");
+        let rebuildable = kinds.filter(&tree, Rebuildable);
+        assert_eq!(
+            rebuildable.totals(site, &tree.nodes[site as usize]).size,
+            401
+        );
+        assert!(!rebuildable.shows(id(&tree, "repos/site/src")));
+        let other = kinds.filter(&tree, Other);
+        assert_eq!(
+            other.totals(site, &tree.nodes[site as usize]),
+            Totals {
+                size: 10,
+                physical: 10,
+                files: 2,
+                dirs: 1,
+            }
+        );
+        assert!(!other.shows(id(&tree, "repos/site/node_modules")));
+        // An empty folder of the kind still shows.
+        assert!(other.shows(id(&tree, "repos/empty")));
+        // A hidden file in the home folder is app data; the home folder is not.
+        let app_data = kinds.filter(&tree, AppData);
+        assert!(app_data.inside(id(&tree, ".zshrc")) && !app_data.inside(ROOT));
+        assert!(app_data.shows(ROOT));
+    }
+
+    /// A rebuildable folder at the bottom of a very deep path: every folder above
+    /// it is gathered, without a call per level.
+    #[test]
+    fn a_filter_is_made_for_a_very_deep_tree() {
+        let depth = 100_000;
+        let mut nodes: Vec<Node> = (0..depth)
+            .map(|i| Node {
+                name: if i == 0 {
+                    "/Users/me".into()
+                } else {
+                    "d".into()
+                },
+                parent: (i > 0).then(|| i as NodeId - 1),
+                kind: Kind::Dir,
+                size: 7,
+                physical: 7,
+                files: 2,
+                dirs: (depth - i) as u32,
+                mtime: 0,
+                children: vec![i as NodeId + 1],
+                shared: Shared::None,
+            })
+            .collect();
+        // The deepest folder is a cache: it holds the tag file and one other.
+        let last = depth as NodeId;
+        for (name, kind, len) in [
+            ("cache", Kind::Dir, 7),
+            ("CACHEDIR.TAG", Kind::File, 3),
+            ("blob", Kind::File, 4),
+        ] {
+            nodes.push(Node {
+                name: name.into(),
+                parent: Some(if kind == Kind::Dir { last - 1 } else { last }),
+                kind,
+                size: len,
+                physical: len,
+                files: if kind == Kind::Dir { 2 } else { 0 },
+                dirs: 0,
+                mtime: 0,
+                children: if kind == Kind::Dir {
+                    vec![last + 1, last + 2]
+                } else {
+                    Vec::new()
+                },
+                shared: Shared::None,
+            });
+        }
+        let tree = Tree {
+            nodes,
+            raw_names: HashMap::new(),
+            errors: Vec::new(),
+            error_count: 0,
+            clone_aware: false,
+            clone_counted_once: 0,
+        };
+        let kinds = Kinds::new(&tree);
+        let held = kinds.filter(&tree, Rebuildable).totals(ROOT, tree.root());
+        assert_eq!(
+            held,
+            Totals {
+                size: 7,
+                physical: 7,
+                files: 2,
+                dirs: 1,
+            }
+        );
+        let rest = kinds.filter(&tree, Other).totals(ROOT, tree.root());
+        assert_eq!((rest.size, rest.files, rest.dirs), (0, 0, depth as u32 - 1));
+    }
+
+    #[test]
+    fn a_kind_the_scan_does_not_have_filters_to_nothing() {
+        let tree = build("/Users/me/repos", &[("site/index.html", 9)]);
+        let kinds = Kinds::new(&tree);
+        let photos = kinds.filter(&tree, Photos);
+        assert!(!photos.shows(ROOT));
+        assert_eq!(photos.totals(ROOT, tree.root()), Totals::default());
+        let other = kinds.filter(&tree, Other);
+        assert_eq!(other.totals(ROOT, tree.root()).size, 9);
+    }
+
+    #[test]
+    fn keys_name_their_categories() {
+        for category in ALL {
+            assert_eq!(Category::from_key(category.key()), Some(category));
+        }
+        assert_eq!(Category::from_key("everything"), None);
     }
 
     #[test]

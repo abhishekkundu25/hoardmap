@@ -436,6 +436,131 @@ fn conflict_without_a_tree() {
     assert_eq!(json["error"], "no tree loaded");
 }
 
+/// The disk bar's filter on a tree of two kinds, the rebuildable folders and the
+/// rest: each kind shows its side, the two add up to the whole, and a node a kind
+/// leaves out is not served under it by any endpoint.
+#[test]
+fn a_kind_shows_its_side_of_a_mixed_tree() {
+    let projects = Projects::new();
+    let server = start_done(&projects);
+    let status = server.status();
+    let categories = status["categories"].as_array().unwrap();
+    assert_eq!(categories.len(), 2, "{status}");
+    let bytes = |key: &str| {
+        categories.iter().find(|c| c["key"] == key).expect(key)["bytes"]
+            .as_u64()
+            .unwrap()
+    };
+    let rest = categories
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .find(|&key| key != "rebuildable")
+        .unwrap();
+    let node = |id: u64, kind: &str| get_json(&server, &format!("/api/node/{id}?kind={kind}"));
+    let names = |json: &Value| -> Vec<String> {
+        let children = json["children"].as_array().unwrap();
+        let mut names: Vec<String> = children
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+
+    let whole = get_json(&server, "/api/node/0").1;
+    let (rebuilt, other) = (node(0, "rebuildable").1, node(0, rest).1);
+    assert_eq!(rebuilt["physical"], bytes("rebuildable"));
+    assert_eq!(other["physical"], bytes(rest));
+    for figure in ["size", "physical", "files", "dirs"] {
+        let sum = rebuilt[figure].as_u64().unwrap() + other[figure].as_u64().unwrap();
+        assert_eq!(sum, whole[figure].as_u64().unwrap(), "{figure}");
+    }
+
+    // `proj` holds package.json beside node_modules: one child under each kind.
+    let proj = child_id(&server, 0, "proj");
+    let modules = child_id(&server, proj, "node_modules");
+    let package = child_id(&server, proj, "package.json");
+    let (code, shown) = node(proj, "rebuildable");
+    assert_eq!(
+        (code, names(&shown)),
+        (200, vec!["node_modules".to_string()])
+    );
+    assert_eq!(shown["size"], NODE_MODULES);
+    assert_eq!(shown["has_children"], true);
+    let (code, shown) = node(proj, rest);
+    assert_eq!(
+        (code, names(&shown)),
+        (200, vec!["package.json".to_string()])
+    );
+    assert_eq!(shown["size"], 30);
+    // The decoy `work/target` has no sentinel: it is not rebuildable, so `work` is
+    // not shown under that kind at all.
+    let work = child_id(&server, 0, "work");
+    assert!(!names(&rebuilt).contains(&"work".to_string()), "{rebuilt}");
+    assert!(names(&other).contains(&"work".to_string()), "{other}");
+
+    // A node a kind leaves out is a 404 under it from every endpoint, and served
+    // under the other kind.
+    let size = "w=400&h=300&mode=physical";
+    for (id, hidden, shown) in [
+        (modules, rest, "rebuildable"),
+        (package, "rebuildable", rest),
+        (work, "rebuildable", rest),
+    ] {
+        for path in [
+            format!("/api/node/{id}?"),
+            format!("/api/treemap?root={id}&{size}&"),
+            format!("/api/icicle?root={id}&{size}&"),
+            format!("/api/extensions?root={id}&"),
+            format!("/api/largest?root={id}&"),
+            format!("/api/rebuildable?root={id}&"),
+        ] {
+            let (code, body) = get_json(&server, &format!("{path}kind={hidden}"));
+            assert_eq!(
+                (code, &body["error"]),
+                (404, &Value::from("no such node")),
+                "{path}{hidden}"
+            );
+            assert_eq!(
+                get_json(&server, &format!("{path}kind={shown}")).0,
+                200,
+                "{path}{shown}"
+            );
+        }
+    }
+
+    // The map of a kind draws only what the kind has.
+    for (kind, hidden) in [("rebuildable", rest), (rest, "rebuildable")] {
+        let (_, map) = get_json(&server, &format!("/api/treemap?{size}&kind={kind}"));
+        let rects = map["rects"].as_array().unwrap();
+        assert!(!rects.is_empty(), "{kind}");
+        for rect in rects {
+            let id = rect["id"].as_u64().unwrap();
+            assert_eq!(node(id, kind).0, 200, "{kind}: {rect}");
+            assert_eq!(node(id, hidden).0, 404, "{hidden}: {rect}");
+        }
+    }
+    // The largest files and the extension totals follow.
+    let (_, largest) = get_json(&server, &format!("/api/largest?mode=logical&kind={rest}"));
+    let first = &largest["items"][0];
+    assert_eq!(
+        first["path"],
+        projects.path("work/target/real.dat"),
+        "{largest}"
+    );
+    let (_, extensions) = get_json(&server, "/api/extensions?mode=physical&kind=rebuildable");
+    assert_eq!(extensions["total"], bytes("rebuildable"));
+    // The Rebuildable tab is all of one kind and none of the other.
+    assert_eq!(
+        rebuildable(&server, "?kind=rebuildable"),
+        rebuildable(&server, "")
+    );
+    assert_eq!(
+        rebuildable(&server, &format!("?kind={rest}")),
+        serde_json::json!({ "total": 0, "groups": [] })
+    );
+}
+
 /// Times `groups` on a real home folder, or a fixture at HOARDMAP_TIMING_ROOT.
 /// Run by hand, in release:
 /// `cargo test --release --test rebuildable -- --ignored --nocapture`. The budget is

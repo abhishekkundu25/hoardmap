@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::categories::{Filter, Totals};
 use crate::tree::{Kind, Node, NodeId, Tree, extension};
 
 /// Which byte figure sizes a node: logical bytes or bytes allocated on disk.
@@ -47,6 +48,59 @@ impl std::fmt::Display for ParseModeError {
 }
 
 impl std::error::Error for ParseModeError {}
+
+/// How the views size a node: in a mode and, when a filter is on, counting only what
+/// the filter keeps. A [`Mode`] alone measures the whole tree.
+#[derive(Clone, Copy)]
+pub struct Measure<'a> {
+    pub mode: Mode,
+    pub filter: Option<&'a Filter>,
+}
+
+impl Measure<'_> {
+    /// The figures of `node`, the entry `id`.
+    pub fn totals(&self, id: NodeId, node: &Node) -> Totals {
+        match self.filter {
+            Some(filter) => filter.totals(id, node),
+            None => Totals {
+                size: node.size,
+                physical: node.physical,
+                files: node.files,
+                dirs: node.dirs,
+            },
+        }
+    }
+
+    /// Bytes of `node`, the entry `id`, in the mode.
+    pub fn bytes(&self, id: NodeId, node: &Node) -> u64 {
+        match self.filter {
+            Some(filter) => {
+                let totals = filter.totals(id, node);
+                match self.mode {
+                    Mode::Logical => totals.size,
+                    Mode::Physical => totals.physical,
+                }
+            }
+            None => self.mode.bytes(node),
+        }
+    }
+
+    /// Whether a view shows the entry: always, unless a filter leaves it out.
+    pub fn shows(&self, id: NodeId) -> bool {
+        self.filter.is_none_or(|filter| filter.shows(id))
+    }
+
+    /// Whether the entry itself is counted, as a file is in a per-file statistic.
+    pub fn counts(&self, id: NodeId) -> bool {
+        self.filter.is_none_or(|filter| filter.inside(id))
+    }
+}
+
+impl From<Mode> for Measure<'static> {
+    fn from(mode: Mode) -> Self {
+        Measure { mode, filter: None }
+    }
+}
 
 impl FromStr for Mode {
     type Err = ParseModeError;
@@ -96,13 +150,13 @@ pub struct Layout {
 /// A directory with an area under `min * min` becomes one dir-grey rect; a file under
 /// that is dropped. A viewport without area yields no rects and the root's bounds only;
 /// an unknown root yields an empty layout.
-pub fn layout(
+pub fn layout<'a>(
     tree: &Tree,
     root: NodeId,
     w: f32,
     h: f32,
     min: f32,
-    mode: Mode,
+    measure: impl Into<Measure<'a>>,
     colours: &Colours,
 ) -> Layout {
     let mut out = Layout {
@@ -128,7 +182,7 @@ pub fn layout(
     let mut lay = Squarify {
         tree,
         min2: min * min,
-        mode,
+        measure: measure.into(),
         colours,
         out: &mut out,
     };
@@ -150,7 +204,7 @@ pub fn layout(
 struct Squarify<'a> {
     tree: &'a Tree,
     min2: f32,
-    mode: Mode,
+    measure: Measure<'a>,
     colours: &'a Colours,
     out: &'a mut Layout,
 }
@@ -162,14 +216,15 @@ impl Squarify<'_> {
         let mut items: Vec<(NodeId, f32)> = node
             .children
             .iter()
-            .map(|&c| (c, self.mode.bytes(&self.tree.nodes[c as usize])))
+            .map(|&c| (c, self.measure.bytes(c, &self.tree.nodes[c as usize])))
             .filter(|&(_, b)| b > 0)
             .map(|(c, b)| (c, b as f32))
             .collect();
         if items.is_empty() {
             return;
         }
-        // The tree sorts by logical size; physical sizes may be out of order.
+        // The tree sorts by logical size; physical and filtered sizes may be out of
+        // order.
         if !items.is_sorted_by(|a, b| a.1 >= b.1) {
             items.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
         }
@@ -350,9 +405,16 @@ pub struct ExtStat {
 
 /// Per-extension totals over the non-directories under `root`, largest in `mode`
 /// first, ties by extension. A hard-link duplicate adds 0 bytes but counts as a file.
-pub fn extensions(tree: &Tree, root: NodeId, mode: Mode, colours: &Colours) -> Vec<ExtStat> {
+pub fn extensions<'a>(
+    tree: &Tree,
+    root: NodeId,
+    measure: impl Into<Measure<'a>>,
+    colours: &Colours,
+) -> Vec<ExtStat> {
+    let measure = measure.into();
+    let mode = measure.mode;
     let mut by_ext: HashMap<String, (u64, u64, u32)> = HashMap::new();
-    for_each_file(tree, root, |_, node| {
+    for_each_file(tree, root, measure, |_, node| {
         let e = by_ext.entry(extension(&node.name)).or_insert((0, 0, 0));
         e.0 += node.size;
         e.1 += node.physical;
@@ -377,13 +439,20 @@ pub fn extensions(tree: &Tree, root: NodeId, mode: Mode, colours: &Colours) -> V
 }
 
 /// The `n` largest non-directories under `root` in `mode`, largest first, ties by id.
-pub fn largest(tree: &Tree, root: NodeId, n: usize, mode: Mode) -> Vec<NodeId> {
+pub fn largest<'a>(
+    tree: &Tree,
+    root: NodeId,
+    n: usize,
+    measure: impl Into<Measure<'a>>,
+) -> Vec<NodeId> {
     if n == 0 {
         return Vec::new();
     }
+    let measure = measure.into();
+    let mode = measure.mode;
     // A min-heap of the n best seen so far; the smallest falls off when it overflows.
     let mut heap: BinaryHeap<Reverse<(u64, Reverse<NodeId>)>> = BinaryHeap::with_capacity(n + 1);
-    for_each_file(tree, root, |id, node| {
+    for_each_file(tree, root, measure, |id, node| {
         heap.push(Reverse((mode.bytes(node), Reverse(id))));
         if heap.len() > n {
             heap.pop();
@@ -394,13 +463,24 @@ pub fn largest(tree: &Tree, root: NodeId, n: usize, mode: Mode) -> Vec<NodeId> {
     top.into_iter().map(|(_, Reverse(id))| id).collect()
 }
 
-/// Calls `f` on every non-directory under `root`, `root` included when it is one.
-fn for_each_file<'a>(tree: &'a Tree, root: NodeId, mut f: impl FnMut(NodeId, &'a Node)) {
+/// Calls `f` on every non-directory under `root` that `measure` counts, `root`
+/// included when it is one. Folders a filter leaves out are not walked.
+fn for_each_file<'a>(
+    tree: &'a Tree,
+    root: NodeId,
+    measure: Measure<'_>,
+    mut f: impl FnMut(NodeId, &'a Node),
+) {
     let Some(start) = tree.get(root) else {
         return;
     };
     if start.kind != Kind::Dir {
-        f(root, start);
+        if measure.counts(root) {
+            f(root, start);
+        }
+        return;
+    }
+    if !measure.shows(root) {
         return;
     }
     let mut stack = vec![root];
@@ -408,8 +488,10 @@ fn for_each_file<'a>(tree: &'a Tree, root: NodeId, mut f: impl FnMut(NodeId, &'a
         for &c in &tree.nodes[id as usize].children {
             let child = &tree.nodes[c as usize];
             if child.kind == Kind::Dir {
-                stack.push(c);
-            } else {
+                if measure.shows(c) {
+                    stack.push(c);
+                }
+            } else if measure.counts(c) {
                 f(c, child);
             }
         }

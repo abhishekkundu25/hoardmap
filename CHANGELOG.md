@@ -3,6 +3,7 @@
 ## Unreleased
 
 - The bar under the top bar now shows what the disk holds, like the Storage bar in System Settings. The scanned folder is split by kind of thing: Applications, Rebuildable, Photos, Music & Movies, Mail & Messages, iCloud Drive, App data, Trash, Documents and Other files. The rest of the disk, which used to be one "Everything else" figure, is split into Other folders, macOS, Swap and other volumes. Point at a part to see its size, its share of the disk and what it is. Swap is memory macOS has moved to disk, so a large Swap part points at an app using too much memory.
+- Click a kind in that bar to see it alone: the list, the map and the tabs show only that kind, with every folder's size counting it alone. A band in the kind's colour above the views says "Showing only App data", the kind stays lit in the bar and its name becomes a pill with an ×. Click it again, press Show everything or press Esc to go back.
 - Fixed: scanning the startup disk (Macintosh HD in the Disks menu, or `/`) showed only the system itself, with `/Users`, `/Applications` and `/Library` at 0 bytes and listed as unreadable. Since 0.6.0 the scan skipped them because they are links to the data volume. They are read again.
 
 ## 0.6.0 — 2026-11-06

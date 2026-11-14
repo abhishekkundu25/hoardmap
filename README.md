@@ -130,11 +130,22 @@ files. After the scan come the parts of the disk it did not cover: Other folders
 macOS (the system with its startup and recovery volumes), Swap (memory macOS has moved
 to disk) and other volumes sharing the disk, then the free space. Point at a part, in
 the bar or in the list under it, to see its size, its share of the disk and what it
-is; click Rebuildable to open that tab. The figures are bytes on disk whatever the
+is. The figures are bytes on disk whatever the
 size toggle says, and macOS's own parts are read when a scan starts and ends, so press
 Rescan to see swap as it is now. The kinds are told by where a folder is, so they will
 not match the Storage pane of System Settings exactly. Parts under a thousandth of the
 disk are left out, and a disk that is not APFS shows no macOS or Swap parts.
+
+Click a kind of the scan, in the bar or in the list under it, to see that kind alone:
+the directory list, the map and the tabs then show only its files, and every folder's
+size, share and counts are of that kind. Three things say the filter is on. A band in
+the kind's colour appears above the list and the map, reading "Showing only App data"
+with how much of the scan that is; the kind stays lit in the bar while the other
+parts dim; and its name in the list under the bar becomes a pill with an ×. Click the
+kind again, press Show everything in the band, or press Esc to see everything again.
+Folders you had open, the selection and the zoom stay where the kind has them. A new
+scan starts unfiltered. The parts the scan did not cover (Other folders, macOS, Swap,
+Free) have nothing to list, so they cannot be clicked.
 
 While a scan runs, the list and the map fill in as folders finish, about once a
 second, the way WinDirStat grows its tree. Expanded folders, the selection and the zoom

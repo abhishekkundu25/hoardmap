@@ -14,10 +14,11 @@ use std::thread;
 use serde_json::{Value, json};
 
 use crate::access;
+use crate::categories::{Category, Kinds};
 use crate::icicle;
 use crate::server::{App, Request, Response, SCAN_RUNNING, State};
 use crate::tree::{Kind, Node, NodeId, Tree};
-use crate::treemap::{self, Colours, Mode};
+use crate::treemap::{self, Colours, Measure, Mode};
 use crate::volumes;
 
 const DEFAULT_LARGEST: usize = 100;
@@ -28,7 +29,7 @@ pub fn handle(app: &Arc<App>, request: &Request) -> Response {
     let method = request.method.as_str();
     if let Some(id) = request.path.strip_prefix("/api/node/") {
         return match method {
-            "GET" => node(app, id),
+            "GET" => node(app, id, &Query::parse(&request.query)),
             _ => method_not_allowed("GET"),
         };
     }
@@ -93,11 +94,66 @@ fn method_not_allowed(allow: &str) -> Response {
 /// The finished tree and its colour table, or a running scan's preview of them, or
 /// the 409 to answer with.
 fn tree(app: &App) -> Result<(Arc<Tree>, Colours), Response> {
+    view(app, &Query(Vec::new())).map(|view| (view.tree, view.colours))
+}
+
+/// A tree, its colour table and, when the query names a `kind`, the filter that keeps
+/// that kind alone.
+struct View {
+    tree: Arc<Tree>,
+    colours: Colours,
+    kind: Option<(Arc<Kinds>, Category)>,
+}
+
+impl View {
+    /// Whether a request may be about the node `id`: it exists and, under a filter,
+    /// is of the kind or holds some of it. The root always is, so a kind the scan
+    /// does not have shows an empty folder.
+    fn has(&self, id: NodeId) -> bool {
+        self.tree.get(id).is_some()
+            && (id == crate::tree::ROOT || self.measure(Mode::Physical).shows(id))
+    }
+
+    /// How this view sizes entries in `mode`.
+    fn measure(&self, mode: Mode) -> Measure<'_> {
+        Measure {
+            mode,
+            filter: self
+                .kind
+                .as_ref()
+                .map(|(kinds, category)| kinds.filter(&self.tree, *category)),
+        }
+    }
+}
+
+/// The tree the query is about, as [`tree`] gives it, filtered when the query has a
+/// `kind`. A running scan's preview has no kinds, so a `kind` there is a 409.
+fn view(app: &App, query: &Query) -> Result<View, Response> {
+    let kind = match query.get("kind") {
+        None | Some("") => None,
+        Some(key) => Some(Category::from_key(key).ok_or_else(|| error(400, "no such kind"))?),
+    };
     match &*app.state.lock().unwrap() {
-        State::Done { tree, colours, .. } => Ok((tree.clone(), colours.clone())),
+        State::Done {
+            tree,
+            colours,
+            kinds,
+            ..
+        } => Ok(View {
+            tree: tree.clone(),
+            colours: colours.clone(),
+            kind: kind.map(|category| (kinds.clone(), category)),
+        }),
         State::Scanning {
             live: Some(live), ..
-        } => Ok((live.tree.clone(), live.colours.clone())),
+        } if kind.is_none() => Ok(View {
+            tree: live.tree.clone(),
+            colours: live.colours.clone(),
+            kind: None,
+        }),
+        State::Scanning { live: Some(_), .. } => {
+            Err(error(409, "kinds are known once the scan is done"))
+        }
         _ => Err(error(409, "no tree loaded")),
     }
 }
@@ -162,19 +218,21 @@ impl<'a> Query<'a> {
     }
 }
 
-/// `shared` is left out for a node that shares nothing.
-fn node_json(id: NodeId, node: &Node) -> Value {
+/// `shared` is left out for a node that shares nothing. The figures are the measure's,
+/// so under a filter they count the kept kind alone.
+fn node_json(id: NodeId, node: &Node, measure: Measure) -> Value {
+    let totals = measure.totals(id, node);
     let mut json = json!({
         "id": id,
         "name": node.name,
         "parent": node.parent,
         "kind": node.kind,
-        "size": node.size,
-        "physical": node.physical,
-        "files": node.files,
-        "dirs": node.dirs,
+        "size": totals.size,
+        "physical": totals.physical,
+        "files": totals.files,
+        "dirs": totals.dirs,
         "mtime": node.mtime,
-        "has_children": !node.children.is_empty(),
+        "has_children": node.children.iter().any(|&c| measure.shows(c)),
     });
     if node.shared != crate::tree::Shared::None {
         json["shared"] = json!(node.shared);
@@ -186,24 +244,31 @@ pub(crate) fn lossy(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn node(app: &App, id: &str) -> Response {
-    let (tree, _) = match tree(app) {
-        Ok(t) => t,
+/// A node with its path and children. Under a filter the children it leaves out are
+/// not listed, and a node it leaves out is a 404, the root excepted.
+fn node(app: &App, id: &str, query: &Query) -> Response {
+    let view = match view(app, query) {
+        Ok(v) => v,
         Err(r) => return r,
     };
+    let tree = &view.tree;
+    // The figures are the same in either mode; only the filter matters here.
+    let measure = view.measure(Mode::Physical);
     let Some((id, node)) = id
         .parse::<NodeId>()
         .ok()
-        .and_then(|id| Some((id, tree.get(id)?)))
+        .filter(|&id| view.has(id))
+        .map(|id| (id, &tree.nodes[id as usize]))
     else {
         return error(404, "no such node");
     };
-    let mut json = node_json(id, node);
+    let mut json = node_json(id, node, measure);
     json["path"] = Value::String(lossy(&tree.path(id)));
     json["children"] = node
         .children
         .iter()
-        .map(|&c| node_json(c, &tree.nodes[c as usize]))
+        .filter(|&&c| measure.shows(c))
+        .map(|&c| node_json(c, &tree.nodes[c as usize], measure))
         .collect();
     Response::json(200, &json)
 }
@@ -225,51 +290,56 @@ fn viewport(query: &Query) -> Result<(NodeId, f32, f32, f32, Mode), Response> {
 }
 
 fn treemap(app: &App, query: &Query) -> Response {
-    let (tree, colours) = match tree(app) {
-        Ok(t) => t,
+    let view = match view(app, query) {
+        Ok(v) => v,
         Err(r) => return r,
     };
     let (root, w, h, min, mode) = match viewport(query) {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
+    let measure = view.measure(mode);
     Response::json(
         200,
-        &treemap::layout(&tree, root, w, h, min, mode, &colours),
+        &treemap::layout(&view.tree, root, w, h, min, measure, &view.colours),
     )
 }
 
 fn icicle(app: &App, query: &Query) -> Response {
-    let (tree, colours) = match tree(app) {
-        Ok(t) => t,
+    let view = match view(app, query) {
+        Ok(v) => v,
         Err(r) => return r,
     };
     let (root, w, h, min, mode) = match viewport(query) {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
-    Response::json(200, &icicle::icicle(&tree, root, w, h, min, mode, &colours))
+    let measure = view.measure(mode);
+    Response::json(
+        200,
+        &icicle::icicle(&view.tree, root, w, h, min, measure, &view.colours),
+    )
 }
 
 fn extensions(app: &App, query: &Query) -> Response {
-    let (tree, colours) = match tree(app) {
-        Ok(t) => t,
+    let view = match view(app, query) {
+        Ok(v) => v,
         Err(r) => return r,
     };
     let (root, mode) = match query.root().and_then(|r| Ok((r, query.mode()?))) {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
-    let items = treemap::extensions(&tree, root, mode, &colours);
+    let items = treemap::extensions(&view.tree, root, view.measure(mode), &view.colours);
     let total: u64 = items
         .iter()
         .map(|s| match mode {
@@ -281,10 +351,11 @@ fn extensions(app: &App, query: &Query) -> Response {
 }
 
 fn largest(app: &App, query: &Query) -> Response {
-    let (tree, _) = match tree(app) {
-        Ok(t) => t,
+    let view = match view(app, query) {
+        Ok(v) => v,
         Err(r) => return r,
     };
+    let tree = &view.tree;
     let parsed = (|| {
         let n = match query.get("n") {
             None | Some("") => DEFAULT_LARGEST,
@@ -299,10 +370,10 @@ fn largest(app: &App, query: &Query) -> Response {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
-    let items: Vec<Value> = treemap::largest(&tree, root, n, mode)
+    let items: Vec<Value> = treemap::largest(tree, root, n, view.measure(mode))
         .into_iter()
         .map(|id| {
             let node = &tree.nodes[id as usize];
@@ -330,18 +401,19 @@ fn errors(app: &App) -> Response {
 
 /// The rebuildable folders under `root`, grouped by rule; see [`crate::rebuildable::groups`].
 fn rebuildable(app: &App, query: &Query) -> Response {
-    let (tree, _) = match tree(app) {
-        Ok(t) => t,
+    let view = match view(app, query) {
+        Ok(v) => v,
         Err(r) => return r,
     };
+    let tree = &view.tree;
     let (root, mode) = match query.root().and_then(|r| Ok((r, query.mode()?))) {
         Ok(p) => p,
         Err(r) => return r,
     };
-    if tree.get(root).is_none() {
+    if !view.has(root) {
         return error(404, "no such node");
     }
-    let groups = crate::rebuildable::groups(&tree, root, mode);
+    let groups = crate::rebuildable::groups(tree, root, view.measure(mode));
     let total: u64 = groups.iter().map(|g| g.bytes).sum();
     let groups: Vec<Value> = groups
         .iter()
@@ -600,11 +672,11 @@ mod tests {
             children: vec![],
             shared: Shared::None,
         };
-        let json = node_json(1, &file);
+        let json = node_json(1, &file, Mode::Physical.into());
         assert!(json.get("shared").is_none());
         for (shared, name) in [(Shared::HardLink, "hard_link"), (Shared::Clone, "clone")] {
             file.shared = shared;
-            assert_eq!(node_json(1, &file)["shared"], name);
+            assert_eq!(node_json(1, &file, Mode::Physical.into())["shared"], name);
         }
     }
 

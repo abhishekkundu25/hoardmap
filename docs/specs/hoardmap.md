@@ -224,6 +224,19 @@ renames anything. Closing the window quits the app.
     volume accounts for), then `free`. A kind is given by place: a rule table of
     paths from the file system root, the most specific rule above a file winning,
     with every rebuildable folder its own kind wherever it lies.
+  - **Filter**: the tree endpoints `node`, `treemap`, `icicle`, `extensions`,
+    `largest` and `rebuildable` take `kind=KEY`, one of the `categories` keys, and
+    then answer for that kind alone: a node's `size`, `physical`, `files` and `dirs`
+    count only its entries of the kind, children without any are left out, and
+    `has_children` follows. Node ids are the tree's own, filtered or not. A node the
+    kind leaves out is a 404, as an id and as a `root`; the scan's root is
+    excepted and answers with zeros. An
+    unknown key is a 400; a `kind` while a scan runs is a 409, since kinds are known
+    once it is done. The filter for a kind is made on its first request: one walk of
+    the tree, kept as one bit per entry plus the figures of the folders above a rule
+    or a rebuildable folder (`categories::Filter`). The page sends `kind` after a
+    click on a kind in the disk bar, and says a filter is on with a band over the
+    views, the kind lit in the bar and a pill in its legend.
   - While scanning, the tree endpoints (`node`, `treemap`, `icicle`, `extensions`,
     `largest`, `errors`) answer from a preview: the entries down to three levels below
     the root that the scan has finished, rebuilt every second. Folders still being read

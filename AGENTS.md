@@ -37,7 +37,10 @@ deletes, moves or renames anything; do not add such an action.
   polls it.
 - `src/categories.rs`: the finished tree split by kind of thing (Applications, App
   data, Rebuildable, ...) for the disk bar: a path rule table, no file system access.
-  The split must add up to the root's `physical`.
+  The split must add up to the root's `physical`. `Kinds` also makes the `Filter`
+  behind `kind=` on the tree endpoints: one bit per entry, node ids unchanged. The
+  filters of all kinds must share out every entry's figures exactly once (a test
+  checks). Views size entries through `treemap::Measure`, never `node.size` directly.
 - `assets/`: the logo. `hoardmap.svg` is the source, served as `/logo.svg` and
   embedded with `include_str!`; `hoardmap.icns` is the app icon and
   `dmg-background.tiff` the DMG window, both made by `tools/make-images.sh` (needs

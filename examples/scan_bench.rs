@@ -75,7 +75,7 @@ fn main() {
     // What a finished scan adds for the disk bar: one pass over the tree, and a few
     // questions to the system about the disk.
     let started = Instant::now();
-    let split = hoardmap::categories::split(&bulk);
+    let kinds = hoardmap::categories::Kinds::new(&bulk);
     let split_time = started.elapsed();
     let started = Instant::now();
     let usage = hoardmap::disk::usage(&path);
@@ -84,8 +84,17 @@ fn main() {
         split_time.as_secs_f64() * 1e3,
         started.elapsed().as_secs_f64() * 1e3
     );
-    for (category, bytes) in &split {
-        println!("  {:<12} {bytes}", category.key());
+    // A click on a kind makes its filter once: one walk of the tree.
+    for &(category, bytes) in kinds.split() {
+        let started = Instant::now();
+        let filter = kinds.filter(&bulk, category);
+        let made = started.elapsed();
+        assert_eq!(filter.totals(0, bulk.root()).physical, bytes);
+        println!(
+            "  {:<12} {bytes} bytes, filter in {:.1} ms",
+            category.key(),
+            made.as_secs_f64() * 1e3
+        );
     }
     println!("  {usage:?}");
     drop((bulk, portable));
