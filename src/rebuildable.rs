@@ -4,9 +4,14 @@
 //!
 //! [`RULES`] is the table; each rule names its owner, says how the folder comes back
 //! in the owner's words, and links the owner's documentation; a rule whose folder
-//! also holds something that does not come back carries a caution. [`groups`] is a pure
-//! function of the tree: no file system access, no subprocess, and nothing here
+//! also holds something that does not come back carries a caution. A rule's
+//! [`Class`] says how far "comes back" goes: made again by its tool, a collection
+//! the user chose that downloads again, or a folder to check first. [`groups`] is a
+//! pure function of the tree: no file system access, no subprocess, and nothing here
 //! changes a file.
+//!
+//! A rule recognises a folder's apparent owner from names; it cannot know that the
+//! project files or the upstream a folder would come back from still exist.
 
 use std::cmp::Reverse;
 
@@ -32,11 +37,73 @@ pub enum Matcher {
         sibling: &'static str,
         kind: Kind,
     },
+    /// A folder called `name` that contains every one of `children`.
+    Children {
+        name: &'static str,
+        children: &'static [(&'static str, Kind)],
+    },
+    /// As `SiblingSentinel`, unless the folder contains a folder called `without`:
+    /// then it is something else that shares the name.
+    SiblingUnless {
+        name: &'static str,
+        sibling: &'static str,
+        kind: Kind,
+        without: &'static str,
+    },
     /// A folder whose path ends in these names.
     PathSuffix(&'static [&'static str]),
+    /// A folder whose path ends in these names and that contains a `child` of the
+    /// given kind, for a path short enough to turn up by chance.
+    PathSuffixWith {
+        suffix: &'static [&'static str],
+        child: &'static str,
+        kind: Kind,
+    },
     /// A folder of any name that contains a `child` of the given kind.
     AnyWithChild { child: &'static str, kind: Kind },
 }
+
+/// How far a rule's "comes back" goes. The page lists each class apart, and only
+/// [`Class::Remade`] counts as Rebuildable in the disk bar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Class {
+    /// The tool makes the folder again as it works, or with its usual command from
+    /// files the project keeps: caches, build output, installed dependencies.
+    Remade,
+    /// A collection the user chose, such as toolchains, SDKs and models: an item
+    /// downloads again when the user asks for it, while the upstream still has it.
+    Chosen,
+    /// Check first: the folder holds things that do not come back beside the ones
+    /// that do, or hoardmap goes by a common name and cannot tell whose it is.
+    Check,
+}
+
+impl Class {
+    /// The name the API uses.
+    pub fn key(self) -> &'static str {
+        match self {
+            Class::Remade => "remade",
+            Class::Chosen => "chosen",
+            Class::Check => "check",
+        }
+    }
+}
+
+/// The owner's own command for the folder, for the page to show as text to copy.
+/// Hoardmap never runs it.
+#[derive(Debug)]
+pub struct Clear {
+    /// The command as the owner documents it.
+    pub command: &'static str,
+    /// Run in the folder that holds the matched one, such as the project folder.
+    pub beside: bool,
+    /// The owner's documentation of the command, `https://`.
+    pub source: &'static str,
+}
+
+/// The smallest a cache tag can be: the signature the convention requires it to start
+/// with. The scan does not read files, so the signature itself is not checked.
+const TAG_MIN: u64 = 43;
 
 /// One kind of rebuildable folder.
 #[derive(Debug)]
@@ -54,6 +121,9 @@ pub struct Rule {
     /// One sentence on what in the folder does not come back on its own, or `None`
     /// when all of it does.
     pub caution: Option<&'static str>,
+    pub class: Class,
+    /// The owner's own command for the folder, where it documents one.
+    pub clear: Option<Clear>,
     /// A folder matches the rule when any of these match.
     pub matchers: &'static [Matcher],
 }
@@ -72,7 +142,11 @@ pub const RULES: &[Rule] = &[
         why: "npm install installs the packages again from package.json and its lock file.",
         source: "https://docs.npmjs.com/cli/v10/commands/npm-install",
         checked: CHECKED,
-        caution: None,
+        caution: Some(
+            "Packages installed without being saved to package.json, and edits made inside this folder, do not come back.",
+        ),
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: "node_modules",
             sibling: "package.json",
@@ -87,10 +161,19 @@ pub const RULES: &[Rule] = &[
         source: "https://doc.rust-lang.org/cargo/reference/build-cache.html",
         checked: CHECKED,
         caution: None,
-        matchers: &[Matcher::ChildSentinel {
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "cargo clean",
+            beside: true,
+            source: "https://doc.rust-lang.org/cargo/commands/cargo-clean.html",
+        }),
+        // The tag alone marks a cache of any tool; the compiler record is Cargo's.
+        matchers: &[Matcher::Children {
             name: "target",
-            child: "CACHEDIR.TAG",
-            kind: Kind::File,
+            children: &[
+                ("CACHEDIR.TAG", Kind::File),
+                (".rustc_info.json", Kind::File),
+            ],
         }],
     },
     Rule {
@@ -100,7 +183,11 @@ pub const RULES: &[Rule] = &[
         why: "python -m venv creates it again, and pip install -r requirements.txt reinstalls its packages.",
         source: "https://docs.python.org/3/library/venv.html",
         checked: CHECKED,
-        caution: None,
+        caution: Some(
+            "It comes back only from the project's list of packages, such as requirements.txt or a lock file, so packages installed by hand do not.",
+        ),
+        class: Class::Remade,
+        clear: None,
         matchers: &[
             Matcher::ChildSentinel {
                 name: ".venv",
@@ -122,6 +209,8 @@ pub const RULES: &[Rule] = &[
         source: "https://www.swift.org/documentation/server/guides/building.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: ".build",
             sibling: "Package.swift",
@@ -136,26 +225,34 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.gradle.org/current/userguide/directory_layout.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
+        // Gradle's own home is also called .gradle and holds settings beside its
+        // caches, which the rules below take one by one.
         matchers: &[
-            Matcher::SiblingSentinel {
+            Matcher::SiblingUnless {
                 name: ".gradle",
                 sibling: "settings.gradle",
                 kind: Kind::File,
+                without: "caches",
             },
-            Matcher::SiblingSentinel {
+            Matcher::SiblingUnless {
                 name: ".gradle",
                 sibling: "settings.gradle.kts",
                 kind: Kind::File,
+                without: "caches",
             },
-            Matcher::SiblingSentinel {
+            Matcher::SiblingUnless {
                 name: ".gradle",
                 sibling: "build.gradle",
                 kind: Kind::File,
+                without: "caches",
             },
-            Matcher::SiblingSentinel {
+            Matcher::SiblingUnless {
                 name: ".gradle",
                 sibling: "build.gradle.kts",
                 kind: Kind::File,
+                without: "caches",
             },
         ],
     },
@@ -167,6 +264,12 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.gradle.org/current/userguide/directory_layout.html",
         checked: CHECKED,
         caution: Some(GENERIC_CAUTION),
+        class: Class::Check,
+        clear: Some(Clear {
+            command: "./gradlew clean",
+            beside: true,
+            source: "https://docs.gradle.org/current/userguide/base_plugin.html",
+        }),
         matchers: &[
             Matcher::SiblingSentinel {
                 name: "build",
@@ -188,6 +291,8 @@ pub const RULES: &[Rule] = &[
         source: "https://nextjs.org/docs/app/api-reference/config/next-config-js/distDir",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: ".next",
             sibling: "package.json",
@@ -202,6 +307,8 @@ pub const RULES: &[Rule] = &[
         source: "https://turborepo.dev/docs/crafting-your-repository/caching",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: ".turbo",
             sibling: "package.json",
@@ -216,6 +323,8 @@ pub const RULES: &[Rule] = &[
         source: "https://parceljs.org/features/development/",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: ".parcel-cache",
             sibling: "package.json",
@@ -230,6 +339,8 @@ pub const RULES: &[Rule] = &[
         source: "https://dart.dev/tools/pub/glossary",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: ".dart_tool",
             sibling: "pubspec.yaml",
@@ -244,6 +355,8 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.python.org/3/tutorial/modules.html#compiled-python-files",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["__pycache__"])],
     },
     Rule {
@@ -254,6 +367,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/python/mypy/blob/master/mypy/build.py",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::ChildSentinel {
             name: ".mypy_cache",
             child: "CACHEDIR.TAG",
@@ -268,6 +383,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/pytest-dev/pytest/blob/main/src/_pytest/cacheprovider.py",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::ChildSentinel {
             name: ".pytest_cache",
             child: "CACHEDIR.TAG",
@@ -282,6 +399,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/astral-sh/ruff/blob/main/crates/ruff/src/cache.rs",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::ChildSentinel {
             name: ".ruff_cache",
             child: "CACHEDIR.TAG",
@@ -296,6 +415,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/wntrblm/nox/blob/main/nox/virtualenv.py",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::ChildSentinel {
             name: ".nox",
             child: "CACHEDIR.TAG",
@@ -311,6 +432,8 @@ pub const RULES: &[Rule] = &[
         source: "https://developer.apple.com/library/archive/documentation/Xcode/Conceptual/RN-Xcode-Archive/Chapters/xc4_release_notes.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[
             "Library",
             "Developer",
@@ -326,6 +449,8 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.gradle.org/current/userguide/directory_layout.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".gradle", "caches"])],
     },
     Rule {
@@ -336,6 +461,8 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.gradle.org/current/userguide/directory_layout.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[
             Matcher::PathSuffix(&[".gradle", "wrapper", "dists"]),
             Matcher::PathSuffix(&[".gradle", "jdks"]),
@@ -351,6 +478,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "It also holds what mvn install built from your own unreleased projects, which comes back only by building them again.",
         ),
+        class: Class::Check,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".m2", "repository"])],
     },
     Rule {
@@ -361,6 +490,12 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.brew.sh/FAQ",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "brew cleanup --prune=all",
+            beside: false,
+            source: "https://docs.brew.sh/Manpage",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "Homebrew"])],
     },
     Rule {
@@ -371,6 +506,12 @@ pub const RULES: &[Rule] = &[
         source: "https://pip.pypa.io/en/stable/topics/caching/",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "pip cache purge",
+            beside: false,
+            source: "https://pip.pypa.io/en/stable/cli/pip_cache/",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "pip"])],
     },
     Rule {
@@ -381,6 +522,8 @@ pub const RULES: &[Rule] = &[
         source: "https://python-poetry.org/docs/configuration/",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "pypoetry"])],
     },
     Rule {
@@ -391,6 +534,8 @@ pub const RULES: &[Rule] = &[
         source: "https://pipenv.pypa.io/en/latest/virtualenv.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".local", "share", "virtualenvs"])],
     },
     Rule {
@@ -401,6 +546,12 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.astral.sh/uv/concepts/cache/",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "uv cache clean",
+            beside: false,
+            source: "https://docs.astral.sh/uv/concepts/cache/",
+        }),
         matchers: &[Matcher::PathSuffix(&[".cache", "uv"])],
     },
     Rule {
@@ -411,6 +562,12 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.npmjs.com/cli/v10/commands/npm-cache",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "npm cache clean --force",
+            beside: false,
+            source: "https://docs.npmjs.com/cli/v10/commands/npm-cache",
+        }),
         matchers: &[Matcher::PathSuffix(&[".npm", "_cacache"])],
     },
     Rule {
@@ -421,6 +578,12 @@ pub const RULES: &[Rule] = &[
         source: "https://pnpm.io/cli/store",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "pnpm store prune",
+            beside: false,
+            source: "https://pnpm.io/cli/store",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "pnpm", "store"])],
     },
     Rule {
@@ -431,6 +594,12 @@ pub const RULES: &[Rule] = &[
         source: "https://classic.yarnpkg.com/lang/en/docs/cli/cache/",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "yarn cache clean",
+            beside: false,
+            source: "https://classic.yarnpkg.com/en/docs/cli/cache",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "Yarn"])],
     },
     Rule {
@@ -441,6 +610,12 @@ pub const RULES: &[Rule] = &[
         source: "https://yarnpkg.com/configuration/yarnrc",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "yarn cache clean --all",
+            beside: false,
+            source: "https://yarnpkg.com/cli/cache/clean",
+        }),
         matchers: &[Matcher::PathSuffix(&[".yarn", "berry", "cache"])],
     },
     Rule {
@@ -451,6 +626,12 @@ pub const RULES: &[Rule] = &[
         source: "https://bun.sh/docs/install/cache",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "bun pm cache rm",
+            beside: false,
+            source: "https://bun.sh/docs/pm/cli/pm",
+        }),
         matchers: &[Matcher::PathSuffix(&[".bun", "install", "cache"])],
     },
     Rule {
@@ -461,6 +642,12 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.deno.com/runtime/getting_started/installation/",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "deno clean",
+            beside: false,
+            source: "https://docs.deno.com/runtime/reference/cli/clean/",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "deno"])],
     },
     Rule {
@@ -471,6 +658,8 @@ pub const RULES: &[Rule] = &[
         source: "https://doc.rust-lang.org/cargo/guide/cargo-home.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".cargo", "registry"])],
     },
     Rule {
@@ -481,7 +670,17 @@ pub const RULES: &[Rule] = &[
         source: "https://go.dev/ref/mod",
         checked: CHECKED,
         caution: None,
-        matchers: &[Matcher::PathSuffix(&["go", "pkg", "mod"])],
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "go clean -modcache",
+            beside: false,
+            source: "https://pkg.go.dev/cmd/go",
+        }),
+        matchers: &[Matcher::PathSuffixWith {
+            suffix: &["go", "pkg", "mod"],
+            child: "cache",
+            kind: Kind::Dir,
+        }],
     },
     Rule {
         key: "go_build_cache",
@@ -491,6 +690,12 @@ pub const RULES: &[Rule] = &[
         source: "https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "go clean -cache",
+            beside: false,
+            source: "https://pkg.go.dev/cmd/go",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "go-build"])],
     },
     Rule {
@@ -501,6 +706,12 @@ pub const RULES: &[Rule] = &[
         source: "https://guides.cocoapods.org/terminal/commands.html#pod_cache_clean",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "pod cache clean --all",
+            beside: false,
+            source: "https://guides.cocoapods.org/terminal/commands.html",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "CocoaPods"])],
     },
     Rule {
@@ -511,6 +722,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/Carthage/Carthage/blob/master/Documentation/Artifacts.md",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[
             Matcher::PathSuffix(&["Library", "Caches", "org.carthage.CarthageKit"]),
             Matcher::PathSuffix(&["Carthage", "Build"]),
@@ -524,6 +737,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/swiftlang/swift-package-manager/blob/main/Sources/Basics/FileSystem/FileSystem%2BExtensions.swift",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[
             "Library",
             "Caches",
@@ -538,6 +753,12 @@ pub const RULES: &[Rule] = &[
         source: "https://getcomposer.org/doc/03-cli.md",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "composer clear-cache",
+            beside: false,
+            source: "https://getcomposer.org/doc/03-cli.md",
+        }),
         matchers: &[Matcher::PathSuffix(&[".composer", "cache"])],
     },
     Rule {
@@ -548,6 +769,12 @@ pub const RULES: &[Rule] = &[
         source: "https://learn.microsoft.com/en-us/nuget/consume-packages/managing-the-global-packages-and-cache-folders",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "dotnet nuget locals all --clear",
+            beside: false,
+            source: "https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-nuget-locals",
+        }),
         matchers: &[
             Matcher::PathSuffix(&[".nuget", "packages"]),
             Matcher::PathSuffix(&[".local", "share", "NuGet", "v3-cache"]),
@@ -561,6 +788,8 @@ pub const RULES: &[Rule] = &[
         source: "https://playwright.dev/docs/browsers",
         checked: CHECKED,
         caution: None,
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "ms-playwright"])],
     },
     Rule {
@@ -571,6 +800,8 @@ pub const RULES: &[Rule] = &[
         source: "https://pptr.dev/guides/configuration",
         checked: CHECKED,
         caution: None,
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".cache", "puppeteer"])],
     },
     Rule {
@@ -581,6 +812,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/electron/get",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "electron"])],
     },
     Rule {
@@ -591,6 +824,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/mozilla/sccache/blob/main/docs/Local.md",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[
             "Library",
             "Caches",
@@ -605,6 +840,12 @@ pub const RULES: &[Rule] = &[
         source: "https://ccache.dev/manual/latest.html",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: Some(Clear {
+            command: "ccache --clear",
+            beside: false,
+            source: "https://ccache.dev/manual/latest.html",
+        }),
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "ccache"])],
     },
     Rule {
@@ -615,6 +856,8 @@ pub const RULES: &[Rule] = &[
         source: "https://bazel.build/remote/output-directories",
         checked: CHECKED,
         caution: None,
+        class: Class::Remade,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "bazel"])],
     },
     // Rebuildable, but holding something that does not come back on its own.
@@ -628,6 +871,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "It holds images, containers and volumes, and only the images download again.",
         ),
+        class: Class::Check,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[
             "Library",
             "Containers",
@@ -646,6 +891,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "Each virtual device keeps its installed apps, settings and emulated SD card, which do not come back.",
         ),
+        class: Class::Check,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".android", "avd"])],
     },
     Rule {
@@ -658,6 +905,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "Your projects build against the exact platform versions installed here, which you would have to choose again.",
         ),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["Library", "Android", "sdk"])],
     },
     Rule {
@@ -668,6 +917,8 @@ pub const RULES: &[Rule] = &[
         source: "https://huggingface.co/docs/huggingface_hub/guides/manage-cache",
         checked: CHECKED,
         caution: Some(MODELS_CAUTION),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".cache", "huggingface", "hub"])],
     },
     Rule {
@@ -680,6 +931,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "Models you made with ollama create do not download again, and models you downloaded are large to fetch again and may be withdrawn upstream.",
         ),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".ollama", "models"])],
     },
     Rule {
@@ -692,6 +945,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "Models imported from your own files share this folder and do not download again, and the downloaded ones are large and your choice.",
         ),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".lmstudio", "models"])],
     },
     Rule {
@@ -702,6 +957,8 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.pytorch.org/docs/main/hub.html",
         checked: CHECKED,
         caution: Some(MODELS_CAUTION),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".cache", "torch", "hub"])],
     },
     Rule {
@@ -712,6 +969,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/Kaggle/kagglehub",
         checked: CHECKED,
         caution: Some(MODELS_CAUTION),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".cache", "kagglehub"])],
     },
     Rule {
@@ -724,6 +983,12 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "Your environments link to files in this cache, so its size overlaps theirs and some environments rely on it.",
         ),
+        class: Class::Check,
+        clear: Some(Clear {
+            command: "conda clean --all",
+            beside: false,
+            source: "https://docs.conda.io/projects/conda/en/stable/commands/clean.html",
+        }),
         matchers: &[Matcher::SiblingSentinel {
             name: "pkgs",
             sibling: "conda-meta",
@@ -738,6 +1003,8 @@ pub const RULES: &[Rule] = &[
         source: "https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html",
         checked: CHECKED,
         caution: Some("Local History lives in the same folder and does not come back."),
+        class: Class::Check,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&["Library", "Caches", "JetBrains"])],
     },
     Rule {
@@ -750,6 +1017,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "You chose this set, and extensions installed from a VSIX file or withdrawn from the Marketplace do not come back.",
         ),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".vscode", "extensions"])],
     },
     Rule {
@@ -762,6 +1031,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "You chose which toolchains are installed, and rustup does not reinstall them on its own.",
         ),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".rustup", "toolchains"])],
     },
     Rule {
@@ -772,6 +1043,8 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/nvm-sh/nvm",
         checked: CHECKED,
         caution: Some(NODE_VERSIONS_CAUTION),
+        class: Class::Chosen,
+        clear: None,
         matchers: &[Matcher::PathSuffix(&[".nvm", "versions"])],
     },
     Rule {
@@ -782,7 +1055,13 @@ pub const RULES: &[Rule] = &[
         source: "https://github.com/Schniz/fnm/blob/master/src/directories.rs",
         checked: CHECKED,
         caution: Some(NODE_VERSIONS_CAUTION),
-        matchers: &[Matcher::PathSuffix(&["fnm", "node-versions"])],
+        class: Class::Chosen,
+        clear: None,
+        matchers: &[
+            Matcher::PathSuffix(&["Application Support", "fnm", "node-versions"]),
+            Matcher::PathSuffix(&[".local", "share", "fnm", "node-versions"]),
+            Matcher::PathSuffix(&[".fnm", "node-versions"]),
+        ],
     },
     Rule {
         key: "pub_cache",
@@ -794,7 +1073,13 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "It also holds the packages you activated globally, which pub does not bring back on its own.",
         ),
-        matchers: &[Matcher::PathSuffix(&[".pub-cache"])],
+        class: Class::Check,
+        clear: None,
+        matchers: &[Matcher::PathSuffixWith {
+            suffix: &[".pub-cache"],
+            child: "hosted",
+            kind: Kind::Dir,
+        }],
     },
     Rule {
         key: "cocoapods_pods",
@@ -806,6 +1091,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "CocoaPods recommends keeping Pods in source control, so this folder may be part of your repository.",
         ),
+        class: Class::Check,
+        clear: None,
         matchers: &[Matcher::SiblingSentinel {
             name: "Pods",
             sibling: "Podfile.lock",
@@ -820,10 +1107,11 @@ pub const RULES: &[Rule] = &[
         source: "https://getcomposer.org/doc/01-basic-usage.md",
         checked: CHECKED,
         caution: Some(COMMITTED_CAUTION),
-        matchers: &[Matcher::SiblingSentinel {
+        class: Class::Check,
+        clear: None,
+        matchers: &[Matcher::Children {
             name: "vendor",
-            sibling: "composer.json",
-            kind: Kind::File,
+            children: &[("autoload.php", Kind::File), ("composer", Kind::Dir)],
         }],
     },
     // Generic names, only beside the project file that explains them.
@@ -835,6 +1123,12 @@ pub const RULES: &[Rule] = &[
         source: "https://docs.flutter.dev/deployment/android",
         checked: CHECKED,
         caution: Some(GENERIC_CAUTION),
+        class: Class::Check,
+        clear: Some(Clear {
+            command: "flutter clean",
+            beside: true,
+            source: "https://docs.flutter.dev/reference/flutter-cli",
+        }),
         matchers: &[Matcher::SiblingSentinel {
             name: "build",
             sibling: "pubspec.yaml",
@@ -849,6 +1143,8 @@ pub const RULES: &[Rule] = &[
         source: "https://nextjs.org/docs/app/guides/static-exports",
         checked: CHECKED,
         caution: Some(GENERIC_CAUTION),
+        class: Class::Check,
+        clear: None,
         matchers: &[
             Matcher::SiblingSentinel {
                 name: "out",
@@ -875,6 +1171,8 @@ pub const RULES: &[Rule] = &[
         source: "https://vite.dev/config/build-options",
         checked: CHECKED,
         caution: Some(COMMITTED_CAUTION),
+        class: Class::Check,
+        clear: None,
         matchers: &[
             Matcher::SiblingSentinel {
                 name: "dist",
@@ -891,26 +1189,7 @@ pub const RULES: &[Rule] = &[
                 sibling: "vite.config.mjs",
                 kind: Kind::File,
             },
-            Matcher::SiblingSentinel {
-                name: "dist",
-                sibling: "package.json",
-                kind: Kind::File,
-            },
         ],
-    },
-    Rule {
-        key: "js_build",
-        label: "JavaScript build folders",
-        owner: "Create React App and others",
-        why: "npm run build creates a build directory with a production build of the app.",
-        source: "https://create-react-app.dev/docs/production-build/",
-        checked: CHECKED,
-        caution: Some(GENERIC_CAUTION),
-        matchers: &[Matcher::SiblingSentinel {
-            name: "build",
-            sibling: "package.json",
-            kind: Kind::File,
-        }],
     },
     Rule {
         key: "python_dist",
@@ -922,6 +1201,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "It holds the built packages you may be about to upload, and a repository can keep a hand-made dist beside its project file.",
         ),
+        class: Class::Check,
+        clear: None,
         matchers: &[
             Matcher::SiblingSentinel {
                 name: "dist",
@@ -939,17 +1220,31 @@ pub const RULES: &[Rule] = &[
         key: "cmake_build",
         label: "CMake build trees",
         owner: "CMake",
-        why: "CMake writes the build system and build output into this build tree and creates it again when you configure the project.",
+        why: "CMake writes the build system and build output into this build tree; configuring and building the project again writes them again.",
         source: "https://cmake.org/cmake/help/latest/manual/cmake.1.html",
         checked: CHECKED,
         caution: Some(
-            "You chose this folder's name, and its CMakeCache.txt keeps the options you configured, which a fresh configure does not bring back.",
+            "Its CMakeCache.txt keeps the options you configured, which a fresh configure does not bring back.",
         ),
-        matchers: &[Matcher::SiblingSentinel {
-            name: "build",
-            sibling: "CMakeLists.txt",
-            kind: Kind::File,
-        }],
+        class: Class::Check,
+        clear: None,
+        matchers: &[
+            Matcher::ChildSentinel {
+                name: "build",
+                child: "CMakeCache.txt",
+                kind: Kind::File,
+            },
+            Matcher::ChildSentinel {
+                name: "cmake-build-debug",
+                child: "CMakeCache.txt",
+                kind: Kind::File,
+            },
+            Matcher::ChildSentinel {
+                name: "cmake-build-release",
+                child: "CMakeCache.txt",
+                kind: Kind::File,
+            },
+        ],
     },
     // Any other folder its tool tagged as a cache. Last, so a named rule wins.
     Rule {
@@ -962,6 +1257,8 @@ pub const RULES: &[Rule] = &[
         caution: Some(
             "The tag is only a hint: it can be committed to a repository, and a program can put it on a folder its user chose.",
         ),
+        class: Class::Check,
+        clear: None,
         matchers: &[Matcher::AnyWithChild {
             child: "CACHEDIR.TAG",
             kind: Kind::File,
@@ -995,13 +1292,13 @@ pub struct Folder {
 }
 
 impl Matcher {
-    /// Lower ranks carry stronger evidence: a tool's project file, then a generic
-    /// output beside package.json, then the cache tag that accepts any folder name.
+    /// Lower ranks carry stronger evidence: something the tool keeps inside the
+    /// folder or a path only it uses, then a generic output name beside a project
+    /// file, then the cache tag that accepts any folder name.
     fn priority(&self) -> u8 {
         match self {
             Matcher::SiblingSentinel {
                 name: "build" | "dist" | "out",
-                sibling: "package.json",
                 ..
             } => 1,
             Matcher::AnyWithChild { .. } => 2,
@@ -1009,25 +1306,58 @@ impl Matcher {
         }
     }
 
+    /// Whether the matcher looks at the folder beside this one: a guess about a
+    /// project, which does not hold among installed files.
+    fn beside(&self) -> bool {
+        matches!(
+            self,
+            Matcher::SiblingSentinel { .. } | Matcher::SiblingUnless { .. }
+        )
+    }
+
     /// Whether the directory `id`, whose path ends in `path`, matches.
     fn matches(&self, tree: &Tree, id: NodeId, path: &[&str]) -> bool {
         let node = &tree.nodes[id as usize];
+        // The scan root's name is its whole path; the last name of the path is the
+        // folder's own in every case.
+        let own = path.last().copied().unwrap_or(&node.name);
         let has_child = |dir: NodeId, child: &str, kind: Kind| {
             tree.nodes[dir as usize].children.iter().any(|&c| {
                 let node = &tree.nodes[c as usize];
-                node.name == child && node.kind == kind
+                node.name == child
+                    && node.kind == kind
+                    && (child != "CACHEDIR.TAG" || node.size >= TAG_MIN)
             })
         };
+        let beside =
+            |sibling: &str, kind: Kind| node.parent.is_some_and(|p| has_child(p, sibling, kind));
         match *self {
             Matcher::ChildSentinel { name, child, kind } => {
-                node.name == name && has_child(id, child, kind)
+                own == name && has_child(id, child, kind)
+            }
+            Matcher::Children { name, children } => {
+                own == name
+                    && children
+                        .iter()
+                        .all(|&(child, kind)| has_child(id, child, kind))
             }
             Matcher::SiblingSentinel {
                 name,
                 sibling,
                 kind,
-            } => node.name == name && node.parent.is_some_and(|p| has_child(p, sibling, kind)),
+            } => own == name && beside(sibling, kind),
+            Matcher::SiblingUnless {
+                name,
+                sibling,
+                kind,
+                without,
+            } => own == name && beside(sibling, kind) && !has_child(id, without, Kind::Dir),
             Matcher::PathSuffix(suffix) => path.ends_with(suffix),
+            Matcher::PathSuffixWith {
+                suffix,
+                child,
+                kind,
+            } => path.ends_with(suffix) && has_child(id, child, kind),
             Matcher::AnyWithChild { child, kind } => has_child(id, child, kind),
         }
     }
@@ -1050,9 +1380,23 @@ pub(crate) fn path_names(tree: &Tree, id: NodeId) -> Vec<&str> {
     names
 }
 
+/// Whether a folder of this name holds installed files rather than a project's: the
+/// packages under a `node_modules` no rule took, or an application bundle.
+fn installed(name: &str) -> bool {
+    name == "node_modules" || bundle(name)
+}
+
+/// An application bundle. Its files are the application itself, never a cache or a
+/// build of the user's.
+fn bundle(name: &str) -> bool {
+    name.ends_with(".app")
+}
+
 /// The folders under `root` (`root` included) each rule matches, in [`RULES`] order.
 /// One walk; a matched folder is not descended into, so a nested match counts once,
-/// inside the outer one.
+/// inside the outer one. Application bundles are not looked into, and below a
+/// `node_modules` no rule took, where the files are installed packages, the rules
+/// that go by a neighbouring project file do not apply.
 fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
     let mut found: Vec<Vec<NodeId>> = RULES.iter().map(|_| Vec::new()).collect();
     // The names down to the node being looked at; depth-first order keeps its
@@ -1060,13 +1404,21 @@ fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
     // its parent.
     let mut path = path_names(tree, root);
     let base = path.len();
-    let mut stack = vec![(root, 0usize)];
-    while let Some((id, depth)) = stack.pop() {
+    if path.iter().any(|name| bundle(name)) {
+        return found;
+    }
+    // The root's own name aside: a scan of a `node_modules` is a scan of packages.
+    let among = path.iter().rev().skip(1).any(|name| installed(name));
+    let mut stack = vec![(root, 0usize, among)];
+    while let Some((id, depth, among)) = stack.pop() {
         let node = &tree.nodes[id as usize];
         if node.kind != Kind::Dir {
             continue;
         }
         if depth > 0 {
+            if bundle(&node.name) {
+                continue;
+            }
             path.truncate(base + depth - 1);
             path.push(&node.name);
         }
@@ -1075,7 +1427,10 @@ fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
         'rules: for (r, candidate) in RULES.iter().enumerate() {
             for matcher in candidate.matchers {
                 let rank = matcher.priority();
-                if rank < priority && matcher.matches(tree, id, &path) {
+                if rank < priority
+                    && !(among && matcher.beside())
+                    && matcher.matches(tree, id, &path)
+                {
                     rule = Some(r);
                     priority = rank;
                     if rank == 0 {
@@ -1086,16 +1441,24 @@ fn matched(tree: &Tree, root: NodeId) -> Vec<Vec<NodeId>> {
         }
         match rule {
             Some(r) => found[r].push(id),
-            None => stack.extend(node.children.iter().map(|&c| (c, depth + 1))),
+            None => {
+                let among = among || path.last().is_some_and(|name| installed(name));
+                stack.extend(node.children.iter().map(|&c| (c, depth + 1, among)));
+            }
         }
     }
     found
 }
 
-/// Every rebuildable folder under `root` (`root` included), whatever its rule; none
-/// lies inside another.
-pub fn folders(tree: &Tree, root: NodeId) -> Vec<NodeId> {
-    matched(tree, root).into_iter().flatten().collect()
+/// Every folder of `class` under `root` (`root` included); none lies inside another
+/// matched folder.
+pub fn folders(tree: &Tree, root: NodeId, class: Class) -> Vec<NodeId> {
+    RULES
+        .iter()
+        .zip(matched(tree, root))
+        .filter(|(rule, _)| rule.class == class)
+        .flat_map(|(_, folders)| folders)
+        .collect()
 }
 
 /// The rebuildable folders under `root` (`root` included), grouped by rule, groups
@@ -1265,6 +1628,25 @@ mod tests {
                 rule.key,
                 rule.source
             );
+            // A folder to check first says what to check.
+            assert!(
+                rule.class != Class::Check || rule.caution.is_some(),
+                "{}: check first, without a caution",
+                rule.key
+            );
+            if let Some(clear) = &rule.clear {
+                let lower = clear.command.to_lowercase();
+                assert!(!clear.command.trim().is_empty(), "{}", rule.key);
+                for word in ["safe", "delete", "remove", "rm -", "sudo"] {
+                    assert!(!lower.contains(word), "{}: {}", rule.key, clear.command);
+                }
+                assert!(
+                    clear.source.starts_with("https://"),
+                    "{}: {}",
+                    rule.key,
+                    clear.source
+                );
+            }
             let date: Vec<&str> = rule.checked.split('-').collect();
             assert!(
                 date.len() == 3
@@ -1306,43 +1688,198 @@ mod tests {
     #[test]
     fn any_with_child_matches_a_tagged_folder_of_any_name_after_named_rules() {
         let tree = build(&[
-            ("tool/data/CACHEDIR.TAG", 1),
+            ("tool/data/CACHEDIR.TAG", 43),
             ("tool/data/blob", 60),
-            ("rust/target/CACHEDIR.TAG", 1),
+            ("rust/target/CACHEDIR.TAG", 177),
+            ("rust/target/.rustc_info.json", 3),
             ("rust/target/debug/app", 9),
-            ("py/.mypy_cache/CACHEDIR.TAG", 1),
+            ("py/.mypy_cache/CACHEDIR.TAG", 43),
             ("py/.mypy_cache/3.12/x.json", 4),
             ("py/.ruff_cache/x", 2),
-            (".cache/huggingface/hub/CACHEDIR.TAG", 1),
+            (".cache/huggingface/hub/CACHEDIR.TAG", 43),
             (".cache/huggingface/hub/models--m/blob", 30),
-            ("plain/CACHEDIR.TAG.bak", 5),
+            ("plain/CACHEDIR.TAG.bak", 50),
         ]);
         let found = summary(&tree, 0, Mode::Logical);
         assert_eq!(
             found,
             vec![
-                ("cache_tag", 61, vec!["/scan/home/tool/data".to_string()]),
+                (
+                    "cargo_target",
+                    189,
+                    vec!["/scan/home/rust/target".to_string()]
+                ),
+                ("cache_tag", 103, vec!["/scan/home/tool/data".to_string()]),
                 (
                     "huggingface_hub",
-                    31,
+                    73,
                     vec!["/scan/home/.cache/huggingface/hub".to_string()]
                 ),
                 (
-                    "cargo_target",
-                    10,
-                    vec!["/scan/home/rust/target".to_string()]
-                ),
-                (
                     "mypy_cache",
-                    5,
+                    47,
                     vec!["/scan/home/py/.mypy_cache".to_string()]
                 ),
             ]
         );
         let groups = groups(&tree, 0, Mode::Logical);
-        assert!(groups[0].rule.caution.is_some());
+        assert_eq!(
+            groups.iter().map(|g| g.rule.class).collect::<Vec<_>>(),
+            [Class::Remade, Class::Check, Class::Chosen, Class::Remade]
+        );
+        assert!(groups[0].rule.caution.is_none());
         assert!(groups[1].rule.caution.is_some());
-        assert!(groups[2].rule.caution.is_none());
+    }
+
+    /// The convention's signature is 43 bytes, so a shorter file is no tag; and a tag
+    /// says "a cache", not whose: a `target` without Cargo's own record is not Cargo's.
+    #[test]
+    fn a_tag_needs_its_length_and_cargo_needs_its_own_record() {
+        let tree = build(&[
+            ("sample/data/CACHEDIR.TAG", 0),
+            ("sample/data/blob", 60),
+            ("short/target/CACHEDIR.TAG", 42),
+            ("short/target/out", 7),
+            ("other/target/CACHEDIR.TAG", 43),
+            ("other/target/out", 5),
+        ]);
+        assert_eq!(
+            summary(&tree, 0, Mode::Logical),
+            vec![("cache_tag", 48, vec!["/scan/home/other/target".to_string()])]
+        );
+    }
+
+    /// Installed files are not a project: no rule goes by a neighbouring project file
+    /// below a `node_modules` no rule took, and an application bundle is not looked
+    /// into at all.
+    #[test]
+    fn installed_packages_and_application_bundles_are_not_projects() {
+        let tree = build(&[
+            // A package's own files, installed globally: its dist is the package.
+            ("lib/node_modules/tool/package.json", 1),
+            ("lib/node_modules/tool/vite.config.js", 1),
+            ("lib/node_modules/tool/dist/index.js", 50),
+            ("lib/node_modules/tool/node_modules/dep/index.js", 20),
+            // An application's bundled code.
+            (
+                "Applications/Editor.app/Contents/Resources/app/package.json",
+                1,
+            ),
+            (
+                "Applications/Editor.app/Contents/Resources/app/node_modules/x/y.js",
+                30,
+            ),
+            (
+                "Applications/Editor.app/Contents/Resources/__pycache__/m.pyc",
+                4,
+            ),
+            // A project beside them still counts.
+            ("site/package.json", 1),
+            ("site/vite.config.js", 1),
+            ("site/dist/app.js", 9),
+            ("site/node_modules/x/dist/y.js", 6),
+        ]);
+        assert_eq!(
+            summary(&tree, 0, Mode::Logical),
+            vec![
+                ("js_dist", 9, vec!["/scan/home/site/dist".to_string()]),
+                (
+                    "node_modules",
+                    6,
+                    vec!["/scan/home/site/node_modules".to_string()]
+                ),
+            ]
+        );
+        // A scan that starts among installed packages, or inside a bundle.
+        let tool = id(&tree, "lib/node_modules/tool");
+        assert_eq!(summary(&tree, tool, Mode::Logical), vec![]);
+        let app = id(&tree, "Applications/Editor.app/Contents/Resources");
+        assert_eq!(summary(&tree, app, Mode::Logical), vec![]);
+    }
+
+    /// Gradle's own home is called `.gradle` like a project's cache, and holds the
+    /// user's settings: with a build file in the home folder it is still not one
+    /// project cache, and its caches are found one by one.
+    #[test]
+    fn the_gradle_home_is_not_a_project_cache() {
+        let tree = build(&[
+            ("build.gradle", 1),
+            (".gradle/gradle.properties", 2),
+            (".gradle/init.d/init.gradle", 3),
+            (".gradle/caches/modules-2/files/a.jar", 40),
+            (".gradle/wrapper/dists/gradle-8/x.zip", 30),
+            ("app/settings.gradle.kts", 1),
+            ("app/.gradle/8.5/fileHashes/a.bin", 12),
+        ]);
+        assert_eq!(
+            summary(&tree, 0, Mode::Logical),
+            vec![
+                (
+                    "gradle_caches",
+                    40,
+                    vec!["/scan/home/.gradle/caches".to_string()]
+                ),
+                (
+                    "gradle_downloads",
+                    30,
+                    vec!["/scan/home/.gradle/wrapper/dists".to_string()]
+                ),
+                (
+                    "gradle_project",
+                    12,
+                    vec!["/scan/home/app/.gradle".to_string()]
+                ),
+            ]
+        );
+    }
+
+    /// A scan can start at the folder a rule names: the root's name is its whole
+    /// path, and its last part is what the rule goes by.
+    #[test]
+    fn a_scan_root_matches_by_its_own_name() {
+        let mut venv = build(&[("pyvenv.cfg", 1), ("lib/x.py", 10)]);
+        venv.nodes[0].name = "/Users/me/proj/.venv".into();
+        assert_eq!(groups(&venv, 0, Mode::Logical)[0].rule.key, "python_venv");
+        let mut target = build(&[
+            ("CACHEDIR.TAG", 177),
+            (".rustc_info.json", 3),
+            ("debug/app", 9),
+        ]);
+        target.nodes[0].name = "/Users/me/proj/target".into();
+        assert_eq!(
+            groups(&target, 0, Mode::Logical)[0].rule.key,
+            "cargo_target"
+        );
+    }
+
+    /// Short paths need something of the tool inside them.
+    #[test]
+    fn short_paths_need_the_tools_own_folder_inside() {
+        let tree = build(&[
+            ("go/pkg/mod/cache/download/x", 8),
+            ("proj/testdata/go/pkg/mod/readme", 5),
+            (".pub-cache/hosted/pub.dev/x", 6),
+            ("proj/.pub-cache/notes", 4),
+            (
+                "Library/Application Support/fnm/node-versions/v22/bin/node",
+                9,
+            ),
+            ("proj/fnm/node-versions/list.txt", 3),
+        ]);
+        let mut found = summary(&tree, 0, Mode::Logical);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "fnm_versions",
+                    9,
+                    vec!["/scan/home/Library/Application Support/fnm/node-versions".to_string()]
+                ),
+                ("go_modules", 8, vec!["/scan/home/go/pkg/mod".to_string()]),
+                ("pub_cache", 6, vec!["/scan/home/.pub-cache".to_string()]),
+            ]
+        );
     }
 
     #[test]
@@ -1352,8 +1889,13 @@ mod tests {
             ("bare/build/a.o", 5),
             ("bare/out/x", 7),
             ("web/package.json", 1),
+            ("web/vite.config.ts", 1),
             ("web/dist/app.js", 11),
             ("web/.next/server/page.js", 13),
+            // A package.json alone says nothing about a dist or a build beside it.
+            ("pkg/package.json", 1),
+            ("pkg/dist/index.js", 31),
+            ("pkg/build/pdf.mjs", 37),
             ("lib/pyproject.toml", 1),
             ("lib/dist/lib.whl", 17),
             ("android/build.gradle.kts", 1),
@@ -1413,10 +1955,7 @@ mod tests {
                     continue;
                 }
                 let expected = match (left, right) {
-                    ("gradle_build", "flutter_build" | "js_build" | "cmake_build") => left,
-                    ("flutter_build", "js_build" | "cmake_build") => left,
-                    ("js_build", "cmake_build") => right,
-                    ("js_dist", "python_dist") if sentinel == "package.json" => right,
+                    ("gradle_build", "flutter_build") => left,
                     ("js_dist", "python_dist") => left,
                     pair => panic!("unreviewed output overlap: {pair:?}"),
                 };
@@ -1445,13 +1984,29 @@ mod tests {
                         sibling,
                         kind,
                     } => (name.to_string(), sibling.to_string(), *kind),
+                    Matcher::SiblingUnless {
+                        name,
+                        sibling,
+                        kind,
+                        ..
+                    } => (name.to_string(), sibling.to_string(), *kind),
                     Matcher::AnyWithChild { child, kind } => {
                         ("data".to_string(), format!("data/{child}"), *kind)
                     }
-                    Matcher::PathSuffix(_) => continue,
+                    Matcher::PathSuffixWith {
+                        suffix,
+                        child,
+                        kind,
+                    } => {
+                        let folder = suffix.join("/");
+                        let sentinel = format!("{folder}/{child}");
+                        (folder, sentinel, *kind)
+                    }
+                    // Several children at once: `children_need_every_child` below.
+                    Matcher::Children { .. } | Matcher::PathSuffix(_) => continue,
                 };
                 let directory = format!("{folder}/");
-                let mut tree = build(&[(&directory, 0), (&sentinel, 1)]);
+                let mut tree = build(&[(&directory, 0), (&sentinel, 43)]);
                 let folder_id = id(&tree, &folder);
                 let sentinel_id = id(&tree, &sentinel);
                 for kind in [Kind::File, Kind::Dir, Kind::Symlink, Kind::Other] {
@@ -1460,6 +2015,41 @@ mod tests {
                         matcher.matches(&tree, folder_id, &path_names(&tree, folder_id)),
                         kind == expected,
                         "{}: {sentinel} as {kind:?}",
+                        rule.key
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn children_need_every_child() {
+        for rule in RULES {
+            for matcher in rule.matchers {
+                let Matcher::Children { name, children } = matcher else {
+                    continue;
+                };
+                assert!(
+                    children.len() > 1,
+                    "{}: one child is a ChildSentinel",
+                    rule.key
+                );
+                for missing in 0..=children.len() {
+                    let mut entries = vec![(format!("{name}/"), 0)];
+                    for (i, (child, kind)) in children.iter().enumerate() {
+                        if i != missing {
+                            let slash = if *kind == Kind::Dir { "/" } else { "" };
+                            entries.push((format!("{name}/{child}{slash}"), 43));
+                        }
+                    }
+                    let entries: Vec<(&str, u64)> =
+                        entries.iter().map(|(p, n)| (p.as_str(), *n)).collect();
+                    let tree = build(&entries);
+                    let folder = id(&tree, name);
+                    assert_eq!(
+                        matcher.matches(&tree, folder, &path_names(&tree, folder)),
+                        missing == children.len(),
+                        "{}: without child {missing}",
                         rule.key
                     );
                 }
@@ -1492,7 +2082,8 @@ mod tests {
     #[test]
     fn child_sentinel_needs_the_child() {
         let tree = build(&[
-            ("rust/target/CACHEDIR.TAG", 1),
+            ("rust/target/CACHEDIR.TAG", 177),
+            ("rust/target/.rustc_info.json", 3),
             ("rust/target/debug/app", 100),
             ("work/target/real.dat", 50),
             ("py/.venv/pyvenv.cfg", 1),
@@ -1505,7 +2096,7 @@ mod tests {
             vec![
                 (
                     "cargo_target",
-                    101,
+                    280,
                     vec!["/scan/home/rust/target".to_string()]
                 ),
                 (
@@ -1589,6 +2180,7 @@ mod tests {
         assert_eq!(found[0].rule.key, "go_modules");
         assert_eq!(found[0].folders[0].id, 1);
         // The scan root itself can match.
+        let mut go = build(&[("cache/x", 4)]);
         go.nodes[0].name = "/Users/me/go/pkg/mod".into();
         let found = groups(&go, 0, Mode::Logical);
         assert_eq!(found[0].folders[0].id, 0);
@@ -1604,7 +2196,8 @@ mod tests {
                 ]
             })
             .collect();
-        entries.push(("rust/target/CACHEDIR.TAG".into(), 0));
+        // A second, empty group: a virtual environment with nothing but its marker.
+        entries.push(("py/.venv/pyvenv.cfg".into(), 0));
         let refs: Vec<(&str, u64)> = entries.iter().map(|(p, n)| (p.as_str(), *n)).collect();
         let tree = build(&refs);
         let all = groups(&tree, 0, Mode::Logical);
@@ -1615,7 +2208,7 @@ mod tests {
         assert!(all[0].folders.windows(2).all(|w| w[0].bytes >= w[1].bytes));
         let n = (MAX_FOLDERS + 3) as u64;
         assert_eq!(all[0].bytes, n * (n + 1) / 2);
-        assert_eq!(all[1].rule.key, "cargo_target");
+        assert_eq!(all[1].rule.key, "python_venv");
         assert_eq!(all[1].bytes, 0);
 
         let physical = groups(&tree, 0, Mode::Physical);

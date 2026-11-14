@@ -17,7 +17,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 /// Logical bytes under each matched folder.
 const NODE_MODULES: u64 = 200_001;
-const CARGO_TARGET: u64 = 300_003 + 177;
+const CARGO_TARGET: u64 = 300_003 + 177 + 19;
 const VENV: u64 = 50_005 + 41;
 const DERIVED_DATA: u64 = 100_007;
 const DOCKER: u64 = 120_011;
@@ -26,7 +26,8 @@ const NEXT_BUILD: u64 = 10_009;
 
 /// Project folders in the system temp folder, removed on drop:
 /// - `proj/package.json` and `proj/node_modules/a/node_modules/b/big` (nested, once);
-/// - `rust/target/CACHEDIR.TAG` and `rust/target/debug/app`;
+/// - `rust/target/CACHEDIR.TAG`, `rust/target/.rustc_info.json` and
+///   `rust/target/debug/app`;
 /// - `py/.venv/pyvenv.cfg` and `py/.venv/lib/site.py`;
 /// - `Library/Developer/Xcode/DerivedData/App-x/Build/obj`;
 /// - `Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw` (cautioned);
@@ -53,6 +54,7 @@ impl Projects {
         projects.write("proj/package.json", 30);
         projects.write("proj/node_modules/a/node_modules/b/big", NODE_MODULES);
         projects.write("rust/target/CACHEDIR.TAG", 177);
+        projects.write("rust/target/.rustc_info.json", 19);
         projects.write("rust/target/debug/app", 300_003);
         projects.write("py/.venv/pyvenv.cfg", 41);
         projects.write("py/.venv/lib/site.py", 50_005);
@@ -218,7 +220,10 @@ fn groups_each_kind_and_skips_the_decoys() {
         }
         assert!(group["source"].as_str().unwrap().starts_with("https://"));
         let key = group["key"].as_str().unwrap();
-        if ["docker_disk", "cache_tag"].contains(&key) {
+        // The folders to check first, and the two that come back only from what the
+        // project lists, say so; build output and caches need no caution.
+        let cautioned = ["docker_disk", "cache_tag", "node_modules", "python_venv"];
+        if cautioned.contains(&key) {
             assert!(
                 group["caution"].as_str().is_some_and(|c| !c.is_empty()),
                 "{group}"
@@ -226,6 +231,8 @@ fn groups_each_kind_and_skips_the_decoys() {
         } else {
             assert!(group["caution"].is_null(), "{group}");
         }
+        let check = ["docker_disk", "cache_tag"].contains(&key);
+        assert_eq!(group["class"], if check { "check" } else { "remade" });
         assert_eq!(group["more"], 0);
         let folder = &group["folders"][0];
         assert_eq!(folder["bytes"], group["bytes"]);
@@ -293,6 +300,10 @@ fn output_rules_keep_the_specific_owner_and_cautions_in_json() {
             projects.write(&format!("{project}/{marker}"), 1);
         }
         projects.write(&format!("{project}/{output}/artifact"), 100);
+        // CMake's build tree is known by the cache file CMake keeps in it.
+        if project == "cpp" {
+            projects.write(&format!("{project}/{output}/CMakeCache.txt"), 50);
+        }
     }
     let server = start_done(&projects);
     let json = rebuildable(&server, "");
@@ -385,7 +396,23 @@ fn root_narrows_and_mode_changes_the_bytes() {
         )]
     );
     assert_eq!(json["total"], NODE_MODULES);
-    assert!(json["groups"][0]["caution"].is_null(), "{json}");
+    let group = &json["groups"][0];
+    assert_eq!(group["class"], "remade", "{json}");
+    assert!(group["caution"].as_str().unwrap().contains("package.json"));
+    assert!(group["clear"].is_null(), "{json}");
+    assert!(group["folders"][0]["mtime"].as_i64().unwrap() > 0, "{json}");
+    // Cargo documents its own command for its folder, run in the project.
+    let rust = child_id(&server, 0, "rust");
+    let cargo = &rebuildable(&server, &format!("?root={rust}"))["groups"][0];
+    assert_eq!(cargo["key"], "cargo_target");
+    assert_eq!(
+        cargo["clear"],
+        serde_json::json!({
+            "command": "cargo clean",
+            "beside": true,
+            "source": "https://doc.rust-lang.org/cargo/commands/cargo-clean.html",
+        })
+    );
     let work = child_id(&server, 0, "work");
     let json = rebuildable(&server, &format!("?root={work}"));
     assert_eq!(json["groups"].as_array().unwrap().len(), 0);
@@ -550,15 +577,31 @@ fn a_kind_shows_its_side_of_a_mixed_tree() {
     );
     let (_, extensions) = get_json(&server, "/api/extensions?mode=physical&kind=rebuildable");
     assert_eq!(extensions["total"], bytes("rebuildable"));
-    // The Rebuildable tab is all of one kind and none of the other.
+    // The Rebuildable kind is what a tool makes again. The tab shows those groups
+    // under it, and under the other kind the folders to check first, which keep the
+    // kind their place gives them.
+    let classes = |json: &Value| -> Vec<(String, String)> {
+        let groups = json["groups"].as_array().unwrap();
+        let mut classes: Vec<(String, String)> = groups
+            .iter()
+            .map(|g| {
+                let text = |field: &str| g[field].as_str().unwrap().to_string();
+                (text("class"), text("key"))
+            })
+            .collect();
+        classes.sort();
+        classes
+    };
+    let remade = rebuildable(&server, "?kind=rebuildable&mode=physical");
+    assert_eq!(remade["total"], bytes("rebuildable"));
+    assert!(classes(&remade).iter().all(|(class, _)| class == "remade"));
+    assert_eq!(classes(&remade).len(), 5);
+    let pair = |class: &str, key: &str| (class.to_string(), key.to_string());
     assert_eq!(
-        rebuildable(&server, "?kind=rebuildable"),
-        rebuildable(&server, "")
+        classes(&rebuildable(&server, &format!("?kind={rest}"))),
+        [pair("check", "cache_tag"), pair("check", "docker_disk")]
     );
-    assert_eq!(
-        rebuildable(&server, &format!("?kind={rest}")),
-        serde_json::json!({ "total": 0, "groups": [] })
-    );
+    assert_eq!(classes(&rebuildable(&server, "")).len(), 7);
 }
 
 /// Times `groups` on a real home folder, or a fixture at HOARDMAP_TIMING_ROOT.
@@ -588,8 +631,11 @@ fn groups_on_the_home_folder() {
     );
     for g in &groups {
         println!(
-            "  {:<20} {:>14} bytes {:>6} folders",
-            g.rule.key, g.bytes, g.count
+            "  {:<7} {:<20} {:>14} bytes {:>6} folders",
+            g.rule.class.key(),
+            g.rule.key,
+            g.bytes,
+            g.count
         );
     }
 }
