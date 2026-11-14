@@ -120,17 +120,18 @@ nav a.mini:hover { text-decoration: none; filter: brightness(1.1); }
 }
 .tip {
   position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none;
-  max-width: min(420px, 80vw); padding: 7px 12px; border-radius: 10px;
+  max-width: min(520px, 86vw); padding: 7px 12px; border-radius: 10px;
   font: 600 13px/1.35 ui-monospace, "SF Mono", Menlo, monospace; color: #fff;
   background: rgba(10, 11, 30, 0.82); border: 1px solid rgba(255, 255, 255, 0.16);
   -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; white-space: nowrap;
   opacity: 0; transition: opacity 0.15s ease;
 }
 .tip.on { opacity: 1; }
-.tip i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 8px; vertical-align: 0; }
-.tip b { font-weight: 600; color: rgba(255, 255, 255, 0.62); margin-left: 10px; }
+.tip i { flex: none; width: 9px; height: 9px; border-radius: 3px; margin-right: 8px; }
+.tip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tip b { flex: none; font-weight: 600; color: rgba(255, 255, 255, 0.62); margin-left: 10px; }
 .hero-copy {
   position: absolute; inset: 52px 0 0 0; z-index: 2;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -887,7 +888,7 @@ for (const button of document.querySelectorAll(".switch button")) {
     let cy = H / 2 + Math.cos(drift / 6.3) * H * 0.012;
     if (dive > 0 && disk.target) {
       const t = disk.target, e = dive * dive * (3 - 2 * dive);
-      const zoom = Math.min(Math.max(W / t.w, H / t.h) * 1.15, 14);
+      const zoom = Math.min(Math.max(W / t.w, H / t.h) * 1.1, 5);
       s += (zoom - s) * e * e;
       cx += (t.x + t.w / 2 - cx) * e;
       cy += (t.y + t.h / 2 - cy) * e;
@@ -896,7 +897,7 @@ for (const button of document.querySelectorAll(".switch button")) {
   }
 
   let focus = 0; // 0 behind the veil, 1 in focus: folder names show as the map sharpens
-  function draw(disk, cam, alpha, k, now) {
+  function draw(disk, cam, alpha, k, now, names = 1) {
     ctx.setTransform(ratio * cam.s, 0, 0, ratio * cam.s, ratio * cam.ox, ratio * cam.oy);
     for (const leaf of disk.leaves) {
       if (!leaf.placed) continue;
@@ -916,30 +917,35 @@ for (const button of document.querySelectorAll(".switch button")) {
         ctx.fillRect(leaf.x + gap, leaf.y + gap, leaf.w - 2 * gap, leaf.h - 2 * gap);
       }
     }
-    if (focus > 0.02) {
-      ctx.font = "600 13px -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif";
-      ctx.textBaseline = "top";
-      for (const folder of disk.folders) {
-        if (!folder.placed) continue;
-        folder.x += (folder.tx - folder.x) * k;
-        folder.y += (folder.ty - folder.y) * k;
-        folder.w += (folder.tw - folder.w) * k;
-        folder.h += (folder.th - folder.h) * k;
-        if (folder.w < 90 || folder.h < 34) continue;
-        const width = ctx.measureText(folder.name).width + 14;
-        // Below the page's top bar, where the folder reaches that far down.
-        const top = Math.max(folder.y + 7, (60 - cam.oy) / cam.s);
-        if (top + 26 > folder.y + folder.h) continue;
-        ctx.globalAlpha = alpha * focus * 0.78;
-        ctx.fillStyle = "#0a0b1e";
-        ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(folder.x + 7, top, width, 22, 7);
-        else ctx.rect(folder.x + 7, top, width, 22);
-        ctx.fill();
-        ctx.globalAlpha = alpha * focus;
-        ctx.fillStyle = "#fff";
-        ctx.fillText(folder.name, folder.x + 14, top + 5);
-      }
+    // Folder names, at one size whatever the zoom, once the map is in focus.
+    const show = focus * names * alpha;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.font = "600 13px -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif";
+    ctx.textBaseline = "top";
+    for (const folder of disk.folders) {
+      if (!folder.placed) continue;
+      folder.x += (folder.tx - folder.x) * k;
+      folder.y += (folder.ty - folder.y) * k;
+      folder.w += (folder.tw - folder.w) * k;
+      folder.h += (folder.th - folder.h) * k;
+      if (show < 0.02) continue;
+      const x = cam.ox + folder.x * cam.s, y = cam.oy + folder.y * cam.s;
+      const w = folder.w * cam.s, h = folder.h * cam.s;
+      if (w < 96 || h < 36) continue;
+      const width = ctx.measureText(folder.name).width + 14;
+      // Below the page's top bar, where the folder reaches that far down.
+      const top = Math.max(y + 7, 60);
+      const left = Math.max(x + 7, 8);
+      if (top + 26 > y + h || left + width + 6 > x + w) continue;
+      ctx.globalAlpha = show * 0.78;
+      ctx.fillStyle = "#0a0b1e";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(left, top, width, 22, 7);
+      else ctx.rect(left, top, width, 22);
+      ctx.fill();
+      ctx.globalAlpha = show;
+      ctx.fillStyle = "#fff";
+      ctx.fillText(folder.name, left + 7, top + 5);
     }
     ctx.globalAlpha = 1;
   }
@@ -958,7 +964,7 @@ for (const button of document.querySelectorAll(".switch button")) {
     disk.q = clamp(t / SCAN);
     const dive = clamp((t - SCAN - HOLD) / DIVE);
     // The next disk starts scanning under the dive, so the screen is never empty.
-    if (dive > 0.45 && !next) next = makeDisk(++seed);
+    if (dive > 0.25 && !next) next = makeDisk(++seed);
     if (next && !next.began) next.began = now;
     if (next) next.q = clamp((now - next.began) / 1000 / SCAN);
 
@@ -977,7 +983,7 @@ for (const button of document.querySelectorAll(".switch button")) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (next) draw(next, camera(next, now, 0), 1, k, now);
     view = camera(disk, now, dive);
-    draw(disk, view, 1 - smooth((dive - 0.5) / 0.5), k, now);
+    draw(disk, view, 1 - smooth((dive - 0.3) / 0.6), k, now, 1 - smooth(dive / 0.3));
 
     if (now - hudAt > 90) {
       hudAt = now;
@@ -1061,7 +1067,9 @@ for (const button of document.querySelectorAll(".switch button")) {
       dot.style.background = KINDS[leaf.kind][0];
       const bytes = document.createElement("b");
       bytes.textContent = size(leaf.v);
-      tip.replaceChildren(dot, `${leaf.folder}/${leaf.name}`, bytes);
+      const path = document.createElement("span");
+      path.textContent = `${leaf.folder}/${leaf.name}`;
+      tip.replaceChildren(dot, path, bytes);
       const x = Math.min(pointer.x + 18, W - tip.offsetWidth - 12);
       const y = pointer.y + 22 + tip.offsetHeight > H - 70 ? pointer.y - tip.offsetHeight - 14 : pointer.y + 22;
       tip.style.transform = `translate(${Math.max(12, x)}px, ${y}px)`;
