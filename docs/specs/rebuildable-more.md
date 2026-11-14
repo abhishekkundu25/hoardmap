@@ -1,5 +1,10 @@
 # More Rebuildable rules, caution labels and the cache tag
 
+> `rebuildable-classes.md` came after this: rules now have a class, precedence goes by
+> the strength of the evidence before table order, `package.json` alone no longer
+> explains a `build` or `dist`, and the counts of rules and cautions here are of their
+> time.
+
 Source: [docs/research/rebuildable-folders.md](../research/rebuildable-folders.md).
 Builds on [true-cost-rebuildable.md](true-cost-rebuildable.md).
 

@@ -186,7 +186,9 @@ fn claims(tree: &Tree) -> HashMap<NodeId, Category> {
         }
     }
     claims.insert(ROOT, base.map_or(Other, |(_, category)| category));
-    for id in rebuildable::folders(tree, ROOT) {
+    // Only what its tool makes again: a collection the user chose, or a folder to
+    // check first, stays the kind its place gives it.
+    for id in rebuildable::folders(tree, ROOT, rebuildable::Class::Remade) {
         claims.insert(id, Rebuildable);
     }
     claims
@@ -743,12 +745,12 @@ mod tests {
                 shared: Shared::None,
             })
             .collect();
-        // The deepest folder is a cache: it holds the tag file and one other.
+        // The deepest folder is Python's bytecode folder, with two files.
         let last = depth as NodeId;
         for (name, kind, len) in [
-            ("cache", Kind::Dir, 7),
-            ("CACHEDIR.TAG", Kind::File, 3),
-            ("blob", Kind::File, 4),
+            ("__pycache__", Kind::Dir, 7),
+            ("a.pyc", Kind::File, 3),
+            ("b.pyc", Kind::File, 4),
         ] {
             nodes.push(Node {
                 name: name.into(),

@@ -421,7 +421,14 @@ fn rebuildable(app: &App, query: &Query) -> Response {
             let folders: Vec<Value> = g
                 .folders
                 .iter()
-                .map(|f| json!({ "id": f.id, "path": lossy(&tree.path(f.id)), "bytes": f.bytes }))
+                .map(|f| {
+                    json!({
+                        "id": f.id,
+                        "path": lossy(&tree.path(f.id)),
+                        "bytes": f.bytes,
+                        "mtime": tree.nodes[f.id as usize].mtime,
+                    })
+                })
                 .collect();
             json!({
                 "key": g.rule.key,
@@ -430,6 +437,14 @@ fn rebuildable(app: &App, query: &Query) -> Response {
                 "why": g.rule.why,
                 "source": g.rule.source,
                 "caution": g.rule.caution,
+                "class": g.rule.class.key(),
+                "clear": g.rule.clear.as_ref().map(|clear| {
+                    json!({
+                        "command": clear.command,
+                        "beside": clear.beside,
+                        "source": clear.source,
+                    })
+                }),
                 "bytes": g.bytes,
                 "count": g.count,
                 "folders": folders,
