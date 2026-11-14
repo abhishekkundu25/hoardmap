@@ -76,43 +76,136 @@ nav a.mini {
 }
 nav a.mini:hover { text-decoration: none; filter: brightness(1.1); }
 
-/* Hero */
-.hero {
-  position: relative;
-  color: #fff;
+/* Hero: the scan that never ends. A treemap fills the stage and keeps scanning a
+   made-up disk; a veil blurs it behind the words, a lens under the pointer clears the
+   blur, and scrolling brings the whole map into focus. Without scripts the stage is
+   the gradient below and everything still reads. */
+.hero { position: relative; height: 240vh; margin-top: -52px; color: #fff; background: var(--hero-b); }
+.scene {
+  position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden; isolation: isolate;
   background:
     radial-gradient(60% 50% at 50% 0%, rgba(255, 184, 74, 0.22), transparent 70%),
     radial-gradient(50% 60% at 85% 40%, rgba(124, 77, 234, 0.35), transparent 70%),
     radial-gradient(50% 60% at 10% 60%, rgba(47, 111, 240, 0.30), transparent 70%),
     linear-gradient(180deg, var(--hero-a), var(--hero-b));
-  padding: 72px 0 0;
-  overflow: hidden;
-  text-align: center;
+  --blur: 28; --lens: 0; --mx: 50%; --my: 50%; --copy: 1; --lift: 0; --shade: 1; --reveal: 0;
 }
-.hero::after {
-  content: ""; position: absolute; inset: auto 0 0 0; height: 160px;
-  background: linear-gradient(180deg, transparent, var(--bg));
-  pointer-events: none;
+#scan { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* As the scene leaves, its foot darkens into the section below. */
+.scene::after {
+  content: ""; position: absolute; inset: auto 0 0 0; height: 46%; z-index: 1; pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--hero-b)); opacity: var(--out, 0);
 }
+.veil, .shade, .lens-ring { position: absolute; pointer-events: none; }
+.veil {
+  inset: 0;
+  -webkit-backdrop-filter: blur(calc(var(--blur) * 1px)) saturate(1.35);
+  backdrop-filter: blur(calc(var(--blur) * 1px)) saturate(1.35);
+  -webkit-mask-image: radial-gradient(circle calc(var(--lens) * 1px) at var(--mx) var(--my), transparent 0, transparent 60%, #000 100%);
+  mask-image: radial-gradient(circle calc(var(--lens) * 1px) at var(--mx) var(--my), transparent 0, transparent 60%, #000 100%);
+}
+.scene.sharp .veil, .scene.sharp .lens-ring { display: none; }
+.shade {
+  inset: 0; opacity: var(--shade);
+  background:
+    radial-gradient(62% 58% at 50% 46%, rgba(7, 8, 23, 0.78), rgba(7, 8, 23, 0.32) 62%, transparent 82%),
+    linear-gradient(180deg, rgba(7, 8, 23, 0.62), rgba(7, 8, 23, 0.12) 28%, rgba(7, 8, 23, 0.18) 68%, rgba(7, 8, 23, 0.8));
+}
+.lens-ring {
+  left: var(--mx); top: var(--my);
+  width: calc(var(--lens) * 1.2px); height: calc(var(--lens) * 1.2px);
+  margin: calc(var(--lens) * -0.6px) 0 0 calc(var(--lens) * -0.6px);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.34), inset 0 0 44px rgba(255, 255, 255, 0.12), 0 24px 70px rgba(0, 0, 0, 0.4);
+}
+.tip {
+  position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none;
+  max-width: min(520px, 86vw); padding: 7px 12px; border-radius: 10px;
+  font: 600 13px/1.35 ui-monospace, "SF Mono", Menlo, monospace; color: #fff;
+  background: rgba(10, 11, 30, 0.82); border: 1px solid rgba(255, 255, 255, 0.16);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; white-space: nowrap;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.tip.on { opacity: 1; }
+.tip i { flex: none; width: 9px; height: 9px; border-radius: 3px; margin-right: 8px; }
+.tip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tip b { flex: none; font-weight: 600; color: rgba(255, 255, 255, 0.62); margin-left: 10px; }
+.hero-copy {
+  position: absolute; inset: 52px 0 0 0; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 0 16px 11vh;
+  opacity: var(--copy); transform: translateY(calc(var(--lift) * -1px));
+}
+.scene.reading .hero-copy { visibility: hidden; }
 .hero .icon {
-  width: 168px; height: 168px; margin: 0 auto 28px;
-  filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.45)) drop-shadow(0 0 60px rgba(255, 196, 80, 0.25));
+  width: clamp(72px, 13vh, 124px); height: clamp(72px, 13vh, 124px); margin: 0 auto clamp(12px, 2.4vh, 24px);
+  filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 60px rgba(255, 196, 80, 0.3));
   animation: float 6s ease-in-out infinite;
 }
 @keyframes float { 50% { transform: translateY(-8px) rotate(-1deg); } }
 .hero h1 {
   margin: 0 auto; max-width: 15ch;
-  font-size: clamp(42px, 7vw, 80px); line-height: 1.04; letter-spacing: -0.035em; font-weight: 700;
+  font-size: clamp(40px, min(7vw, 10.5vh), 84px); line-height: 1.03; letter-spacing: -0.035em; font-weight: 700;
+  text-shadow: 0 2px 30px rgba(7, 8, 23, 0.6);
 }
 .hero h1 .shine {
   background: linear-gradient(100deg, #fff1a8 0%, #ffd23f 35%, #ff9a5a 65%, #ff6f91 100%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .hero p.lede {
-  margin: 22px auto 0; max-width: 34em;
-  font-size: clamp(18px, 2.2vw, 22px); line-height: 1.45; color: rgba(255, 255, 255, 0.78);
+  margin: clamp(12px, 2.2vh, 22px) auto 0; max-width: 33em;
+  font-size: clamp(17px, 2.1vw, 21px); line-height: 1.45; color: rgba(255, 255, 255, 0.84);
+  text-shadow: 0 1px 18px rgba(7, 8, 23, 0.7);
 }
-.cta { margin-top: 36px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.cta { margin-top: clamp(18px, 3.6vh, 36px); display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.cta .row { display: flex; flex-wrap: wrap; align-items: stretch; justify-content: center; gap: 12px; }
+.cta .row .brew { align-self: center; }
+/* The line the app itself shows while it scans, counting along with the map. */
+.hud {
+  position: absolute; left: 50%; bottom: 26px; z-index: 2; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px);
+  padding: 9px 16px; border-radius: 999px;
+  font: 600 13px/1.2 ui-monospace, "SF Mono", Menlo, monospace; color: rgba(255, 255, 255, 0.9);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  background: rgba(10, 11, 30, 0.6); border: 1px solid rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+}
+.hud .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #ffd23f; box-shadow: 0 0 12px #ffd23f; animation: blink 1s ease-in-out infinite; }
+.hud.done .dot { background: #4fe3a0; box-shadow: 0 0 14px #4fe3a0; animation: none; }
+.hud span { overflow: hidden; text-overflow: ellipsis; }
+@keyframes blink { 50% { opacity: 0.35; } }
+.hint {
+  position: absolute; left: 0; right: 0; bottom: 74px; z-index: 2; text-align: center;
+  font-size: 13px; letter-spacing: 0.02em; color: rgba(255, 255, 255, 0.62); opacity: var(--copy);
+}
+.hint svg { display: block; width: 18px; height: 18px; margin: 6px auto 0; animation: nudge 1.8s ease-in-out infinite; }
+@keyframes nudge { 50% { transform: translateY(5px); } }
+/* What the map is, once it is in focus. */
+.reveal {
+  position: absolute; z-index: 2; left: max(16px, calc(50% - 560px)); bottom: 84px;
+  width: min(430px, calc(100% - 32px)); padding: 24px 26px; border-radius: 22px; text-align: left;
+  background: rgba(12, 13, 34, 0.74); border: 1px solid rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5); backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+  opacity: var(--reveal); transform: translateY(calc((1 - var(--reveal)) * 28px));
+  pointer-events: none;
+}
+.reveal h2 { font-size: clamp(24px, 3vw, 32px); color: #fff; }
+.reveal p { margin: 10px 0 0; font-size: 16px; color: rgba(255, 255, 255, 0.8); }
+.reveal .chips { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 14px; font: 600 12.5px/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: rgba(255, 255, 255, 0.85); }
+.reveal .chips i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; }
+.reveal small { display: block; margin-top: 14px; font-size: 12.5px; line-height: 1.45; color: rgba(255, 255, 255, 0.55); }
+/* From the stage's night into the page. */
+.look {
+  position: relative; padding: 90px 0 0; text-align: center; color: #fff;
+  background: linear-gradient(180deg, var(--hero-b) 0%, var(--hero-b) 46%, var(--bg) 100%);
+}
+.look h2 { color: #fff; }
+.look .sub { color: rgba(255, 255, 255, 0.74); margin-inline: auto; }
+.look .eyebrow { color: #ffd23f; }
 .download {
   display: inline-flex; align-items: center; gap: 14px;
   padding: 18px 34px 18px 26px; border-radius: 999px;
@@ -150,7 +243,7 @@ nav a.mini:hover { text-decoration: none; filter: brightness(1.1); }
 /* Hero screenshot */
 .window {
   position: relative; z-index: 1;
-  margin: 64px auto 0; width: min(1120px, 100% - 32px);
+  margin: 48px auto 0; width: min(1120px, 100% - 32px);
   border-radius: 14px; overflow: hidden;
   background: #1e1e22;
   box-shadow: 0 50px 120px -30px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -311,6 +404,15 @@ footer a { color: var(--ink-2); }
   .safe { padding: 40px 24px; border-radius: 24px; }
   section { padding: 80px 0; }
   nav a.link { display: none; }
+  .hero { height: 215vh; }
+  .hud { font-size: 11.5px; padding: 8px 12px; bottom: 18px; }
+  .hint { bottom: 62px; }
+  .reveal { bottom: 66px; padding: 15px 17px; border-radius: 18px; }
+  .reveal h2 { font-size: 21px; }
+  .reveal p { font-size: 14px; line-height: 1.4; margin-top: 6px; }
+  .reveal .chips { margin-top: 9px; gap: 4px 12px; font-size: 11.5px; }
+  .reveal small { margin-top: 9px; font-size: 11.5px; line-height: 1.35; }
+  .download .wide { display: none; }
   .stage { height: 260px; }
   .stage .slot img, .stage .slot svg { width: 84px; height: 84px; }
   .stage .ghost { width: 84px; height: 84px; left: calc(25% - 42px); }
@@ -336,23 +438,47 @@ footer a { color: var(--ink-2); }
   </div>
 </nav>
 
-<header class="hero">
-  <div class="wrap">
-    <img class="icon" src="hoardmap.svg" alt="Hoardmap app icon">
-    <h1>Find what's <span class="shine">hoarding</span> your disk.</h1>
-    <p class="lede">A fast, free map of your Mac's storage. Every folder and file, sized at a glance. Spot the giant, click it, and Finder takes you straight there.</p>
-    <div class="cta">
-      <div class="brew">
-        <code><span class="p">$</span> brew install --cask abhishekkundu25/tap/hoardmap</code>
-        <button type="button" class="copy" data-copy="brew install --cask abhishekkundu25/tap/hoardmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span>Copy</span></button>
+<header class="hero" id="top">
+  <div class="scene" id="scene">
+    <canvas id="scan" aria-hidden="true"></canvas>
+    <div class="veil"></div>
+    <div class="shade"></div>
+    <div class="lens-ring"></div>
+    <div class="tip" id="tip" aria-hidden="true"></div>
+    <div class="hero-copy">
+      <img class="icon" src="hoardmap.svg" alt="Hoardmap app icon">
+      <h1>Find what's <span class="shine">hoarding</span> your disk.</h1>
+      <p class="lede">A fast, free map of your Mac's storage. Every folder and file, sized at a glance. Spot the giant, click it, and Finder takes you straight there.</p>
+      <div class="cta">
+        <div class="row">
+          <a class="download" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+            <span>Download for Mac<small>Free · macOS 11 or later<span class="wide"> · Apple silicon &amp; Intel</span></small></span>
+          </a>
+          <div class="brew">
+            <code><span class="p">$</span> brew install --cask abhishekkundu25/tap/hoardmap</code>
+            <button type="button" class="copy" data-copy="brew install --cask abhishekkundu25/tap/hoardmap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><span>Copy</span></button>
+          </div>
+        </div>
+        <div class="meta">Version <span data-version>latest</span> · <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest">Release notes</a> · <a href="#install">How to install</a></div>
       </div>
-      <div class="brew-note">Install with Homebrew: ready to open, and <code>brew upgrade</code> keeps it current.</div>
-      <a class="download ghost" href="https://github.com/abhishekkundu25/hoardmap/releases/latest/download/Hoardmap.dmg">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
-        <span>Or download for Mac<small>Free · macOS 11 or later · Apple silicon &amp; Intel</small></span>
-      </a>
-      <div class="meta">Version <span data-version>latest</span> · <a href="https://github.com/abhishekkundu25/hoardmap/releases/latest">Release notes</a> · <a href="#install">How to install</a></div>
     </div>
+    <div class="hint" aria-hidden="true">Scroll to bring the map into focus<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></div>
+    <div class="reveal">
+      <h2>Every block is a file.</h2>
+      <p>The bigger the block, the more of your disk it takes. Colour is the kind of file, and folders keep their files together. The giants are where your space went.</p>
+      <div class="chips" id="chips" aria-hidden="true"></div>
+      <small>The counter replays one real scan of a 1 TB Mac: 5.9 million files in 24 seconds. The blocks are an illustration, drawn fresh each time.</small>
+    </div>
+    <div class="hud" id="hud" role="img" aria-label="An illustration of a scan in progress"><i class="dot"></i><span id="hud-text">5,900,975 files, 489 GB in 24 s</span></div>
+  </div>
+</header>
+
+<section class="look">
+  <div class="wrap">
+    <p class="eyebrow">The real thing</p>
+    <h2>Same map. Your files.</h2>
+    <p class="sub">The list on the left, the map on the right, file types below. Click anything in one and the others follow.</p>
   </div>
   <div class="window">
     <div class="bar"><i></i><i></i><i></i><span>Hoardmap</span></div>
@@ -367,14 +493,13 @@ footer a { color: var(--ink-2); }
       </picture>
     </div>
   </div>
-</header>
-
-<div class="switch-row">
-  <div class="switch" role="group" aria-label="Screenshot">
-    <button type="button" data-shot="treemap" aria-pressed="true">Treemap</button>
-    <button type="button" data-shot="icicle" aria-pressed="false">Icicle</button>
+  <div class="switch-row">
+    <div class="switch" role="group" aria-label="Screenshot">
+      <button type="button" data-shot="treemap" aria-pressed="true">Treemap</button>
+      <button type="button" data-shot="icicle" aria-pressed="false">Icicle</button>
+    </div>
   </div>
-</div>
+</section>
 
 <section id="install" class="install" style="margin-top:80px">
   <div class="wrap center">
@@ -558,6 +683,449 @@ for (const button of document.querySelectorAll(".switch button")) {
     document.getElementById("shot-icicle").classList.toggle("off", shot !== "icicle");
   });
 }
+
+// The scan that never ends: the hero's treemap. A made-up disk is scanned again and
+// again; each file is a block that grows where the app would put it, and the blocks
+// glide as the layout around them changes. Nothing here reads a real disk.
+(() => {
+  const scene = document.getElementById("scene");
+  const canvas = document.getElementById("scan");
+  if (!scene || !canvas || !canvas.getContext) return;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const hud = document.getElementById("hud");
+  const hudText = document.getElementById("hud-text");
+  const tip = document.getElementById("tip");
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // The app's own palette, by file type, and the type each colour stands for here.
+  // Each has the kind of name such a file tends to have, for the block's label.
+  const KINDS = [
+    ["#d9534f", "mov", "clip"], ["#e8843a", "safetensors", "model"], ["#c8a415", "gguf", "llm"], ["#7cb342", "js", "bundle"],
+    ["#2e9e6b", "rlib", "libcore"], ["#26a69a", "psd", "poster"], ["#3b9fd8", "zip", "archive"], ["#4a6fd4", "app", "App"],
+    ["#7e5fd1", "sqlite", "store"], ["#b35bc7", "raw", "DSC"], ["#d85a9c", "heic", "IMG"], ["#a0785a", "wav", "take"],
+    ["#8f9a3c", "pyc", "module"], ["#5a8fa8", "dmg", "installer"], ["#7a8fc2", "pdf", "report"], ["#8b8b95", "log", "system"],
+  ];
+  // Top folders: name, share of the disk, the file types that fill it, its subfolders.
+  const FOLDERS = [
+    ["Library", 26, [8, 7, 15, 6], ["Containers", "Application Support", "Caches", "Developer", "Mail", "Group Containers"]],
+    ["Movies", 15, [0, 0, 11], ["Final Cut", "Exports", "Screen Recordings", "Raw Footage"]],
+    ["Pictures", 12, [10, 9, 5], ["Photos Library", "Lightroom", "Scans", "Screenshots"]],
+    ["Projects", 16, [3, 4, 12, 14], ["web-app", "node_modules", "target", "game", "api", "notebooks"]],
+    ["Models", 13, [2, 1], ["checkpoints", "gguf", "loras"]],
+    ["Downloads", 7, [13, 6, 0], ["Installers", "Archives", "Videos"]],
+    ["Applications", 8, [7, 4], ["Xcode.app", "Games", "Creative", "Utilities"]],
+    ["Music", 5, [11, 5], ["Logic", "Samples", "Library"]],
+    ["Documents", 4, [14, 6, 8], ["Work", "Taxes", "Archive"]],
+    [".cache", 3, [15, 12], ["huggingface", "uv", "pip"]],
+  ];
+  // The one real scan the counter replays.
+  const REAL = { files: 5900975, gb: 489, secs: 24 };
+  const SCAN = 12, HOLD = 2.6, DIVE = 2.8; // seconds: scanning, done, diving into a folder
+
+  const chips = document.getElementById("chips");
+  for (const k of [0, 1, 2, 3, 10, 8, 6, 15]) {
+    const chip = document.createElement("span");
+    const dot = document.createElement("i");
+    dot.style.background = KINDS[k][0];
+    chip.append(dot, `.${KINDS[k][1]}`);
+    chips.append(chip);
+  }
+
+  const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
+  const smooth = (v) => { v = clamp(v); return v * v * (3 - 2 * v); };
+  const out3 = (v) => 1 - Math.pow(1 - clamp(v), 3);
+  const count = (n) => Math.round(n).toLocaleString("en-US");
+  const size = (gb) => (gb >= 100 ? `${Math.round(gb)} GB` : gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.max(1, Math.round(gb * 1000))} MB`);
+
+  function random(seed) {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // A disk: folders of subfolders of files. `born` is how far into the scan a file is
+  // found; folders are read in overlapping stretches, as a parallel scan reads them.
+  function makeDisk(seed) {
+    const r = random(seed);
+    const leaves = [];
+    const order = FOLDERS.map((f, i) => [r(), i]).sort((a, b) => a[0] - b[0]).map((p) => p[1]);
+    const folders = FOLDERS.map(([name, share, kinds, subs], f) => {
+      const start = (order.indexOf(f) / FOLDERS.length) * 0.72;
+      const span = 0.2 + r() * 0.14;
+      const weight = share * (0.65 + r() * 0.8);
+      const kids = subs.map((sub, k) => {
+        const subWeight = Math.pow(r(), 1.6) + 0.08;
+        const subStart = start + (k / subs.length) * span;
+        const n = 5 + Math.floor(r() * 13);
+        const files = [];
+        for (let i = 0; i < n; i++) {
+          const kind = kinds[Math.floor(Math.pow(r(), 1.5) * kinds.length)];
+          const leaf = {
+            name: `${sub}/${KINDS[kind][2]}-${1000 + Math.floor(r() * 8999)}.${KINDS[kind][1]}`,
+            folder: name, kind,
+            size: weight * subWeight * (Math.pow(r(), 2.6) + 0.02),
+            born: clamp(subStart + r() * span * 0.55, 0, 0.97),
+            v: 0, x: 0, y: 0, w: 0, h: 0, tx: 0, ty: 0, tw: 0, th: 0, placed: false, lit: -9,
+          };
+          files.push(leaf);
+          leaves.push(leaf);
+        }
+        return { files, v: 0 };
+      });
+      return { name, kids, v: 0, x: 0, y: 0, w: 0, h: 0, placed: false };
+    });
+    const total = leaves.reduce((sum, leaf) => sum + leaf.size, 0);
+    for (const leaf of leaves) leaf.size *= REAL.gb / total;
+    return { folders, leaves, began: 0, q: 0, done: false };
+  }
+
+  // The app's squarified layout: rows along the shorter side, each grown while its
+  // worst aspect ratio does not get worse.
+  const worst = (sum, lo, hi, side) => Math.max((side * side * hi) / (sum * sum), (sum * sum) / (side * side * lo));
+  function squarify(items, x, y, w, h, place) {
+    let total = 0;
+    for (const item of items) total += item.v;
+    if (!(total > 0) || !(w > 0 && h > 0)) return;
+    const scale = (w * h) / total;
+    let i = 0;
+    while (i < items.length && w > 0 && h > 0) {
+      const side = Math.min(w, h);
+      let sum = items[i].v * scale, lo = sum, hi = sum, j = i + 1;
+      let now = worst(sum, lo, hi, side);
+      while (j < items.length) {
+        const a = items[j].v * scale;
+        const next = worst(sum + a, Math.min(lo, a), Math.max(hi, a), side);
+        if (next > now) break;
+        sum += a; lo = Math.min(lo, a); hi = Math.max(hi, a); now = next; j++;
+      }
+      const last = j === items.length;
+      if (w >= h) {
+        const cw = last ? w : sum / h;
+        let cy = y;
+        for (let k = i; k < j; k++) {
+          const ih = k === j - 1 ? y + h - cy : (items[k].v * scale) / cw;
+          place(items[k], x, cy, cw, ih);
+          cy += ih;
+        }
+        x += cw; w -= cw;
+      } else {
+        const ch = last ? h : sum / w;
+        let cx = x;
+        for (let k = i; k < j; k++) {
+          const iw = k === j - 1 ? x + w - cx : (items[k].v * scale) / ch;
+          place(items[k], cx, y, iw, ch);
+          cx += iw;
+        }
+        y += ch; h -= ch;
+      }
+      i = j;
+    }
+  }
+  const live = (items) => items.filter((item) => item.v > 0).sort((a, b) => b.v - a.v);
+
+  // Where every block belongs at this point of the scan.
+  function layout(disk, W, H, q, now) {
+    let found = 0;
+    for (const folder of disk.folders) {
+      folder.v = 0;
+      for (const kid of folder.kids) {
+        kid.v = 0;
+        for (const leaf of kid.files) {
+          const grown = out3((q - leaf.born) / 0.09);
+          if (grown > 0 && leaf.lit < 0) leaf.lit = now;
+          leaf.v = leaf.size * grown;
+          kid.v += leaf.v;
+          if (grown > 0) found++;
+        }
+        folder.v += kid.v;
+      }
+    }
+    squarify(live(disk.folders), 0, 0, W, H, (folder, x, y, w, h) => {
+      if (!folder.placed) { folder.placed = true; folder.x = x + w / 2; folder.y = y + h / 2; }
+      folder.tx = x; folder.ty = y; folder.tw = w; folder.th = h;
+      const pad = Math.min(3, w / 8, h / 8);
+      squarify(live(folder.kids), x + pad, y + pad, w - 2 * pad, h - 2 * pad, (kid, x, y, w, h) => {
+        const pad = Math.min(1.25, w / 8, h / 8);
+        squarify(live(kid.files), x + pad, y + pad, w - 2 * pad, h - 2 * pad, (leaf, x, y, w, h) => {
+          // A new block grows from the middle of its own place.
+          if (!leaf.placed) { leaf.placed = true; leaf.x = x + w / 2; leaf.y = y + h / 2; }
+          leaf.tx = x; leaf.ty = y; leaf.tw = w; leaf.th = h;
+        });
+      });
+    });
+    return found / disk.leaves.length;
+  }
+
+  // One cushion per colour, drawn once and stretched over each block.
+  const cushions = KINDS.map(([colour]) => {
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = 96;
+    const c = tile.getContext("2d");
+    c.fillStyle = colour;
+    c.fillRect(0, 0, 96, 96);
+    const light = c.createRadialGradient(30, 26, 2, 48, 48, 78);
+    light.addColorStop(0, "rgba(255,255,255,0.42)");
+    light.addColorStop(0.45, "rgba(255,255,255,0.06)");
+    light.addColorStop(1, "rgba(0,0,0,0.38)");
+    c.fillStyle = light;
+    c.fillRect(0, 0, 96, 96);
+    return tile;
+  });
+
+  let W = 0, H = 0, ratio = 1;
+  function resize() {
+    W = scene.clientWidth;
+    H = scene.clientHeight;
+    ratio = Math.min(window.devicePixelRatio || 1, W * H > 2500000 ? 1.25 : 2);
+    canvas.width = Math.round(W * ratio);
+    canvas.height = Math.round(H * ratio);
+  }
+
+  // The view of a disk: a slow drift, and at the end a dive into its biggest folder.
+  function camera(disk, now, dive) {
+    const drift = now / 1000;
+    let s = 1.05 + 0.018 * Math.sin(drift / 5.3);
+    let cx = W / 2 + Math.sin(drift / 7.1) * W * 0.012;
+    let cy = H / 2 + Math.cos(drift / 6.3) * H * 0.012;
+    if (dive > 0 && disk.target) {
+      const t = disk.target, e = dive * dive * (3 - 2 * dive);
+      const zoom = Math.min(Math.max(W / t.w, H / t.h) * 1.1, 5);
+      s += (zoom - s) * e * e;
+      cx += (t.x + t.w / 2 - cx) * e;
+      cy += (t.y + t.h / 2 - cy) * e;
+    }
+    return { s, ox: W / 2 - cx * s, oy: H / 2 - cy * s };
+  }
+
+  let focus = 0; // 0 behind the veil, 1 in focus: folder names show as the map sharpens
+  function draw(disk, cam, alpha, k, now, names = 1) {
+    ctx.setTransform(ratio * cam.s, 0, 0, ratio * cam.s, ratio * cam.ox, ratio * cam.oy);
+    for (const leaf of disk.leaves) {
+      if (!leaf.placed) continue;
+      leaf.x += (leaf.tx - leaf.x) * k;
+      leaf.y += (leaf.ty - leaf.y) * k;
+      leaf.w += (leaf.tw - leaf.w) * k;
+      leaf.h += (leaf.th - leaf.h) * k;
+      if (leaf.w < 0.6 || leaf.h < 0.6) continue;
+      const gap = leaf.w > 3 && leaf.h > 3 ? 0.5 : 0;
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(cushions[leaf.kind], leaf.x + gap, leaf.y + gap, leaf.w - 2 * gap, leaf.h - 2 * gap);
+      // A block just found flares, so the scan shows as a run of sparks.
+      const flare = 1 - (now - leaf.lit) / 900;
+      if (flare > 0) {
+        ctx.globalAlpha = alpha * flare * flare * 0.75;
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(leaf.x + gap, leaf.y + gap, leaf.w - 2 * gap, leaf.h - 2 * gap);
+      }
+    }
+    // Folder names, at one size whatever the zoom, once the map is in focus.
+    const show = focus * names * alpha;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.font = "600 13px -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif";
+    ctx.textBaseline = "top";
+    for (const folder of disk.folders) {
+      if (!folder.placed) continue;
+      folder.x += (folder.tx - folder.x) * k;
+      folder.y += (folder.ty - folder.y) * k;
+      folder.w += (folder.tw - folder.w) * k;
+      folder.h += (folder.th - folder.h) * k;
+      if (show < 0.02) continue;
+      const x = cam.ox + folder.x * cam.s, y = cam.oy + folder.y * cam.s;
+      const w = folder.w * cam.s, h = folder.h * cam.s;
+      if (w < 96 || h < 36) continue;
+      const width = ctx.measureText(folder.name).width + 14;
+      // Below the page's top bar, where the folder reaches that far down.
+      const top = Math.max(y + 7, 60);
+      const left = Math.max(x + 7, 8);
+      if (top + 26 > y + h || left + width + 6 > x + w) continue;
+      ctx.globalAlpha = show * 0.78;
+      ctx.fillStyle = "#0a0b1e";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(left, top, width, 22, 7);
+      else ctx.rect(left, top, width, 22);
+      ctx.fill();
+      ctx.globalAlpha = show;
+      ctx.fillStyle = "#fff";
+      ctx.fillText(folder.name, left + 7, top + 5);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  let seed = 7 + Math.floor(Math.random() * 1000);
+  let disk = makeDisk(seed);
+  let next = null;
+  let view = { s: 1, ox: 0, oy: 0 };
+  let last = 0, laid = 0, hudAt = 0;
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000 || 0.016);
+    last = now;
+    if (!disk.began) disk.began = now;
+    const t = (now - disk.began) / 1000;
+    disk.q = clamp(t / SCAN);
+    const dive = clamp((t - SCAN - HOLD) / DIVE);
+    // The next disk starts scanning under the dive, so the screen is never empty.
+    if (dive > 0.25 && !next) next = makeDisk(++seed);
+    if (next && !next.began) next.began = now;
+    if (next) next.q = clamp((now - next.began) / 1000 / SCAN);
+
+    if (now - laid > 80) {
+      laid = now;
+      disk.found = layout(disk, W, H, disk.q, now);
+      if (next) next.found = layout(next, W, H, next.q, now);
+      if (disk.q >= 1 && !disk.target) {
+        const biggest = live(disk.folders)[0];
+        disk.target = { x: biggest.tx, y: biggest.ty, w: biggest.tw, h: biggest.th };
+      }
+    }
+    const k = 1 - Math.exp(-dt * 9);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#070817";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (next) draw(next, camera(next, now, 0), 1, k, now);
+    view = camera(disk, now, dive);
+    draw(disk, view, 1 - smooth((dive - 0.3) / 0.6), k, now, 1 - smooth(dive / 0.3));
+
+    if (now - hudAt > 90) {
+      hudAt = now;
+      // While the old disk dives away, the line already follows the new scan.
+      const shown = next && dive > 0.6 ? next : disk;
+      const q = shown.q;
+      if (q >= 1) {
+        hud.classList.add("done");
+        hudText.textContent = W < 560 ? `${count(REAL.files)} files, ${REAL.gb} GB in ${REAL.secs} s` : `Done: ${count(REAL.files)} files, ${REAL.gb} GB in ${REAL.secs} s`;
+      } else {
+        hud.classList.remove("done");
+        const gb = shown.leaves.reduce((sum, leaf) => sum + leaf.v, 0);
+        const figures = `${count(REAL.files * (shown.found || 0))} files, ${size(gb)}, ${(REAL.secs * q).toFixed(1)} s`;
+        hudText.textContent = W < 560 ? figures : `Scanning Macintosh HD: ${figures}`;
+      }
+    }
+    if (dive >= 1 && next) {
+      disk = next;
+      next = null;
+    }
+  }
+
+  // The lens: a clear circle in the veil. It wanders until a pointer takes it.
+  const lens = { x: 0, y: 0, r: 0, tx: 0, ty: 0, tr: 0, held: 0 };
+  let pointer = null;
+  scene.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "touch") return;
+    const box = scene.getBoundingClientRect();
+    pointer = { x: event.clientX - box.left, y: event.clientY - box.top };
+    lens.held = performance.now();
+  });
+  scene.addEventListener("pointerleave", () => { pointer = null; });
+
+  function blockAt(x, y) {
+    const wx = (x - view.ox) / view.s, wy = (y - view.oy) / view.s;
+    for (const leaf of disk.leaves) {
+      if (leaf.placed && wx >= leaf.x && wx < leaf.x + leaf.w && wy >= leaf.y && wy < leaf.y + leaf.h && leaf.v > 0) return leaf;
+    }
+    return null;
+  }
+
+  let progress = 0;
+  function scroll() {
+    const box = scene.parentElement.getBoundingClientRect();
+    progress = clamp(-box.top / Math.max(1, box.height - window.innerHeight));
+    const clear = smooth(progress / 0.42);
+    focus = clear;
+    scene.style.setProperty("--blur", (28 * (1 - clear)).toFixed(2));
+    scene.style.setProperty("--shade", (1 - 0.88 * clear).toFixed(3));
+    scene.style.setProperty("--copy", (1 - smooth(progress / 0.26)).toFixed(3));
+    scene.style.setProperty("--lift", (progress * 140).toFixed(1));
+    scene.style.setProperty("--reveal", (smooth((progress - 0.4) / 0.18) * (1 - smooth((progress - 0.9) / 0.1))).toFixed(3));
+    scene.style.setProperty("--out", smooth((progress - 0.82) / 0.18).toFixed(3));
+    scene.classList.toggle("sharp", clear > 0.995);
+    scene.classList.toggle("reading", progress > 0.3);
+  }
+
+  function aim(now) {
+    const sharp = focus > 0.995;
+    const mine = pointer && now - lens.held < 4000;
+    if (mine) {
+      lens.tx = pointer.x; lens.ty = pointer.y; lens.tr = 190;
+    } else {
+      // Round the edge of the scene, clear of the words in the middle.
+      const a = now / 1000;
+      lens.tx = W * (0.5 + (0.4 + 0.03 * Math.sin(a / 1.7)) * Math.cos(a / 4.6));
+      lens.ty = H * (0.54 + (0.36 + 0.03 * Math.cos(a / 2.1)) * Math.sin(a / 4.6));
+      lens.tr = 150;
+    }
+    const k = mine ? 0.22 : 0.035;
+    lens.x += (lens.tx - lens.x) * k;
+    lens.y += (lens.ty - lens.y) * k;
+    lens.r += (lens.tr - lens.r) * 0.08;
+    scene.style.setProperty("--mx", `${lens.x.toFixed(1)}px`);
+    scene.style.setProperty("--my", `${lens.y.toFixed(1)}px`);
+    scene.style.setProperty("--lens", lens.r.toFixed(1));
+    // The block under the pointer says what it is, in the lens or once in focus.
+    const leaf = pointer && (mine || sharp) && (progress < 0.2 || sharp) ? blockAt(pointer.x, pointer.y) : null;
+    if (leaf) {
+      const dot = document.createElement("i");
+      dot.style.background = KINDS[leaf.kind][0];
+      const bytes = document.createElement("b");
+      bytes.textContent = size(leaf.v);
+      const path = document.createElement("span");
+      path.textContent = `${leaf.folder}/${leaf.name}`;
+      tip.replaceChildren(dot, path, bytes);
+      const x = Math.min(pointer.x + 18, W - tip.offsetWidth - 12);
+      const y = pointer.y + 22 + tip.offsetHeight > H - 70 ? pointer.y - tip.offsetHeight - 14 : pointer.y + 22;
+      tip.style.transform = `translate(${Math.max(12, x)}px, ${y}px)`;
+    }
+    tip.classList.toggle("on", Boolean(leaf));
+  }
+
+  let visible = true, running = false;
+  function tick(now) {
+    running = false;
+    if (!visible || document.hidden) return;
+    frame(now);
+    aim(now);
+    running = true;
+    requestAnimationFrame(tick);
+  }
+  const wake = () => { if (!running && !still) { running = true; last = performance.now(); requestAnimationFrame(tick); } };
+
+  resize();
+  lens.x = lens.tx = W / 2;
+  lens.y = lens.ty = H * 0.6;
+  scroll();
+  addEventListener("scroll", scroll, { passive: true });
+  addEventListener("resize", () => { resize(); scroll(); if (still) paint(); });
+  document.addEventListener("visibilitychange", wake);
+  new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; wake(); }).observe(scene);
+
+  // With reduced motion: one finished scan, standing still. The lens and the scroll
+  // into focus still work, since they follow the reader's own movement.
+  function paint() {
+    const now = performance.now();
+    layout(disk, W, H, 1, -9999);
+    for (const leaf of disk.leaves) { leaf.x = leaf.tx; leaf.y = leaf.ty; leaf.w = leaf.tw; leaf.h = leaf.th; leaf.v = leaf.size; }
+    for (const folder of disk.folders) { folder.x = folder.tx; folder.y = folder.ty; folder.w = folder.tw; folder.h = folder.th; }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#070817";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    view = { s: 1.03, ox: -W * 0.015, oy: -H * 0.015 };
+    draw(disk, view, 1, 1, now);
+    hud.classList.add("done");
+    hudText.textContent = `${count(REAL.files)} files, ${REAL.gb} GB in ${REAL.secs} s`;
+  }
+  if (still) {
+    paint();
+    lens.r = lens.tr = 150;
+    addEventListener("scroll", () => { paint(); aim(performance.now()); }, { passive: true });
+    scene.addEventListener("pointermove", () => { lens.x = lens.tx = pointer.x; lens.y = lens.ty = pointer.y; aim(performance.now()); });
+    aim(performance.now());
+  } else {
+    wake();
+  }
+})();
 </script>
 </body>
 </html>
