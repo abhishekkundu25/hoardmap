@@ -147,6 +147,28 @@ Folders you had open, the selection and the zoom stay where the kind has them. A
 scan starts unfiltered. The parts the scan did not cover (Other folders, macOS, Swap,
 Free) have nothing to list, so they cannot be clicked.
 
+Under the disk bar, the Added bar shows when the scanned files arrived, newest on the
+left: Past day, Past week, Past month and so on, then everything before a date. Each
+figure is a running total, so Past week includes the past day. The spans come from the
+scan itself: one that holds nearly everything, or hardly more than the span before it,
+is left out, so a Mac two months old is measured in days and weeks and an old one in
+years. When most of the oldest part arrived around one day, as on a new Mac or after a
+restore, pointing at it says which day.
+
+Click a span to see only the files that arrived in it, the same way a kind filters. A
+span and a kind can both be on: Rebuildable and Past week shows what your tools made
+this week. The band names both.
+
+A file's time is the Date Added macOS keeps, the one Finder shows in its Date Added
+column: when the file arrived in its folder by being downloaded, copied, created or
+moved in. It is not the modification date, which a copy or an unzipped archive keeps
+from the original. Three things the bar cannot show:
+
+- A file that grows in place, such as a database or a virtual disk, keeps the day it
+  first arrived.
+- A file that is gone is not counted. The bar shows what arrived and is still there.
+- A disk that keeps no Date Added falls back to the modification date.
+
 While a scan runs, the list and the map fill in as folders finish, about once a
 second, the way WinDirStat grows its tree. Expanded folders, the selection and the zoom
 stay put across those updates. The extension and largest-file lists wait for the scan

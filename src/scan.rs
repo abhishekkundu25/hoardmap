@@ -107,6 +107,7 @@ struct Local {
     physical: u64,
     blocks: Blocks,
     mtime: i64,
+    added: u32,
     ino: u64,
     nlink: u64,
     dev: u64,
@@ -125,6 +126,7 @@ impl Local {
             physical: stat.physical,
             blocks: stat.blocks,
             mtime: stat.mtime,
+            added: stat.added,
             ino: stat.ino,
             nlink: stat.nlink,
             dev: stat.dev,
@@ -144,6 +146,7 @@ impl Local {
             physical: 0,
             blocks: Blocks::Own,
             mtime: stat.mtime,
+            added: stat.added,
             ino: stat.ino,
             nlink: stat.nlink,
             dev: stat.dev,
@@ -174,6 +177,8 @@ struct Stat {
     physical: u64,
     blocks: Blocks,
     mtime: i64,
+    /// As [`Node::added`].
+    added: u32,
     ino: u64,
     nlink: u64,
     dev: u64,
@@ -186,6 +191,11 @@ struct Stat {
     /// stands for a folder on the data volume. The bulk listing reports the stand-in's
     /// inode, and opening it gives the folder it stands for.
     firmlink: bool,
+}
+
+/// A time as [`Node::added`] keeps it: whole seconds, none before 1970.
+fn seconds(time: i64) -> u32 {
+    time.clamp(0, i64::from(u32::MAX)) as u32
 }
 
 /// What a file shares with other files, as APFS reports it.
@@ -221,6 +231,11 @@ impl Stat {
             physical: meta.st_blocks as u64 * 512,
             blocks: Blocks::Own,
             mtime: meta.st_mtime as i64,
+            // No Date Added here: the creation time where there is one.
+            #[cfg(target_os = "macos")]
+            added: seconds(meta.st_birthtime as i64),
+            #[cfg(not(target_os = "macos"))]
+            added: seconds(meta.st_mtime as i64),
             ino: meta.st_ino as u64,
             nlink: meta.st_nlink as u64,
             // Sign-extended like std's `MetadataExt::dev`, which gives the root's.
@@ -252,6 +267,10 @@ impl Stat {
             physical,
             blocks: Blocks::Own,
             mtime: meta.mtime(),
+            #[cfg(target_os = "macos")]
+            added: seconds(std::os::macos::fs::MetadataExt::st_birthtime(meta)),
+            #[cfg(not(target_os = "macos"))]
+            added: seconds(meta.mtime()),
             ino: meta.ino(),
             nlink: meta.nlink(),
             dev: meta.dev(),
@@ -386,6 +405,7 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
         files: 0,
         dirs: 0,
         mtime: 0,
+        added: 0,
         children: Vec::new(),
         shared: Shared::None,
     }];
@@ -425,6 +445,7 @@ pub fn partial(root: &str, finished: &[Finished]) -> Tree {
                         files: 0,
                         dirs: 0,
                         mtime: 0,
+                        added: 0,
                         children: Vec::new(),
                         shared: Shared::None,
                     });
@@ -951,6 +972,7 @@ mod bulk {
                 | libc::ATTR_CMN_MODTIME
                 | libc::ATTR_CMN_FLAGS
                 | libc::ATTR_CMN_FILEID
+                | libc::ATTR_CMN_ADDEDTIME
                 | ATTR_CMN_ERROR,
             volattr: 0,
             dirattr: libc::ATTR_DIR_MOUNTSTATUS,
@@ -1026,6 +1048,7 @@ mod bulk {
             physical: 0,
             blocks: Blocks::Own,
             mtime: 0,
+            added: 0,
             ino: 0,
             nlink: 1,
             dev: 0,
@@ -1068,6 +1091,14 @@ mod bulk {
         if common & libc::ATTR_CMN_FILEID != 0 {
             stat.ino = read::<u64>(entry, at);
             at += mem::size_of::<u64>();
+        }
+        if common & libc::ATTR_CMN_ADDEDTIME != 0 {
+            stat.added = super::seconds(read::<libc::timespec>(entry, at).tv_sec);
+            at += mem::size_of::<libc::timespec>();
+        }
+        // A file system without a Date Added: the modification time stands in.
+        if stat.added == 0 {
+            stat.added = super::seconds(stat.mtime);
         }
         let name = name?;
         if common & ATTR_CMN_ERROR != 0 {
@@ -1152,6 +1183,7 @@ fn flatten(local: Local, parent: Option<NodeId>, nodes: &mut Vec<Node>, seen: &m
         mut physical,
         blocks,
         mut mtime,
+        added,
         ino,
         nlink,
         dev,
@@ -1191,6 +1223,7 @@ fn flatten(local: Local, parent: Option<NodeId>, nodes: &mut Vec<Node>, seen: &m
         files: 0,
         dirs: 0,
         mtime,
+        added,
         children: Vec::new(),
         shared,
     });

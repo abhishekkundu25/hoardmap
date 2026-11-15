@@ -390,6 +390,38 @@ pub fn fixture() -> Fixture {
     }
 }
 
+/// Sets the Date Added macOS keeps for `path` itself, in seconds since the Unix epoch.
+/// A new file has the time it was made; only this call gives it an older one.
+#[cfg(target_os = "macos")]
+pub fn set_added(path: &Path, seconds: i64) {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_ADDEDTIME,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let mut time = libc::timespec {
+        tv_sec: seconds,
+        tv_nsec: 0,
+    };
+    // SAFETY: the path is NUL-terminated, and the request and the time outlive the call.
+    let rc = unsafe {
+        libc::setattrlist(
+            path.as_ptr(),
+            (&raw mut request).cast(),
+            (&raw mut time).cast(),
+            std::mem::size_of::<libc::timespec>(),
+            libc::FSOPT_NOFOLLOW,
+        )
+    };
+    assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
+}
+
 /// Splits a raw HTTP/1.1 response into status, headers and body.
 pub fn parse_response(raw: &[u8]) -> (u16, Vec<(String, String)>, String) {
     let text = String::from_utf8_lossy(raw);

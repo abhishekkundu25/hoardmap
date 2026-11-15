@@ -38,6 +38,12 @@ deletes, moves or renames anything; do not add such an action.
   and on APFS the bytes in use by each volume sharing it (macOS's own, swap). Read
   at launch, when a folder is handed over and when a scan starts and ends; nothing
   polls it.
+- `src/ages.rs`: the finished tree split by when its files arrived, for the Added bar.
+  A file's time is `Node::added`: Date Added from the bulk listing, the creation time
+  from the portable one. Which spans the bar shows comes from the tree (`Ages::new`),
+  never a fixed list. `Kinds::aged` makes the `Filter` behind `added=`, alone or
+  within a kind; such a filter keeps files and the folders that hold some, and the
+  last four are kept.
 - `src/categories.rs`: the finished tree split by kind of thing (Applications, App
   data, Rebuildable, ...) for the disk bar: a path rule table, no file system access.
   The split must add up to the root's `physical`. `Kinds` also makes the `Filter`

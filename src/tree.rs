@@ -39,6 +39,10 @@ pub struct Node {
     pub dirs: u32,
     /// Latest modification time in the subtree, seconds since the Unix epoch.
     pub mtime: i64,
+    /// When this entry itself came to be where it is, seconds since the Unix epoch: the
+    /// file system's Date Added, else its creation time, else its modification time. 0
+    /// when the scan did not read it. A folder's is its own, not its contents'.
+    pub added: u32,
     /// Largest first; empty for a non-directory.
     pub children: Vec<NodeId>,
     pub shared: Shared,
@@ -156,6 +160,7 @@ mod tests {
                     files: 0,
                     dirs: 0,
                     mtime: 0,
+                    added: 0,
                     children: vec![1],
                     shared: Shared::None,
                 },
@@ -168,6 +173,7 @@ mod tests {
                     files: 0,
                     dirs: 0,
                     mtime: 0,
+                    added: 0,
                     children: vec![2],
                     shared: Shared::None,
                 },
@@ -180,6 +186,7 @@ mod tests {
                     files: 0,
                     dirs: 0,
                     mtime: 0,
+                    added: 0,
                     children: vec![],
                     shared: Shared::None,
                 },

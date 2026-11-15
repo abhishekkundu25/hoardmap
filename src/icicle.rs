@@ -151,6 +151,7 @@ mod tests {
             files: 0,
             dirs: 0,
             mtime: 0,
+            added: 0,
             children,
             shared: Shared::None,
         }

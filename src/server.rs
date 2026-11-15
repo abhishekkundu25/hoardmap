@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::ages::Ages;
 use crate::api::{self, lossy};
 use crate::categories::Kinds;
 use crate::disk::{self, Usage};
@@ -223,6 +224,7 @@ impl App {
                     .iter()
                     .map(|(category, bytes)| json!({ "key": category.key(), "bytes": bytes }))
                     .collect();
+                status["ages"] = ages_json(kinds.ages());
                 status["stopped"] = json!(stopped);
                 status["preview"] = json!(preview);
                 status
@@ -481,6 +483,28 @@ impl App {
 
 /// The status document's `disk`: the size, free space and name, and on an APFS disk
 /// what the volumes sharing it hold.
+/// The Added bar: the spans worth showing with their running totals, then what is
+/// older. Null when no span tells the files apart.
+fn ages_json(ages: &Ages) -> Value {
+    let Some((older, bytes)) = ages.rest() else {
+        return Value::Null;
+    };
+    let steps: Vec<Value> = ages
+        .steps()
+        .iter()
+        .map(|(span, bytes)| json!({ "key": span.key(), "bytes": bytes }))
+        .collect();
+    json!({
+        "now": ages.now(),
+        "steps": steps,
+        "rest": {
+            "key": older.key(),
+            "bytes": bytes,
+            "bulk": ages.bulk().map(|(day, bytes)| json!({ "day": day, "bytes": bytes })),
+        },
+    })
+}
+
 fn disk_json(disk: &Usage) -> Value {
     let mut out = json!({
         "total": disk.total,

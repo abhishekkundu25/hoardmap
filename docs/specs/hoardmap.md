@@ -237,6 +237,31 @@ renames anything. Closing the window quits the app.
     or a rebuildable folder (`categories::Filter`). The page sends `kind` after a
     click on a kind in the disk bar, and says a filter is on with a band over the
     views, the kind lit in the bar and a pill in its legend.
+  - **Added**: when done, `ages` is `{now, steps: [{key, bytes}], rest: {key, bytes,
+    bulk}}`, the tree's bytes on disk by when its files arrived (`src/ages.rs`), or
+    null when no span tells the files apart. A file's time is its `added`: the Date
+    Added the bulk listing reads (`ATTR_CMN_ADDEDTIME`), the modification time on a
+    file system without one, and the creation time from the portable listing. Its
+    age is counted from `now`, the end of the scan; a time after `now` is age 0 and
+    no time is older than every span. The spans are `1d`, `7d`, `30d`, `90d`, `1y`
+    and `3y`. `steps` has the ones worth showing, shortest first, each with the
+    bytes of the files that arrived within it, so each holds the ones before it. A
+    span is left out when it holds 199 of 200 parts of the tree or more, as is every
+    longer one, or when it adds less than a megabyte or less than a twentieth to
+    the span before it. `rest` is what is older than the longest step: its key is
+    `over-` and that step's key, and `steps`' last `bytes` and `rest.bytes` add up
+    to `physical`. `rest.bulk` is `{day, bytes}` when four fifths of the rest arrived
+    within a day of one day (`day` is a time at that day's middle, UTC), else null.
+    The tree endpoints that take `kind` also take `added=KEY`, a span's key or
+    `over-` and a span's key, whether or not `ages` lists it, and then answer for
+    the files of that age alone, as for a kind; with both, for the files of that
+    kind and that age. A folder is kept when it holds a kept file, however deep, so
+    an empty folder is left out. An unknown key is a 400; `added` while a scan runs
+    is a 409. The filter is made on its first request, one walk of the tree, and the
+    last four are kept. The page draws `ages` as the Added bar under the disk bar,
+    newest first in one colour that fades with age, names `rest` by its date
+    ("Before 16 Oct"), and sends `added` after a click on a part; the band over the
+    views names the span, and the kind too when both are on.
   - While scanning, the tree endpoints (`node`, `treemap`, `icicle`, `extensions`,
     `largest`, `errors`) answer from a preview: the entries down to three levels below
     the root that the scan has finished, rebuilt every second. Folders still being read

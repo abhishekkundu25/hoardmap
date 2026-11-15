@@ -14,7 +14,8 @@ use std::thread;
 use serde_json::{Value, json};
 
 use crate::access;
-use crate::categories::{Category, Kinds};
+use crate::ages::Span;
+use crate::categories::{Category, Filter, Kinds};
 use crate::icicle;
 use crate::server::{App, Request, Response, SCAN_RUNNING, State};
 use crate::tree::{Kind, Node, NodeId, Tree};
@@ -97,18 +98,26 @@ fn tree(app: &App) -> Result<(Arc<Tree>, Colours), Response> {
     view(app, &Query(Vec::new())).map(|view| (view.tree, view.colours))
 }
 
-/// A tree, its colour table and, when the query names a `kind`, the filter that keeps
-/// that kind alone.
+/// A tree, its colour table and, when the query names a `kind`, an `added` span or
+/// both, the filter that keeps those alone.
 struct View {
     tree: Arc<Tree>,
     colours: Colours,
-    kind: Option<(Arc<Kinds>, Category)>,
+    kept: Kept,
+}
+
+/// What a view keeps of its tree.
+enum Kept {
+    All,
+    Kind(Arc<Kinds>, Category),
+    /// A span of ages, within a kind when the query named one too.
+    Aged(Arc<Filter>),
 }
 
 impl View {
     /// Whether a request may be about the node `id`: it exists and, under a filter,
-    /// is of the kind or holds some of it. The root always is, so a kind the scan
-    /// does not have shows an empty folder.
+    /// is kept or holds something kept. The root always is, so a filter that keeps
+    /// nothing shows an empty folder.
     fn has(&self, id: NodeId) -> bool {
         self.tree.get(id).is_some()
             && (id == crate::tree::ROOT || self.measure(Mode::Physical).shows(id))
@@ -118,44 +127,53 @@ impl View {
     fn measure(&self, mode: Mode) -> Measure<'_> {
         Measure {
             mode,
-            filter: self
-                .kind
-                .as_ref()
-                .map(|(kinds, category)| kinds.filter(&self.tree, *category)),
+            filter: match &self.kept {
+                Kept::All => None,
+                Kept::Kind(kinds, category) => Some(kinds.filter(&self.tree, *category)),
+                Kept::Aged(filter) => Some(filter),
+            },
         }
     }
 }
 
 /// The tree the query is about, as [`tree`] gives it, filtered when the query has a
-/// `kind`. A running scan's preview has no kinds, so a `kind` there is a 409.
+/// `kind` or an `added` span. A running scan's preview has neither, so one there is a
+/// 409.
 fn view(app: &App, query: &Query) -> Result<View, Response> {
     let kind = match query.get("kind") {
         None | Some("") => None,
         Some(key) => Some(Category::from_key(key).ok_or_else(|| error(400, "no such kind"))?),
     };
-    match &*app.state.lock().unwrap() {
+    let span = match query.get("added") {
+        None | Some("") => None,
+        Some(key) => Some(Span::from_key(key).ok_or_else(|| error(400, "no such span"))?),
+    };
+    let (tree, colours, kinds) = match &*app.state.lock().unwrap() {
         State::Done {
             tree,
             colours,
             kinds,
             ..
-        } => Ok(View {
-            tree: tree.clone(),
-            colours: colours.clone(),
-            kind: kind.map(|category| (kinds.clone(), category)),
-        }),
+        } => (tree.clone(), colours.clone(), Some(kinds.clone())),
         State::Scanning {
             live: Some(live), ..
-        } if kind.is_none() => Ok(View {
-            tree: live.tree.clone(),
-            colours: live.colours.clone(),
-            kind: None,
-        }),
+        } if kind.is_none() && span.is_none() => (live.tree.clone(), live.colours.clone(), None),
         State::Scanning { live: Some(_), .. } => {
-            Err(error(409, "kinds are known once the scan is done"))
+            return Err(error(409, "kinds and ages are known once the scan is done"));
         }
-        _ => Err(error(409, "no tree loaded")),
-    }
+        _ => return Err(error(409, "no tree loaded")),
+    };
+    // Made outside the state lock: the first request for a filter walks the tree.
+    let kept = match (kinds, kind, span) {
+        (Some(kinds), kind, Some(span)) => Kept::Aged(kinds.aged(&tree, kind, span)),
+        (Some(kinds), Some(kind), None) => Kept::Kind(kinds, kind),
+        _ => Kept::All,
+    };
+    Ok(View {
+        tree,
+        colours,
+        kept,
+    })
 }
 
 /// The parsed JSON object of a POST, or the 415 or 400 to answer with.
@@ -684,6 +702,7 @@ mod tests {
             files: 0,
             dirs: 0,
             mtime: 0,
+            added: 0,
             children: vec![],
             shared: Shared::None,
         };

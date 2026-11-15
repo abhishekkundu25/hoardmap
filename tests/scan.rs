@@ -1,5 +1,7 @@
 //! Scanner acceptance tests on a fixture built under the system temp folder.
 
+mod common;
+
 use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
@@ -210,6 +212,68 @@ fn mtime_rolls_up_to_the_latest() {
     assert_eq!(tree.nodes[a as usize].mtime, fx.future_secs());
     let b = child(&tree, ROOT, "b");
     assert!(tree.nodes[b as usize].mtime < fx.future_secs());
+}
+
+/// Seconds since the Unix epoch, now.
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// The bulk listing reads the Date Added macOS keeps, which a file's own times do
+/// not show: a file made long ago and copied in today was added today.
+#[cfg(target_os = "macos")]
+#[test]
+fn added_is_the_date_added_of_each_entry_itself() {
+    let fx = Fixture::build();
+    let then = now_secs() - 400 * 86_400;
+    common::set_added(&fx.root.join("b/x.jpg"), then);
+    common::set_added(&fx.root.join("b"), then - 7);
+    let before = now_secs();
+    let tree = scan_with_threads(&fx.root, &Progress::default(), Method::Bulk, 2).unwrap();
+    let after = now_secs();
+    let b = child(&tree, ROOT, "b");
+    assert_eq!(i64::from(tree.nodes[b as usize].added), then - 7);
+    let jpg = child(&tree, b, "x.jpg");
+    assert_eq!(i64::from(tree.nodes[jpg as usize].added), then);
+    // Everything else was made with the fixture, a moment ago: a folder's is its own,
+    // not its newest file's, and a file's is not its modification time, here a day
+    // ahead.
+    let a = child(&tree, ROOT, "a");
+    let small = child(&tree, a, "small.txt");
+    for id in [
+        ROOT,
+        a,
+        small,
+        child(&tree, b, "c"),
+        child(&tree, ROOT, "sym"),
+    ] {
+        let added = i64::from(tree.nodes[id as usize].added);
+        assert!(
+            (before - 60..=after).contains(&added),
+            "{} added {added}, scanned at {before}",
+            tree.path(id).display()
+        );
+    }
+}
+
+/// Without the bulk listing there is no Date Added to read: the creation time stands
+/// in, and the modification time where there is none.
+#[test]
+fn the_portable_listing_gives_a_time_added_to_every_entry() {
+    let fx = Fixture::build();
+    let before = now_secs();
+    let tree = scan_with_threads(&fx.root, &Progress::default(), Method::Portable, 2).unwrap();
+    let after = now_secs();
+    for (id, node) in tree.nodes.iter().enumerate() {
+        let added = i64::from(node.added);
+        // `a/small.txt` has a modification time a day ahead, which stands in on a
+        // system without creation times.
+        let fresh = (before - 60..=after + 86_400).contains(&added);
+        assert!(fresh, "{} added {added}", tree.path(id as NodeId).display());
+    }
 }
 
 #[test]
