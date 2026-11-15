@@ -97,6 +97,26 @@ fn main() {
         );
     }
     println!("  {usage:?}");
+    // The Added bar: the split by age, timed alone, and a filter per part.
+    let started = Instant::now();
+    let ages = hoardmap::ages::Ages::new(&bulk, hoardmap::ages::now());
+    println!(
+        "added bar: ages in {:.1} ms",
+        started.elapsed().as_secs_f64() * 1e3
+    );
+    for &(span, bytes) in ages.steps().iter().chain(ages.rest().iter()) {
+        let started = Instant::now();
+        let filter = kinds.aged(&bulk, None, span);
+        let made = started.elapsed();
+        let held = filter.totals(0, bulk.root());
+        println!(
+            "  {:<10} {bytes} bytes, {} files, filter in {:.1} ms",
+            span.key(),
+            held.files,
+            made.as_secs_f64() * 1e3
+        );
+    }
+    println!("  most of the rest on one day: {:?}", ages.bulk());
     drop((bulk, portable));
 
     for method in [Method::Portable, Method::Bulk] {

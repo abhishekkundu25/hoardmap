@@ -198,6 +198,8 @@ const store = {
   mode: "physical",
   // The one kind of thing the views show, by the disk bar's key; null for everything.
   kind: null,
+  // The span of ages the views show, by the Added bar's key; null for every age.
+  added: null,
   view: "treemap",
   highlightExt: null,
   // The Rebuildable group whose folders the map highlights, by key, and their ids.
@@ -228,6 +230,9 @@ const el = {
   diskBar: $("disk-bar"),
   diskLegend: $("disk-legend"),
   diskSummary: $("disk-summary"),
+  added: $("added"),
+  addedBar: $("added-bar"),
+  addedLegend: $("added-legend"),
   filter: $("filter"),
   filterText: $("filter-text"),
   filterClear: $("filter-clear"),
@@ -285,9 +290,12 @@ async function postJSON(url, data) {
   return response.status === 204 ? null : response.json();
 }
 
-// The part of a request that names the kind the views are filtered to, if any.
-function kindQuery() {
-  return store.kind ? `kind=${store.kind}` : "";
+// The part of a request that names what the views are filtered to, if anything: a
+// kind, a span of ages, or both.
+function filterQuery() {
+  const kind = store.kind ? `kind=${store.kind}` : "";
+  const added = store.added ? `added=${store.added}` : "";
+  return kind && added ? `${kind}&${added}` : kind || added;
 }
 
 // A node with its path and children, fetched once. Child summaries from the parent's
@@ -297,7 +305,7 @@ function fetchNode(id) {
   if (cached && cached.path !== undefined) return Promise.resolve(cached);
   if (pending.has(id)) return pending.get(id);
   const started = generation;
-  const promise = getJSON(`/api/node/${id}?${kindQuery()}`)
+  const promise = getJSON(`/api/node/${id}?${filterQuery()}`)
     .then((node) => {
       if (started !== generation) throw new Error("the tree changed");
       nodes.set(id, node);
@@ -481,8 +489,196 @@ function renderDisk() {
   el.diskSummary.append(text);
   const spoken = parts.map(([key, bytes]) => `${DISK_PARTS[key][0]} ${formatBytes(Math.round(bytes))}`);
   el.diskBar.setAttribute("aria-label", `${d.name ? `${d.name}: ` : ""}${text}. ${spoken.join(", ")}.`);
+  renderAdded();
   renderFilter();
 }
+
+// The Added bar: the scanned files by when they arrived in their folders, newest
+// first. The server picks the spans worth showing from the scan itself, so a young Mac
+// is measured in days and weeks and an old one in years.
+
+// For each span: its name, and how a sentence says within it and older than it.
+const ADDED_SPANS = {
+  "1d": ["Past day", "in the past 24 hours", "more than a day ago", 86400],
+  "7d": ["Past week", "in the past 7 days", "more than 7 days ago", 7 * 86400],
+  "30d": ["Past month", "in the past 30 days", "more than 30 days ago", 30 * 86400],
+  "90d": ["Past 3 months", "in the past 90 days", "more than 90 days ago", 90 * 86400],
+  "1y": ["Past year", "in the past year", "more than a year ago", 365 * 86400],
+  "3y": ["Past 3 years", "in the past 3 years", "more than 3 years ago", 3 * 365 * 86400],
+};
+
+// A day as a few words, with the year only when it is not this one.
+function formatShortDay(seconds) {
+  const day = new Date(seconds * 1000);
+  const options = { day: "numeric", month: "short" };
+  if (day.getFullYear() !== new Date().getFullYear()) options.year = "numeric";
+  return day.toLocaleDateString(undefined, options);
+}
+
+// The parts of the Added bar in order, or none when the scan has no ages to tell
+// apart. `bytes` is what a part says and filters to, a running total for a span;
+// `own` is its width in the bar; `lit` is the parts that show it.
+function addedParts(s) {
+  const ages = s && s.state === "done" ? s.ages : null;
+  if (!ages || !Array.isArray(ages.steps) || !ages.rest) return [];
+  const known = ages.steps.filter((step) => ADDED_SPANS[step.key]);
+  if (known.length !== ages.steps.length || known.length === 0) return [];
+  const parts = [];
+  let before = 0;
+  known.forEach(({ key, bytes }, at) => {
+    const [label, within] = ADDED_SPANS[key];
+    // Fainter with age, down to a fifth.
+    const strength = Math.round(100 * 0.7 ** at);
+    parts.push({
+      key,
+      label,
+      phrase: within,
+      bytes,
+      own: bytes - before,
+      colour: `color-mix(in srgb, var(--added) ${strength}%, var(--disk-free))`,
+      lit: known.slice(0, at + 1).map((step) => step.key),
+      note: `Files that arrived in their folder ${within}, by macOS's Date Added: downloaded, copied, created or moved in.`,
+    });
+    before = bytes;
+  });
+  const longest = known[known.length - 1].key;
+  const older = ADDED_SPANS[longest][2];
+  const rest = {
+    key: ages.rest.key,
+    label: `Before ${formatShortDay(ages.now - ADDED_SPANS[longest][3])}`,
+    phrase: older,
+    bytes: ages.rest.bytes,
+    own: ages.rest.bytes,
+    colour: "var(--part-rest)",
+    lit: [ages.rest.key],
+    note: `Files that arrived in their folder ${older}.`,
+  };
+  const bulk = ages.rest.bulk;
+  if (bulk) {
+    rest.note += ` Most of it, ${formatBytes(bulk.bytes)}, arrived around ${formatShortDay(bulk.day)}, as on a new Mac or after a restore.`;
+  }
+  parts.push(rest);
+  return parts;
+}
+
+const addedSegs = new Map();
+const addedKeys = new Map();
+let addedShown = [];
+
+function addedPart(key) {
+  return addedShown.find((part) => part.key === key) || null;
+}
+
+function renderAdded() {
+  const parts = addedParts(store.status);
+  addedShown = parts;
+  el.added.hidden = parts.length === 0;
+  if (parts.length === 0) {
+    if (addedPointed !== null) pointAtAdded(null);
+    return;
+  }
+  const total = parts.reduce((sum, part) => sum + part.own, 0) || 1;
+  // Made again only when the parts change: a part that stays keeps the pointer.
+  const order = parts.map((part) => `${part.key}:${part.label}`).join(" ");
+  if (el.addedBar.dataset.order !== order) {
+    el.addedBar.dataset.order = order;
+    addedSegs.clear();
+    addedKeys.clear();
+    for (const part of parts) {
+      const seg = document.createElement("span");
+      seg.className = "seg";
+      const item = document.createElement("span");
+      item.className = "part can";
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+      const dot = document.createElement("span");
+      dot.className = "key";
+      item.append(dot, document.createElement("b"), "");
+      for (const node of [seg, item]) {
+        node.dataset.key = part.key;
+        node.style.setProperty("--part", part.colour);
+      }
+      addedSegs.set(part.key, seg);
+      addedKeys.set(part.key, item);
+    }
+    el.addedBar.replaceChildren(...addedSegs.values());
+    el.addedLegend.replaceChildren(...addedKeys.values());
+  }
+  for (const part of parts) {
+    addedSegs.get(part.key).style.flexGrow = ((1000 * part.own) / total).toFixed(3);
+    const item = addedKeys.get(part.key);
+    item.children[1].textContent = part.label;
+    item.lastChild.textContent = ` ${formatBytes(part.bytes)}`;
+  }
+  const spoken = parts.map((part) => `${part.label} ${formatBytes(part.bytes)}`);
+  el.addedBar.setAttribute("aria-label", `Added: ${spoken.join(", ")}.`);
+  if (addedPointed !== null) {
+    if (addedPart(addedPointed)) describeAddedPart(addedPointed);
+    else pointAtAdded(null);
+  }
+}
+
+// Marks the parts a span holds in the bar and the legend, and says what it is.
+let addedPointed = null;
+
+function pointAtAdded(key, event) {
+  if (key !== addedPointed) {
+    addedPointed = key;
+    el.added.classList.toggle("pointing", key !== null);
+    const part = key === null ? null : addedPart(key);
+    for (const [k, seg] of addedSegs) seg.classList.toggle("on", Boolean(part && part.lit.includes(k)));
+    for (const [k, item] of addedKeys) item.classList.toggle("on", k === key);
+    if (key === null) hideTooltip();
+    else describeAddedPart(key);
+  }
+  if (key !== null && event) placeTooltip(event);
+}
+
+function describeAddedPart(key) {
+  const part = addedPart(key);
+  if (!part) return;
+  const title = document.createElement("span");
+  title.className = "title";
+  const dot = document.createElement("span");
+  dot.className = "key";
+  dot.style.background = part.colour;
+  const figures = document.createElement("span");
+  figures.className = "figures";
+  const share = formatPercent(percent(part.bytes, store.status.physical));
+  figures.textContent = `${formatBytes(part.bytes)} · ${share} of the scan`;
+  title.append(dot, part.label, figures);
+  const line = document.createElement("span");
+  line.className = "note";
+  line.textContent = part.note;
+  const hint = document.createElement("span");
+  hint.className = "note";
+  hint.textContent = key === store.added ? "Click to show every age again." : "Click to show only this.";
+  el.tooltip.replaceChildren(title, line, hint);
+  el.tooltip.hidden = false;
+}
+
+function addedKeyAt(event) {
+  const part = event.target instanceof Element && event.target.closest("[data-key]");
+  return part && addedPart(part.dataset.key) ? part.dataset.key : null;
+}
+
+// A click on a part shows it alone; a click on the part already shown ends that.
+function toggleAdded(key) {
+  if (key === null) return;
+  setFilter(store.kind, store.added === key ? null : key);
+  if (addedPointed === key) describeAddedPart(key);
+}
+
+el.added.addEventListener("mousemove", (event) => pointAtAdded(addedKeyAt(event), event));
+el.added.addEventListener("mouseleave", () => pointAtAdded(null));
+el.added.addEventListener("click", (event) => toggleAdded(addedKeyAt(event)));
+el.addedLegend.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const key = addedKeyAt(event);
+  if (key === null) return;
+  event.preventDefault();
+  toggleAdded(key);
+});
 
 // The filter: one kind of the scan shown alone in the list, the map and the tabs.
 
@@ -493,10 +689,11 @@ function canFilter(key) {
   return Boolean(s && s.state === "done" && Array.isArray(s.categories) && s.categories.some((c) => c.key === key));
 }
 
-// Says in three places that a filter is on: the bar and its legend keep the kind lit
-// and the rest dimmed, and a band in the kind's colour names it, with the way back.
+// Says in three places that a filter is on: each bar and its legend keep what is shown
+// lit and the rest dimmed, and a band in the filter's colour names it, with the way
+// back. A kind and a span of ages can both be on; the band names both.
 function renderFilter() {
-  const kind = store.kind;
+  const { kind, added } = store;
   el.disk.classList.toggle("filtered", kind !== null);
   for (const cache of [diskSegs, diskKeys]) {
     for (const [key, node] of cache) node.classList.toggle("picked", key === kind);
@@ -504,26 +701,54 @@ function renderFilter() {
   for (const [key, item] of diskKeys) {
     if (item.classList.contains("can")) item.setAttribute("aria-pressed", String(key === kind));
   }
-  el.filter.hidden = kind === null;
-  if (kind === null) return;
-  const [label, colour] = DISK_PARTS[kind];
-  el.filter.style.setProperty("--part", colour);
+  const span = added === null ? null : addedPart(added);
+  el.added.classList.toggle("filtered", added !== null);
+  for (const [key, seg] of addedSegs) seg.classList.toggle("picked", Boolean(span && span.lit.includes(key)));
+  for (const [key, item] of addedKeys) {
+    item.classList.toggle("picked", key === added);
+    // A shorter span is part of the one shown, so its name stays lit beside it.
+    item.classList.toggle("held", Boolean(span && key !== added && span.lit.includes(key)));
+    item.setAttribute("aria-pressed", String(key === added));
+  }
+  el.filter.hidden = kind === null && added === null;
+  if (el.filter.hidden) return;
+  el.filter.style.setProperty("--part", kind !== null ? DISK_PARTS[kind][1] : "var(--added)");
   const s = store.status;
-  const held = (s.categories || []).find((c) => c.key === kind);
-  const name = document.createElement("b");
-  name.textContent = label;
+  const words = ["Showing only "];
+  if (kind !== null) {
+    const name = document.createElement("b");
+    name.textContent = DISK_PARTS[kind][0];
+    words.push(name);
+  }
+  if (added !== null) {
+    const when = document.createElement("b");
+    when.textContent = span ? span.phrase : "in that time";
+    words.push(kind !== null ? " added " : "what was added ", when);
+  }
+  // One filter's bytes are in the status; both together are in the filtered root.
+  let bytes = null;
+  if (kind !== null && added !== null) {
+    const root = nodes.get(0);
+    if (root && root.path !== undefined) bytes = root.physical;
+  } else if (kind !== null) {
+    const held = (s.categories || []).find((c) => c.key === kind);
+    if (held) bytes = held.bytes;
+  } else if (span) {
+    bytes = span.bytes;
+  }
   const figures = document.createElement("span");
   figures.className = "figures";
-  figures.textContent = held ? `${formatBytes(held.bytes)} of the ${formatBytes(s.physical)} scanned` : "";
-  el.filterText.replaceChildren("Showing only ", name, " ", figures);
+  figures.textContent = bytes === null ? "" : `${formatBytes(bytes)} of the ${formatBytes(s.physical)} scanned`;
+  el.filterText.replaceChildren(...words, " ", figures);
 }
 
-// Shows one kind alone, or everything again with null. The tree keeps its ids under a
-// filter, so the view keeps its open folders, selection and zoom where the kind has
-// them, and fetches their figures again.
-async function setKind(kind) {
-  if (kind === store.kind || store.loadedPath === null) return;
+// Shows one kind alone, one span of ages, both, or everything again with nulls. The
+// tree keeps its ids under a filter, so the view keeps its open folders, selection and
+// zoom where the filter has them, and fetches their figures again.
+async function setFilter(kind, added) {
+  if ((kind === store.kind && added === store.added) || store.loadedPath === null) return;
   store.kind = kind;
+  store.added = added;
   generation += 1;
   const started = generation;
   nodes.clear();
@@ -548,18 +773,21 @@ async function setKind(kind) {
   renderRebuildable();
   drawTreemap();
   const keep = new Set([0, ...expanded, store.root, store.selection].filter((id) => id !== null));
-  // A folder the kind leaves out is not found; it stays open for when the filter ends.
+  // A folder the filter leaves out is not found; it stays open for when the filter ends.
   await Promise.all([...keep].map((id) => fetchNode(id).catch(() => {})));
   if (started !== generation) return;
   const has = (id) => nodes.get(id)?.path !== undefined;
   if (!has(0)) {
     // Without the scanned folder there is nothing to show under this filter; say so
     // and go back to everything, or leave the views empty if that failed too.
-    showMessage(kind === null ? "The scan could not be read again; press Rescan." : "That kind could not be shown.", true);
-    if (kind !== null) setKind(null);
+    const none = kind === null && added === null;
+    showMessage(none ? "The scan could not be read again; press Rescan." : "That could not be shown alone.", true);
+    if (!none) setFilter(null, null);
     return;
   }
-  // A zoom or selection the kind leaves out falls back to the scanned folder.
+  // The band's figure for a kind and a span together comes from the root just read.
+  renderFilter();
+  // A zoom or selection the filter leaves out falls back to the scanned folder.
   if (!has(store.root)) store.root = 0;
   if (store.selection === null || !has(store.selection)) store.selection = 0;
   renderList();
@@ -570,7 +798,11 @@ async function setKind(kind) {
   loadBottom();
 }
 
-el.filterClear.addEventListener("click", () => setKind(null));
+function setKind(kind) {
+  return setFilter(kind, store.added);
+}
+
+el.filterClear.addEventListener("click", () => setFilter(null, null));
 
 // Marks the part under the pointer in the bar and the legend, and says what it is.
 let diskPointed = null;
@@ -1063,7 +1295,7 @@ async function fetchTreemap() {
   }
   const { w, h } = paneSize();
   try {
-    const layout = await getJSON(`/api/${store.view}?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}&${kindQuery()}`);
+    const layout = await getJSON(`/api/${store.view}?root=${store.root}&w=${w}&h=${h}&min=1&mode=${store.mode}&${filterQuery()}`);
     if (request !== layoutRequest) return;
     store.layout = layout;
     drawTreemap();
@@ -1304,18 +1536,22 @@ function renderCaption() {
   span.textContent = text;
   el.caption.appendChild(span);
   el.caption.title = text;
-  // Under a filter the map shows one kind; the caption says which.
-  if (store.kind !== null && text) {
-    const [label, colour] = DISK_PARTS[store.kind];
+  // Under a filter the map shows part of the scan; the caption says which.
+  const tags = [];
+  if (store.kind !== null) tags.push(DISK_PARTS[store.kind].slice(0, 2));
+  const aged = store.added === null ? null : addedPart(store.added);
+  if (aged) tags.push([aged.label, "var(--added)"]);
+  if (tags.length === 0 || !text) return;
+  // The caption runs right to left so a long path loses its start, not its end; the
+  // first element is the one furthest right.
+  for (const [label, colour] of [...tags].reverse()) {
     const tag = document.createElement("b");
     tag.className = "kind";
     tag.style.setProperty("--part", colour);
     tag.textContent = label;
-    // The caption runs right to left so a long path loses its start, not its end;
-    // the first element is the one furthest right.
     el.caption.prepend(tag);
-    el.caption.title = `${text}, ${label} only`;
   }
+  el.caption.title = `${text}, ${tags.map(([label]) => label).join(", ")} only`;
 }
 
 // Root and mode changes.
@@ -1397,8 +1633,8 @@ async function loadBottom() {
   }
   try {
     const [extensions, largest] = await Promise.all([
-      getJSON(`/api/extensions?root=${store.root}&mode=${store.mode}&${kindQuery()}`),
-      getJSON(`/api/largest?root=${store.root}&n=200&mode=${store.mode}&${kindQuery()}`),
+      getJSON(`/api/extensions?root=${store.root}&mode=${store.mode}&${filterQuery()}`),
+      getJSON(`/api/largest?root=${store.root}&n=200&mode=${store.mode}&${filterQuery()}`),
     ]);
     if (request !== bottomRequest) return;
     renderExtensions(extensions);
@@ -1622,7 +1858,7 @@ async function loadRebuildable() {
   }
   try {
     const [data, root] = await Promise.all([
-      getJSON(`/api/rebuildable?root=${store.root}&mode=${store.mode}&${kindQuery()}`),
+      getJSON(`/api/rebuildable?root=${store.root}&mode=${store.mode}&${filterQuery()}`),
       fetchNode(store.root),
     ]);
     if (request !== rebuildRequest) return;
@@ -2094,8 +2330,10 @@ function forgetTree() {
   pending.clear();
   store.selection = null;
   store.root = 0;
-  // A new tree starts unfiltered: its kinds are not known until its scan is done.
+  // A new tree starts unfiltered: its kinds and ages are not known until its scan is
+  // done.
   store.kind = null;
+  store.added = null;
   renderFilter();
   store.highlightExt = null;
   store.highlightGroup = null;
@@ -2244,8 +2482,8 @@ document.addEventListener("keydown", (event) => {
   if (store.highlightExt !== null || store.highlightGroup !== null) {
     setHighlight(null);
     event.preventDefault();
-  } else if (store.kind !== null) {
-    setKind(null);
+  } else if (store.kind !== null || store.added !== null) {
+    setFilter(null, null);
     event.preventDefault();
   }
 });

@@ -1933,6 +1933,7 @@ mod tests {
                 files: 0,
                 dirs: 0,
                 mtime: 0,
+                added: 0,
                 children: Vec::new(),
                 shared: crate::tree::Shared::None,
             }

@@ -522,6 +522,132 @@ fn a_kind_filters_every_tree_endpoint() {
     assert_eq!(get_json(&server, "/api/node/0?kind=").1, whole);
 }
 
+/// A file two megabytes large arrived just now and the rest of the fixture a hundred
+/// days ago: the Added bar has the past day and what is older, and each filters every
+/// tree endpoint. `src/ages.rs` and `src/categories.rs` test the spans and the filters.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_added_span_filters_every_tree_endpoint() {
+    let fx = fixture();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // A hard link has a Date Added of its own.
+    for old in [
+        "a/big.bin",
+        "a/small.txt",
+        "link.txt",
+        "b/x.jpg",
+        ".hidden",
+        "sym",
+    ] {
+        common::set_added(&fx.root.join(old), now - 100 * 86_400);
+    }
+    std::fs::write(fx.root.join("a/new.bin"), vec![b'x'; 2 << 20]).unwrap();
+    let server = start_done(&fx);
+    let status = server.status();
+    let whole = node(&server, 0);
+    let a = child_id(&server, 0, "a");
+    let b = child_id(&server, 0, "b");
+    let new = child_id(&server, a, "new.bin");
+    let new_bytes = node(&server, new)["physical"].as_u64().unwrap();
+
+    let ages = &status["ages"];
+    assert_eq!(
+        ages["steps"],
+        serde_json::json!([{ "key": "1d", "bytes": new_bytes }]),
+        "{status}"
+    );
+    let rest = ages["rest"]["bytes"].as_u64().unwrap();
+    assert_eq!(ages["rest"]["key"], "over-1d");
+    assert_eq!(new_bytes + rest, status["physical"].as_u64().unwrap());
+    // All of the rest arrived on one day.
+    assert_eq!(ages["rest"]["bulk"]["bytes"], rest, "{ages}");
+    assert!((ages["now"].as_i64().unwrap() - now).abs() < 60, "{ages}");
+
+    let (code, day) = get_json(&server, "/api/node/0?added=1d");
+    assert_eq!(code, 200);
+    assert_eq!(day["physical"], new_bytes);
+    assert_eq!((&day["files"], &day["dirs"]), (&1.into(), &1.into()));
+    let names = |node: &Value| -> Vec<String> {
+        let children = node["children"].as_array().unwrap();
+        children
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names(&day), ["a"]);
+    let (_, inside) = get_json(&server, &format!("/api/node/{a}?added=1d"));
+    assert_eq!(names(&inside), ["new.bin"]);
+    assert_eq!(inside["physical"], new_bytes);
+    assert_eq!(get_json(&server, &format!("/api/node/{b}?added=1d")).0, 404);
+
+    let (code, older) = get_json(&server, "/api/node/0?added=over-1d");
+    assert_eq!(code, 200);
+    assert_eq!(older["physical"], rest);
+    assert_eq!(
+        older["files"].as_u64().unwrap(),
+        whole["files"].as_u64().unwrap() - 1
+    );
+    let (_, inside) = get_json(&server, &format!("/api/node/{a}?added=over-1d"));
+    assert_eq!(names(&inside), ["big.bin", "small.txt"]);
+    assert_eq!(
+        get_json(&server, &format!("/api/node/{new}?added=over-1d")).0,
+        404
+    );
+
+    for view in ["treemap", "icicle"] {
+        let (code, kept) = get_json(
+            &server,
+            &format!("/api/{view}?w=400&h=300&mode=physical&added=1d"),
+        );
+        assert_eq!(code, 200);
+        let rects = kept["rects"].as_array().unwrap();
+        assert!(rects.iter().any(|r| r["id"] == new), "{view}: {kept}");
+        let shown = |r: &Value| r["id"] == new || r["id"] == a || r["id"] == 0;
+        assert!(rects.iter().all(shown), "{view}: {kept}");
+    }
+    let (code, kept) = get_json(&server, "/api/extensions?added=1d");
+    assert_eq!(code, 200);
+    let items = kept["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{kept}");
+    assert_eq!(
+        (&items[0]["ext"], &items[0]["files"]),
+        (&"bin".into(), &1.into())
+    );
+    let (code, kept) = get_json(&server, "/api/largest?added=over-1d&mode=physical");
+    assert_eq!(code, 200);
+    let largest = kept["items"].as_array().unwrap();
+    assert!(largest[0]["path"].as_str().unwrap().ends_with("a/big.bin"));
+    assert!(largest.iter().all(|f| f["id"] != new), "{kept}");
+
+    // With a kind too: the fixture lies in one place, so one kind holds all of it.
+    let all = status["categories"][0]["key"].as_str().unwrap();
+    let none = if all == "photos" { "media" } else { "photos" };
+    let (code, both) = get_json(&server, &format!("/api/node/0?kind={all}&added=1d"));
+    assert_eq!((code, &both), (200, &day));
+    let (code, neither) = get_json(&server, &format!("/api/node/0?kind={none}&added=1d"));
+    assert_eq!(code, 200);
+    assert_eq!(
+        (&neither["physical"], &neither["files"]),
+        (&0.into(), &0.into())
+    );
+    assert_eq!(neither["children"], serde_json::json!([]));
+
+    for path in [
+        "/api/node/0?added=2d",
+        "/api/treemap?w=400&h=300&added=week",
+        "/api/extensions?added=over-",
+    ] {
+        let (code, body) = get_json(&server, path);
+        assert_eq!(code, 400, "{path}");
+        assert_eq!(body["error"], "no such span");
+    }
+    // No span, or an empty one, is the whole tree.
+    assert_eq!(get_json(&server, "/api/node/0?added=").1, whole);
+}
+
 #[test]
 fn errors_report_the_locked_dir() {
     let fx = fixture();

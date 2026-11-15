@@ -9,8 +9,9 @@
 //! `physical`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::ages::{self, Ages, Span};
 use crate::rebuildable;
 use crate::tree::{Kind, Node, NodeId, ROOT, Tree};
 
@@ -226,22 +227,67 @@ pub fn split(tree: &Tree) -> Vec<(Category, u64)> {
     tally(tree, &claims(tree))
 }
 
-/// What one finished tree holds by category: the split for the disk bar, and a
-/// [`Filter`] per category, made the first time it is asked for.
+/// What one finished tree holds by category and by age: the split for the disk bar
+/// with a [`Filter`] per category, and the [`Ages`] for the Added bar with the
+/// filters by age. A filter is made the first time it is asked for.
 pub struct Kinds {
     claims: HashMap<NodeId, Category>,
     split: Vec<(Category, u64)>,
     filters: [OnceLock<Filter>; ALL.len()],
+    ages: Ages,
+    /// The filters by age last asked for, newest first, each for a span alone or
+    /// within a category.
+    aged: Mutex<Vec<(Aged, Arc<Filter>)>>,
 }
 
+type Aged = (Option<Category>, Span);
+
+/// How many filters by age are kept. Each is a bit per entry and the figures of the
+/// folders that hold files both in and out of the span.
+const AGED_KEPT: usize = 4;
+
 impl Kinds {
+    /// As of now.
     pub fn new(tree: &Tree) -> Kinds {
+        Kinds::at(tree, ages::now())
+    }
+
+    /// With ages counted from `now`, seconds since the Unix epoch.
+    pub fn at(tree: &Tree, now: u32) -> Kinds {
         let claims = claims(tree);
         Kinds {
             split: tally(tree, &claims),
             claims,
             filters: Default::default(),
+            ages: Ages::new(tree, now),
+            aged: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn ages(&self) -> &Ages {
+        &self.ages
+    }
+
+    /// The filter that keeps the files that arrived in `span`, of `category` alone
+    /// when one is given, and the folders that hold them. `tree` is the tree this was
+    /// made from.
+    pub fn aged(&self, tree: &Tree, category: Option<Category>, span: Span) -> Arc<Filter> {
+        // Held while the filter is made: a click sends several requests for it at once,
+        // and the others wait for the one walk.
+        let mut aged = self.aged.lock().unwrap();
+        let key = (category, span);
+        if let Some(at) = aged.iter().position(|(k, _)| *k == key) {
+            let found = aged.remove(at);
+            aged.insert(0, found);
+        } else {
+            let kind = category.map(|category| self.filter(tree, category));
+            let filter = Filter::of_files(tree, |id, node| {
+                kind.is_none_or(|kind| kind.inside(id)) && self.ages.holds(span, node)
+            });
+            aged.insert(0, (key, Arc::new(filter)));
+            aged.truncate(AGED_KEPT);
+        }
+        aged[0].1.clone()
     }
 
     /// As [`split`] gives it.
@@ -281,15 +327,15 @@ impl Totals {
     }
 }
 
-/// The tree with one category kept and everything else left out: which entries
-/// belong to the category, and the figures of the folders that hold some of it
-/// beside other things. Node ids stay the tree's own. It is one bit per entry, plus
-/// the folders above a rule or a rebuildable folder.
+/// The tree with part of it kept and everything else left out: which entries are
+/// kept, and the figures of the folders that hold some of them beside other things.
+/// Node ids stay the tree's own. It is one bit per entry, plus those folders: for a
+/// category, the ones above a rule or a rebuildable folder.
 pub struct Filter {
-    /// One bit per node, set where the node belongs to the category.
+    /// One bit per node, set where the node is kept.
     inside: Vec<u64>,
-    /// The folders that have a category start below them and hold some of this
-    /// category, with what they hold of it.
+    /// The folders that hold both kept entries and others, with what they hold of
+    /// the kept ones.
     mixed: HashMap<NodeId, Totals>,
 }
 
@@ -348,6 +394,72 @@ impl Filter {
             .filter_map(|(id, (totals, any))| any.then_some((id, totals)))
             .collect();
         filter
+    }
+
+    /// The filter that keeps the files, symlinks and other non-folders `keep` says,
+    /// and each folder that holds at least one of them, however deep. A folder with
+    /// none, an empty one too, is left out.
+    pub(crate) fn of_files(tree: &Tree, keep: impl Fn(NodeId, &Node) -> bool) -> Filter {
+        /// A folder whose children are being gone through.
+        struct Open {
+            id: NodeId,
+            /// The next child to look at.
+            next: usize,
+            held: Totals,
+            /// Every entry below so far is kept.
+            whole: bool,
+        }
+        let open = |id| Open {
+            id,
+            next: 0,
+            held: Totals::default(),
+            whole: true,
+        };
+        let mut inside = vec![0u64; tree.nodes.len().div_ceil(64)];
+        let mut mixed = HashMap::new();
+        // No recursion: a tree can be deep.
+        let mut stack = vec![open(ROOT)];
+        while let Some(at) = stack.last_mut() {
+            let node = &tree.nodes[at.id as usize];
+            if let Some(&child) = node.children.get(at.next) {
+                at.next += 1;
+                let entry = &tree.nodes[child as usize];
+                if entry.kind == Kind::Dir {
+                    stack.push(open(child));
+                } else if keep(child, entry) {
+                    inside[child as usize / 64] |= 1 << (child % 64);
+                    at.held.size += entry.size;
+                    at.held.physical += entry.physical;
+                    at.held.files += 1;
+                } else {
+                    at.whole = false;
+                }
+                continue;
+            }
+            let Open {
+                id, held, whole, ..
+            } = stack.pop().unwrap();
+            let any = held.files > 0 || held.dirs > 0;
+            // A folder kept whole has the node's own figures and needs no entry.
+            let whole = whole && any;
+            if any {
+                inside[id as usize / 64] |= 1 << (id % 64);
+                if !whole {
+                    mixed.insert(id, held);
+                }
+            }
+            if let Some(above) = stack.last_mut() {
+                above.whole &= whole;
+                if any {
+                    above.held.size += held.size;
+                    above.held.physical += held.physical;
+                    above.held.files += held.files;
+                    above.held.dirs += held.dirs + 1;
+                }
+            }
+        }
+        mixed.shrink_to_fit();
+        Filter { inside, mixed }
     }
 
     /// What the folder `id` holds of the category, and whether it holds any entry of
@@ -430,6 +542,7 @@ mod tests {
                 files: 0,
                 dirs: 0,
                 mtime: 0,
+                added: 0,
                 children: Vec::new(),
                 shared: Shared::None,
             }
@@ -741,6 +854,7 @@ mod tests {
                 files: 2,
                 dirs: (depth - i) as u32,
                 mtime: 0,
+                added: 0,
                 children: vec![i as NodeId + 1],
                 shared: Shared::None,
             })
@@ -761,6 +875,7 @@ mod tests {
                 files: if kind == Kind::Dir { 2 } else { 0 },
                 dirs: 0,
                 mtime: 0,
+                added: 0,
                 children: if kind == Kind::Dir {
                     vec![last + 1, last + 2]
                 } else {
@@ -788,6 +903,12 @@ mod tests {
                 dirs: 1,
             }
         );
+        // By age too: no file here has a time, so both are older than every span.
+        let old = kinds.aged(&tree, None, Span::from_key("over-3y").unwrap());
+        assert_eq!(old.totals(ROOT, tree.root()).files, 2);
+        assert!(old.shows(last + 2));
+        let new = kinds.aged(&tree, None, Span::from_key("3y").unwrap());
+        assert!(!new.shows(last));
         let rest = kinds.filter(&tree, Other).totals(ROOT, tree.root());
         assert_eq!((rest.size, rest.files, rest.dirs), (0, 0, depth as u32 - 1));
     }
@@ -801,6 +922,143 @@ mod tests {
         assert_eq!(photos.totals(ROOT, tree.root()), Totals::default());
         let other = kinds.filter(&tree, Other);
         assert_eq!(other.totals(ROOT, tree.root()).size, 9);
+    }
+
+    const NOW: u32 = 1_800_000_000;
+    const DAY: u32 = 86_400;
+
+    /// [`mixed_home`] with every file a year old, but for the ones named: `(path, age
+    /// in days)`.
+    fn aged_home(recent: &[(&str, u32)]) -> Tree {
+        let mut tree = mixed_home();
+        for node in &mut tree.nodes {
+            node.added = NOW - 400 * DAY;
+        }
+        for &(path, days) in recent {
+            let at = id(&tree, path);
+            tree.nodes[at as usize].added = NOW - days * DAY;
+        }
+        tree
+    }
+
+    fn span(key: &str) -> Span {
+        Span::from_key(key).unwrap()
+    }
+
+    #[test]
+    fn a_filter_by_age_keeps_the_files_of_a_span_and_the_folders_that_hold_them() {
+        let tree = aged_home(&[
+            ("Pictures/a.heic", 2),
+            ("repos/site/node_modules/left-pad/index.js", 3),
+            ("repos/site/node_modules/.package-lock.json", 3),
+            ("Documents/report.pdf", 20),
+        ]);
+        let kinds = Kinds::at(&tree, NOW);
+        let week = kinds.aged(&tree, None, span("7d"));
+        let totals = |filter: &Filter, path: &str| {
+            let at = id(&tree, path);
+            filter.totals(at, &tree.nodes[at as usize])
+        };
+        assert_eq!(
+            totals(&week, ""),
+            Totals {
+                size: 601,
+                physical: 601,
+                files: 3,
+                dirs: 5,
+            }
+        );
+        // A folder with files in and out of the week shows the week's alone.
+        assert_eq!(
+            totals(&week, "repos/site"),
+            Totals {
+                size: 401,
+                physical: 401,
+                files: 2,
+                dirs: 2,
+            }
+        );
+        // A folder all of the week keeps its own figures.
+        let modules = id(&tree, "repos/site/node_modules");
+        assert_eq!(
+            totals(&week, "repos/site/node_modules"),
+            Totals::of(&tree.nodes[modules as usize])
+        );
+        for hidden in [
+            "Documents",
+            "Documents/report.pdf",
+            "Library",
+            "repos/empty",
+            "repos/site/src",
+            "repos/site/package.json",
+        ] {
+            assert!(!week.shows(id(&tree, hidden)), "{hidden}");
+            assert_eq!(totals(&week, hidden), Totals::default(), "{hidden}");
+        }
+        // The month holds the week.
+        let month = kinds.aged(&tree, None, span("30d"));
+        assert_eq!(totals(&month, "").physical, 621);
+        assert!(month.shows(id(&tree, "Documents/report.pdf")));
+        // Older than the week is everything else.
+        let older = kinds.aged(&tree, None, span("over-7d"));
+        assert_eq!(totals(&older, "").physical, tree.root().physical - 601);
+        assert!(!older.shows(modules));
+        assert!(older.shows(id(&tree, "repos/site/src/main.js")));
+    }
+
+    #[test]
+    fn a_span_and_the_ages_past_it_share_every_file_out_exactly_once() {
+        let tree = aged_home(&[
+            ("Pictures/a.heic", 0),
+            ("repos/site/node_modules/left-pad/index.js", 3),
+            ("Documents/report.pdf", 20),
+            (".Trash/old.zip", 80),
+        ]);
+        let kinds = Kinds::at(&tree, NOW);
+        for key in ["1d", "7d", "30d", "90d", "1y", "3y"] {
+            let within = kinds.aged(&tree, None, span(key));
+            let over = kinds.aged(&tree, None, span(&format!("over-{key}")));
+            for (at, node) in tree.nodes.iter().enumerate() {
+                let at = at as NodeId;
+                let (a, b) = (within.totals(at, node), over.totals(at, node));
+                let path = tree.path(at);
+                assert_eq!(a.size + b.size, node.size, "{key} {}", path.display());
+                assert_eq!(a.physical + b.physical, node.physical, "{key}");
+                assert_eq!(a.files + b.files, node.files, "{key} {}", path.display());
+                if node.kind != Kind::Dir {
+                    assert!(within.inside(at) != over.inside(at), "{key}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_span_within_a_kind_keeps_what_both_keep() {
+        let tree = aged_home(&[
+            ("Pictures/a.heic", 2),
+            ("repos/site/node_modules/left-pad/index.js", 3),
+            ("Library/Mail/V10/inbox.mbox", 4),
+        ]);
+        let kinds = Kinds::at(&tree, NOW);
+        let week = span("7d");
+        let held = |category| {
+            kinds
+                .aged(&tree, Some(category), week)
+                .totals(ROOT, tree.root())
+        };
+        assert_eq!(
+            (held(Rebuildable).physical, held(Rebuildable).files),
+            (400, 1)
+        );
+        assert_eq!((held(Mail).physical, held(Mail).files), (40, 1));
+        assert_eq!((held(Photos).physical, held(Photos).files), (200, 1));
+        assert_eq!(held(Documents), Totals::default());
+        // The kinds of a span add up to the span.
+        let all = kinds.aged(&tree, None, week).totals(ROOT, tree.root());
+        let sum: u64 = ALL.iter().map(|&category| held(category).physical).sum();
+        assert_eq!(sum, all.physical);
+        // More filters than are kept: an early one is made again, the same.
+        assert_eq!(held(Rebuildable).physical, 400);
     }
 
     #[test]

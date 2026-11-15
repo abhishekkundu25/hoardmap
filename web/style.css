@@ -30,6 +30,7 @@
   --part-macos: #8d8d96;
   --part-swap: #5d6b8a;
   --part-volumes: #a3a9b8;
+  --added: #5f9e0c;
   --row-h: 24px;
   --list-w: 45%;
   --bottom-h: 30%;
@@ -69,6 +70,7 @@
     --part-macos: #66666f;
     --part-swap: #7384a8;
     --part-volumes: #575e70;
+    --added: #9bd23c;
   }
 }
 
@@ -169,7 +171,7 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   animation: seg-in 0.35s ease;
 }
 @keyframes seg-in { from { opacity: 0; } }
-#disk-bar .seg.can, #disk-legend .part.can { cursor: pointer; }
+#disk-bar .seg.can, .parts .part.can { cursor: pointer; }
 /* Under a filter the kind shown stays lit and the rest stays dim; pointing at another
    part lights that one too. */
 #disk.pointing .seg:not(.on):not(.picked) { opacity: 0.35; }
@@ -195,23 +197,23 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   max-height: 32px;
   overflow: hidden;
 }
-#disk-legend .part {
+.parts .part {
   white-space: nowrap;
   padding: 0 7px;
   border-radius: 8px;
   transition: opacity 0.15s, background-color 0.15s;
 }
-#disk-legend .part.can:hover { background: var(--accent-soft); }
+.parts .part.can:hover { background: var(--accent-soft); }
 /* The kind the views are filtered to: a pill in its own colour, with the way out. */
-#disk-legend .part.picked, #disk-legend .part.picked:hover {
+.parts .part.picked, .parts .part.picked:hover {
   background: var(--accent-soft);
   background: color-mix(in srgb, var(--part) 24%, transparent);
   box-shadow: inset 0 0 0 1px var(--part);
   color: var(--text);
 }
-#disk-legend .part.picked::after { content: "×"; margin-left: 6px; font-weight: 600; }
-#disk-legend .part b { font-weight: 500; color: var(--text); }
-#disk-legend .key {
+.parts .part.picked::after { content: "×"; margin-left: 6px; font-weight: 600; }
+.parts .part b { font-weight: 500; color: var(--text); }
+.parts .key {
   display: inline-block;
   width: 8px;
   height: 8px;
@@ -220,9 +222,53 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
   background: var(--part);
 }
 /* Free space is the colour of the empty track, so its key needs an edge to be seen. */
-#disk-legend .part[data-key="free"] .key { box-shadow: inset 0 0 0 1px var(--control-border); }
+.parts .part[data-key="free"] .key { box-shadow: inset 0 0 0 1px var(--control-border); }
 #disk.pointing #disk-legend .part:not(.on):not(.picked) { opacity: 0.45; }
 #disk.filtered #disk-legend .part:not(.on):not(.picked) { opacity: 0.45; }
+
+/* The Added bar: the scanned files by when they arrived, newest first, in one colour
+   that fades with age. A part holds the ones before it, so they light up together. */
+#added {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+#added[hidden] { display: none; }
+#added-title { flex: none; font-weight: 500; color: var(--text); }
+#added-bar {
+  flex: 0 1 240px;
+  min-width: 96px;
+  display: flex;
+  gap: 1px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+#added-bar .seg {
+  flex: 0 1 0;
+  min-width: 3px;
+  background: var(--part);
+  cursor: pointer;
+  transition: flex-grow 0.35s ease, opacity 0.15s, filter 0.15s;
+}
+#added-legend {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  max-height: 16px;
+  flex-wrap: wrap;
+  overflow: hidden;
+  margin-left: -7px;
+}
+#added.pointing .seg:not(.on):not(.picked) { opacity: 0.35; }
+#added.filtered .seg:not(.on):not(.picked) { opacity: 0.22; }
+#added.pointing .seg.on { filter: saturate(1.15) brightness(1.06); }
+#added.pointing .part:not(.on):not(.picked) { opacity: 0.45; }
+#added.filtered .part:not(.on):not(.picked):not(.held) { opacity: 0.45; }
 
 /* The band that says a filter is on: across the window, right above the views it
    changes, in the colour of the kind shown. */
@@ -250,7 +296,7 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
 #disk-summary { flex: none; margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #disk-summary b { font-weight: 600; color: var(--text); margin-right: 6px; }
 @media (prefers-reduced-motion: reduce) {
-  #disk-bar .seg { transition: none; animation: none; }
+  #disk-bar .seg, #added-bar .seg { transition: none; animation: none; }
   #filter { animation: none; }
 }
 
