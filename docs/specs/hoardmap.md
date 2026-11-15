@@ -269,10 +269,18 @@ renames anything. Closing the window quits the app.
   - `GET /api/largest?root=ID&n=N&mode=` → `{items: [{id, path, size, physical,
     mtime}]}` largest first, N capped at 1000.
   - `GET /api/rebuildable?root=ID&mode=` → `{total, groups: [{key, label, owner, why,
-    source, caution, bytes, count, folders: [{id, path, bytes}], more}]}`: the folders
-    their tools fill again (`src/rebuildable.rs`), groups and folders largest first, at
-    most 500 folders per group. `caution` is one sentence on what in the folders does
-    not come back on its own, or `null`.
+    source, caution, class, clear, bytes, count, folders: [{id, path, bytes, mtime}],
+    more}]}`: the folders their tools fill again (`src/rebuildable.rs`), groups and
+    folders largest first, at most 500 folders per group; `count` and `bytes` cover
+    them all and `more` says how many are not listed. `caution` is one sentence on
+    what in the folders does not come back on its own, or `null`. `class` is `remade`
+    (the tool makes it again), `chosen` (a collection the user picked, which
+    downloads again when asked) or `check` (check first; always with a caution).
+    `clear` is `null` or `{command, beside, source}`: the owner's own documented
+    command for the folder, whether it runs in the folder that holds the matched one,
+    and its documentation. The page shows the command as text; nothing runs it. Only
+    `remade` folders make up the `rebuildable` category of `/api/status`. See
+    `docs/specs/rebuildable-classes.md`.
   - `GET /api/errors` → `{count, items: [{path, error}]}`. Without Full Disk Access
     on macOS, the home folders that would each raise a macOS prompt are counted but
     not read, and listed with the error `Not scanned: needs Full Disk Access`.

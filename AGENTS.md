@@ -18,8 +18,11 @@ deletes, moves or renames anything; do not add such an action.
   `default_threads()` (the non-efficiency cores; `HOARDMAP_THREADS` overrides), and
   any thread count must build the same tree.
 - `src/rebuildable.rs`: the Rebuildable rule table (owner, how the folder comes back,
-  the owner's documentation URL) and `groups`, matched on the finished tree. A test
-  keeps "safe", "delete" and "remove" out of rule text.
+  the owner's documentation URL, a `Class`, and the owner's own command where it
+  documents one) and `groups`, matched on the finished tree. A test keeps "safe",
+  "delete" and "remove" out of rule text, and requires a caution on every `Check`
+  rule. A new rule needs its claim quoted from the owner's page; record it in
+  `docs/research/`. Only `Class::Remade` folders count as Rebuildable in the disk bar.
 - `src/treemap.rs`: squarified layout, extension colours, extension and largest-file
   statistics.
 - `src/server.rs`: HTTP, static files, the launch token, and `App::open_folder` for

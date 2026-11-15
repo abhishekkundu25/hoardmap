@@ -20,6 +20,11 @@ function pad2(n) {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
+// Local YYYY-MM-DD from seconds since the epoch.
+function formatDay(seconds) {
+  return formatDate(seconds).slice(0, 10);
+}
+
 // Local YYYY-MM-DD HH:MM from seconds since the epoch.
 function formatDate(seconds) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "";
@@ -1454,7 +1459,9 @@ function renderHint() {
   if (ext !== null) {
     el.hint.textContent = `Highlighting ${ext === "" ? "files without an extension" : `.${ext}`} (Escape clears)`;
   } else if (group) {
-    el.hint.textContent = `Highlighting ${group.label} folders (Escape clears)`;
+    // The map can only mark the folders the server listed.
+    const listed = group.more > 0 ? `the largest ${formatCount(group.folders.length)} of ${formatCount(group.count)} ` : "";
+    el.hint.textContent = `Highlighting ${listed}${group.label} folders (Escape clears)`;
   } else {
     el.hint.textContent = "";
   }
@@ -1688,64 +1695,115 @@ function renderRebuildable() {
   if (store.highlightGroup !== null) setGroupHighlight(store.highlightGroup);
 }
 
+// The three ways a folder "comes back", in the order the tab lists them: the title of
+// the section, and what it means in a line.
+const REBUILD_CLASSES = [
+  ["remade", "Made again by its tool", "Caches, build output and installed packages: the tool writes them again as it works, or with its usual command from what the project keeps."],
+  ["chosen", "Yours to download again", "Toolchains, kits and models you picked. Each downloads again when you ask for it, for as long as its source still has it."],
+  ["check", "Check first", "These also hold things that do not come back, or hoardmap knows them by a common name alone."],
+];
+
 function rebuildRows({ data, root }) {
   const whole = bytesOf(root, store.mode);
   const fragment = document.createDocumentFragment();
   if (data.groups.length === 0) {
     const tr = document.createElement("tr");
     const td = cell("muted", store.status.state === "scanning" ? "No rebuildable folders found yet." : "No rebuildable folders under this folder.");
-    td.colSpan = 5;
+    td.colSpan = 6;
     tr.appendChild(td);
     fragment.appendChild(tr);
   }
-  for (const group of data.groups) {
-    const limit = rebuildView.open.get(group.key);
-    const open = limit !== undefined;
-    fragment.appendChild(groupRow(group, whole, open));
-
-    // What in these folders does not come back on its own, in the warning colour, shown
-    // open or closed.
-    if (group.caution) fragment.appendChild(noteRow(group, "name warn", `Caution: ${group.caution}`));
-    if (!open) continue;
-
-    // The source opens nowhere: the app window never navigates away from the page,
-    // so the address is plain text to copy.
-    const why = noteRow(group, "name muted", `${group.why} Docs: `);
-    const source = document.createElement("span");
-    source.className = "source";
-    source.textContent = group.source;
-    why.firstChild.appendChild(source);
-    why.title = `${group.why}\nDocs: ${group.source}`;
-    fragment.appendChild(why);
-
-    for (const folder of group.folders.slice(0, limit)) {
-      fragment.appendChild(folderRow(folder, group, root, whole));
-    }
-    if (group.folders.length > limit) {
-      const all = document.createElement("tr");
-      all.className = "rest";
-      const td = cell("name", "");
-      td.colSpan = 5;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "show-all";
-      button.dataset.all = group.key;
-      button.dataset.focus = `all:${group.key}`;
-      button.textContent = `Show all ${formatCount(group.folders.length)}`;
-      td.appendChild(button);
-      all.appendChild(td);
-      fragment.appendChild(all);
-    }
-    if (group.more > 0) {
-      const more = document.createElement("tr");
-      more.className = "rest";
-      const td = cell("name muted", `and ${formatCount(group.more)} more`);
-      td.colSpan = 5;
-      more.appendChild(td);
-      fragment.appendChild(more);
-    }
+  for (const [key, title, meaning] of REBUILD_CLASSES) {
+    const groups = data.groups.filter((group) => group.class === key);
+    if (groups.length === 0) continue;
+    fragment.appendChild(sectionRow(title, meaning, groups, whole));
+    for (const group of groups) groupRows(fragment, group, root, whole);
   }
   return fragment;
+}
+
+// The line that starts a class of groups: what "comes back" means for them, and how
+// much they hold together.
+function sectionRow(title, meaning, groups, whole) {
+  const tr = document.createElement("tr");
+  tr.className = "section";
+  tr.title = meaning;
+  const bytes = groups.reduce((sum, group) => sum + group.bytes, 0);
+  const count = groups.reduce((sum, group) => sum + group.count, 0);
+  const name = cell("name", "");
+  name.colSpan = 2;
+  const label = document.createElement("b");
+  label.textContent = title;
+  const note = document.createElement("span");
+  note.className = "muted";
+  note.textContent = meaning;
+  name.append(label, note);
+  tr.append(name, cell("num", formatBytes(bytes)), percentCell(bytes, whole), cell("num", formatCount(count)), cell("date", ""));
+  return tr;
+}
+
+function groupRows(fragment, group, root, whole) {
+  const limit = rebuildView.open.get(group.key);
+  const open = limit !== undefined;
+  fragment.appendChild(groupRow(group, whole, open));
+
+  // What in these folders does not come back on its own, in the warning colour, shown
+  // open or closed.
+  if (group.caution) fragment.appendChild(noteRow(group, "name warn", `Caution: ${group.caution}`));
+  if (!open) return;
+
+  // The source opens nowhere: the app window never navigates away from the page,
+  // so the address is plain text to copy.
+  const why = noteRow(group, "name muted", `${group.why} Docs: `);
+  why.firstChild.appendChild(copyable(group.source));
+  why.title = `${group.why}\nDocs: ${group.source}`;
+  fragment.appendChild(why);
+
+  // The owner's own command for the folder, as text to copy. Hoardmap runs nothing.
+  if (group.clear) {
+    const where = group.clear.beside ? ", run in the folder that holds each one" : "";
+    const line = noteRow(group, "name muted", `${group.owner}'s own command for it: `);
+    line.firstChild.append(copyable(group.clear.command, "command"), `${where}. Docs: `, copyable(group.clear.source));
+    line.title = `${group.clear.command}\nDocs: ${group.clear.source}`;
+    fragment.appendChild(line);
+  }
+
+  for (const folder of group.folders.slice(0, limit)) {
+    fragment.appendChild(folderRow(folder, group, root, whole));
+  }
+  if (group.folders.length > limit) {
+    const all = document.createElement("tr");
+    all.className = "rest";
+    const td = cell("name", "");
+    td.colSpan = 6;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "show-all";
+    button.dataset.all = group.key;
+    button.dataset.focus = `all:${group.key}`;
+    // The server lists a group's largest folders, not every one of thousands.
+    const listed = formatCount(group.folders.length);
+    button.textContent = group.more > 0 ? `Show the largest ${listed}` : `Show all ${listed}`;
+    td.appendChild(button);
+    all.appendChild(td);
+    fragment.appendChild(all);
+  }
+  if (group.more > 0) {
+    const more = document.createElement("tr");
+    more.className = "rest";
+    const td = cell("name muted", `and ${formatCount(group.more)} smaller ones, counted above but not listed`);
+    td.colSpan = 6;
+    more.appendChild(td);
+    fragment.appendChild(more);
+  }
+}
+
+// Text the viewer can select and copy.
+function copyable(text, className = "") {
+  const span = document.createElement("span");
+  span.className = `source ${className}`.trim();
+  span.textContent = text;
+  return span;
 }
 
 // A group's row: the button that opens and closes it, then its figures. A click
@@ -1765,17 +1823,21 @@ function groupRow(group, whole, open) {
   toggle.dataset.focus = `open:${group.key}`;
   toggle.setAttribute("aria-expanded", String(open));
   toggle.setAttribute("aria-label", `${group.label} folders`);
-  toggle.title = open ? "Hide the folders" : "Show why it comes back, and the folders";
+  toggle.title = open ? "Hide the folders" : "Show how it comes back, and the folders";
   toggle.textContent = open ? "▾" : "▸";
   const label = document.createElement("span");
   label.textContent = group.label;
   name.append(toggle, label);
+  // The newest change among the folders listed: a group nothing has touched for
+  // months is a different matter from one in use today.
+  const newest = group.folders.reduce((latest, folder) => Math.max(latest, folder.mtime || 0), 0);
   tr.append(
     name,
     cell("owner muted", group.owner),
     cell("num", formatBytes(group.bytes)),
     percentCell(group.bytes, whole),
     cell("num", formatCount(group.count)),
+    cell("date muted", formatDay(newest)),
   );
   return tr;
 }
@@ -1788,7 +1850,7 @@ function noteRow(group, className, text) {
   tr.dataset.group = group.key;
   tr.title = text;
   const td = cell(className, text);
-  td.colSpan = 5;
+  td.colSpan = 6;
   tr.appendChild(td);
   return tr;
 }
@@ -1800,13 +1862,13 @@ function folderRow(folder, group, root, whole) {
   row.dataset.in = group.key;
   const current = rebuildView.cursorGroup === null && folder.id === (rebuildView.cursorId ?? store.selection);
   if (current) row.classList.add("selected");
-  row.title = `${folder.path}\n${formatCount(folder.bytes)} bytes`;
+  row.title = `${folder.path}\n${formatCount(folder.bytes)} bytes, last changed ${formatDate(folder.mtime)}`;
   const path = cell("name", "");
   path.colSpan = 2;
   const inner = document.createElement("span");
   inner.textContent = relativePath(folder.path, root.path);
   path.appendChild(inner);
-  row.append(path, cell("num", formatBytes(folder.bytes)), percentCell(folder.bytes, whole), cell("num", ""));
+  row.append(path, cell("num", formatBytes(folder.bytes)), percentCell(folder.bytes, whole), cell("num", ""), cell("date", formatDay(folder.mtime)));
   return row;
 }
 

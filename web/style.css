@@ -380,6 +380,7 @@ thead th.date { width: 118px; }
 #tab-largest thead th.num { width: 96px; }
 .tab { outline-offset: -2px; }
 #tab-rebuildable thead th.owner { width: 110px; }
+#tab-rebuildable thead th.date { width: 100px; text-align: right; }
 tbody tr { height: var(--row-h); }
 tbody tr:nth-child(even) { background: var(--panel-alt); }
 tbody tr:hover { background: var(--accent-soft); }
@@ -492,6 +493,15 @@ tr.selected .icon.file::before { background: var(--selected-fg); }
 #rebuild-rows tr.group { border-top: 1px solid var(--border); }
 #rebuild-rows tr.group:first-child { border-top: none; }
 #rebuild-rows tr.group td.name { font-weight: 600; padding-left: 4px; }
+/* A class of groups: what "comes back" means for the ones below it. */
+#rebuild-rows tr.section { background: var(--bg); border-top: 1px solid var(--border); }
+#rebuild-rows tr.section:first-child { border-top: none; }
+#rebuild-rows tr.section td { font-size: 12px; padding-top: 5px; padding-bottom: 3px; color: var(--muted); }
+#rebuild-rows tr.section td.name { overflow: hidden; text-overflow: ellipsis; }
+#rebuild-rows tr.section td.name b { color: var(--text); font-weight: 600; margin-right: 8px; }
+#rebuild-rows td.date { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#rebuild-rows tr.folder td.date { color: var(--muted); }
+#rebuild-rows .source.command { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 #rebuild-rows .disclosure {
   width: 16px;
   height: 16px;

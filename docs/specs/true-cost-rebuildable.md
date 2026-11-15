@@ -1,5 +1,9 @@
 # True cost and Rebuildable
 
+> Later specs changed parts of this one: `rebuildable-more.md` took CoreSimulator out
+> of the rules, and `rebuildable-classes.md` split the tab into three classes and
+> tightened the matching. Where they differ, the later spec and `src/rebuildable.rs` hold.
+
 Source: [docs/research/what-users-want.md](../research/what-users-want.md), features 1
 and 6, picked from three competing proposals (see "Why these two" below).
 

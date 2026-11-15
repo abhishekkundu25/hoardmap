@@ -212,39 +212,74 @@ The Largest files tab lists the biggest files under the current treemap root wit
 full paths. Click a row to select the file in the directory list; double-click it to
 open it in Finder.
 
-The Rebuildable tab gathers the folders their tools fill again on their own. Project
-folders: `node_modules`, Cargo `target`, Python virtual environments and
-`__pycache__`, Swift `.build`, Gradle `.gradle` and `build`, Next.js `.next`,
-Turborepo, Parcel, Dart `.dart_tool`, and the mypy, pytest, Ruff and nox caches.
-Caches and downloads in the home folder: Xcode DerivedData, Gradle, Maven, Homebrew,
-pip, Poetry, pipenv, uv, npm, pnpm, Yarn, Bun, Deno, Cargo, Go, CocoaPods, Carthage,
-SwiftPM, Composer, NuGet, Playwright, Puppeteer, Electron, sccache, ccache and Bazel.
-Each group names its owner, says in a line how the folder comes back, and links the
-owner's documentation. A project folder is recognised by a file beside or inside it
-(`package.json`, `CACHEDIR.TAG`, `pyvenv.cfg`, `Package.swift`), so a folder that
-merely shares the name is left out; `dist`, `build` and `out` count only beside a
-project file that explains them, such as `vite.config.js`, `pyproject.toml`,
-`CMakeLists.txt` or `next.config.js`.
+The Rebuildable tab gathers the folders that come back after they are emptied, in
+three sections, because "comes back" does not mean the same thing for all of them:
 
-Some groups carry a caution, shown in red under the group's line, naming what in the
-folder does not come back on its own: Docker Desktop's disk image (your containers and
-volumes), Android emulators and the Android SDK, downloaded models (Hugging Face,
-Ollama, LM Studio, PyTorch hub, Kaggle), Conda's package cache, JetBrains caches (Local
-History), VS Code extensions, Rust toolchains, nvm and fnm Node.js versions, the Dart
-pub cache, CocoaPods `Pods`, Composer `vendor`, and the generic `dist`, `build` and
-`out` folders. The last group, "Marked as a cache", gathers any other folder that holds
-a `CACHEDIR.TAG` file, the convention tools use to mark a cache; its caution says the
-tag is only a hint. Left out on purpose: Xcode Archives (Apple asks you to keep the
-archive of every build you ship), a project's `.yarn/cache` (committed under zero
-installs), iOS DeviceSupport, simulators and VS Code's cached data (no documentation
-from Apple or Microsoft), and whole tool folders such as `~/.m2` and `~/.gradle`,
-which hold settings and credentials beside the cache.
+- **Made again by its tool.** Caches, build output and installed packages: the tool
+  writes them again as it works, or with its usual command from what the project
+  keeps. Apple's cache folders are here, which every app has: each app's folder in
+  `Library/Caches`, a sandboxed app's and an app group's own `Caches`, and each
+  user's system cache folder under `/private/var/folders`; so are the cache folders
+  Chromium browsers and Electron apps (Slack, VS Code and the like) keep inside
+  `Application Support`. For developers: `node_modules`, Cargo `target`, Python
+  virtual environments and `__pycache__`, Swift `.build`, Gradle `.gradle`, Maven and
+  sbt `target`, .NET `obj`, Next.js `.next`, SvelteKit, Nuxt, Angular, Turborepo,
+  Parcel, Dart `.dart_tool`, Elixir `_build` and `deps`, Unity `Library`, Godot
+  `.godot`, Zig, Unreal's derived data, the mypy, pytest, Ruff and nox caches, Xcode
+  DerivedData, and the caches of Gradle, Homebrew, pip, Poetry, pipenv, uv, npm, npx,
+  pnpm, Yarn, Bun, Deno, Cargo, Go, CocoaPods, Carthage, SwiftPM, Composer, NuGet,
+  Electron, sccache, ccache, Bazel, Kotlin/Native, pre-commit, Whisper and Keras.
+  Only this section counts as Rebuildable in the disk bar.
+- **Yours to download again.** Collections you picked: downloaded models (Hugging
+  Face, Ollama, LM Studio, PyTorch hub, Kaggle), Rust toolchains, nvm and fnm Node.js
+  versions, the Android SDK, VS Code extensions, and Playwright's and Puppeteer's
+  browsers. Each downloads again when you ask for it, for as long as its source
+  still has it.
+- **Check first.** Folders that also hold things that do not come back, or that
+  hoardmap knows by a common name alone: Docker Desktop's disk image (your containers
+  and volumes), Android emulators, JetBrains caches (Local History), Maven's local
+  repository, Conda's package cache, the Dart pub cache, CocoaPods `Pods`, Composer
+  `vendor`, the `dist`, `build` and `out` folders of Gradle, Flutter, Vite, Next.js,
+  Python packaging and CMake, and any other folder that holds a `CACHEDIR.TAG` file,
+  the convention tools use to mark a cache.
 
-Groups start collapsed to one line each, with any caution still shown. Open one with
-its arrow (or Right or Space) to see why it comes back, the owner's documentation and
-its largest 50 folders, then Show all. Click a group to highlight its folders in the
-treemap, and a folder to select it; double-click opens it in Finder. Hoardmap does not clear anything; that stays with you
-and the owning tool.
+Each group names its owner and says in a line how the folder comes back, with the
+address of the owner's documentation as text to copy. A caution, in red under the
+group's line, names what in the folder does not come back; every group under Check
+first has one. Where the owner documents its own command for the folder, such as
+`cargo clean`, `brew cleanup --prune=all` or `uv cache clean`, the group shows it as
+text to copy, and says when it runs in the folder that holds each one. Hoardmap runs
+nothing and clears nothing; that stays with you and the owning tool.
+
+A rule goes by names: a file the tool keeps beside or inside the folder
+(`package.json`, `pyvenv.cfg`, `Package.swift`, `CMakeCache.txt`), or a path only
+the tool uses. So it knows a folder's apparent owner, not whether the project files
+or the download it would come back from still exist. `dist`, `build` and `out`
+count only beside a project file that explains them, such as `vite.config.js`,
+`pyproject.toml` or `next.config.js`; a `package.json` alone is not enough.
+`__pycache__` and Chromium's cache names count wherever they are. A Cargo `target`
+needs Cargo's own record beside its cache tag, and a tag shorter than the
+convention's signature is not a tag. Nothing inside an application bundle or under
+`/System` is listed, and inside an installed package (a `node_modules` without a
+`package.json` beside it) a neighbouring project file proves nothing. When one
+matched folder lies inside another, the outer one is listed and counts both.
+
+Left out on purpose: Xcode Archives (Apple asks you to keep the archive of every
+build you ship), simulators and iOS DeviceSupport, iPhone backups, Messages
+attachments, downloaded podcasts, music and TV, logs, a project's `.yarn/cache`
+(committed under zero installs), VS Code's cached data, and whole tool folders such
+as `~/.m2` and `~/.gradle`, which hold settings and credentials beside the cache.
+Without Full Disk Access the sandboxed apps' caches are not read, so the tab shows
+less. `docs/research/rebuildable-coverage.md` has the sources and what is still to
+add.
+
+Groups start collapsed to one line each, with any caution still shown, the number of
+folders and the newest change among them. Open one with its arrow (or Right or
+Space) to see how it comes back, the owner's command and its largest 50 folders,
+each with the day it last changed, so a folder nothing has touched for months stands
+out. A group lists at most its largest 500 folders; the rest are counted in its size
+and said to be unlisted. Click a group to highlight its listed folders in the
+treemap, and a folder to select it; double-click opens it in Finder.
 
 ### Logical and Physical
 
